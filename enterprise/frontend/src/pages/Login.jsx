@@ -50,7 +50,14 @@ export default function Login() {
     async function handleGoogle() {
         setError(''); setLoading(true);
         try { await loginWithGoogle(role); navigate('/dashboard'); }
-        catch (err) { if (err.code !== 'auth/popup-closed-by-user') setError('Google sign-in failed. Please try again.'); }
+        catch (err) {
+            console.error("Google Auth Error:", err);
+            if (err.code === 'auth/unauthorized-domain') {
+                setError('This domain is not authorized for OAuth. Please add it in Firebase Console.');
+            } else if (err.code !== 'auth/popup-closed-by-user') {
+                setError(err.message || 'Google sign-in failed. Please try again.');
+            }
+        }
         finally { setLoading(false); }
     }
 
