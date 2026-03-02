@@ -1,0 +1,379 @@
+import { useEffect, useState } from 'react';
+import { api } from '../lib/api.js';
+import { useStore } from '../store/index.js';
+import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive } from 'lucide-react';
+
+// Callex AI Models
+const CALLEX_MODELS = [
+    { value: 'callex-1.1', label: 'Callex-1.1', desc: 'Fast · Optimized for high-volume calls' },
+    { value: 'callex-1.2', label: 'Callex-1.2', desc: 'Balanced · Best accuracy + speed' },
+    { value: 'callex-1.3', label: 'Callex-1.3', desc: 'Advanced · Complex reasoning & RAG' },
+];
+
+const TAB_LABELS = [
+    { id: 'identity', label: 'Identity & Prompt', icon: Sparkles },
+    { id: 'speech', label: 'Speech & Voice', icon: Mic },
+    { id: 'telephony', label: 'Telephony & Post-Call', icon: PhoneCall }
+];
+
+export default function AgentStudio() {
+    const [agents, setAgents] = useState([]);
+    const [selected, setSelected] = useState(null);
+    const [form, setForm] = useState({});
+    const [tab, setTab] = useState('identity');
+    const [promptVersions, setPromptVersions] = useState([]);
+    const [newAgent, setNewAgent] = useState(false);
+    const { showToast } = useStore();
+
+    const fetchAgents = () => api.agents().then(setAgents);
+    const fetchVersions = (id) => api.agentPromptVersions(id).then(setPromptVersions);
+
+    useEffect(() => { fetchAgents(); }, []);
+
+    function selectAgent(a) {
+        setSelected(a); setNewAgent(false);
+        setForm({
+            ...a,
+            fillerPhrases: tryParse(a.fillerPhrases, []),
+            ipaLexicon: tryParse(a.ipaLexicon, {}),
+            tools: tryParse(a.tools, []),
+        });
+        fetchVersions(a.id);
+    }
+
+    function tryParse(val, def) { try { return JSON.parse(val); } catch { return def; } }
+
+    async function saveAgent() {
+        const payload = { ...form, fillerPhrases: form.fillerPhrases, ipaLexicon: form.ipaLexicon, tools: form.tools };
+        if (newAgent) {
+            const a = await api.createAgent(payload);
+            showToast('Agent created', 'success'); fetchAgents(); selectAgent(a);
+        } else {
+            const a = await api.updateAgent(selected.id, payload);
+            showToast('Agent saved', 'success'); fetchAgents(); setSelected(a);
+        }
+    }
+
+    async function deleteAgent(id) {
+        if (!window.confirm("Delete this agent?")) return;
+        await api.deleteAgent(id);
+        showToast('Agent deleted', 'info'); setSelected(null); setForm({}); fetchAgents();
+    }
+
+    async function setStatus(id, status) {
+        await api.setAgentStatus(id, status);
+        showToast(`Agent ${status}`, 'success'); fetchAgents();
+    }
+
+    async function savePromptVersion() {
+        if (!selected) return;
+        await api.savePromptVersion(selected.id, { prompt: form.systemPrompt, label: `v${promptVersions.length + 1} — Manual save` });
+        showToast('Prompt version saved', 'success'); fetchVersions(selected.id);
+    }
+
+    const F = (key) => ({ value: form[key] || '', onChange: e => setForm(f => ({ ...f, [key]: e.target.value })) });
+    const FNum = (key) => ({ value: form[key] ?? '', onChange: e => setForm(f => ({ ...f, [key]: parseFloat(e.target.value) })) });
+    const FBool = (key) => ({ checked: form[key] ?? false, onChange: e => setForm(f => ({ ...f, [key]: e.target.checked })) });
+
+    return (
+        <div className="space-y-6 pb-20">
+            <div className="page-header">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Advanced Agent Studio</h1>
+                    <p className="text-sm text-gray-400">Configure massive 15+ detailed voice, RAG, and telephony parameters</p>
+                </div>
+                <button className="btn-primary" onClick={() => { setNewAgent(true); setSelected(null); setForm({ name: '', status: 'draft', sttEngine: 'callex-1.1', llmModel: 'callex-1.3', bargeInMode: 'balanced' }); setTab('identity'); }}>
+                    <Plus size={15} /> New Agent
+                </button>
+            </div>
+
+            <div className="flex gap-6 h-[calc(100vh-160px)]">
+                {/* Agent List Sidebar */}
+                <div className="w-64 shrink-0 space-y-2 overflow-y-auto pr-2 custom-scroll">
+                    {agents.map(a => (
+                        <button key={a.id} onClick={() => selectAgent(a)} className={`w-full text-left p-3.5 rounded-xl border transition-all ${selected?.id === a.id ? 'border-orange-200 bg-orange-50' : 'border-gray-100 bg-white hover:border-orange-100'}`}>
+                            <div className="flex items-center gap-2">
+                                <Bot size={14} className="text-orange-500" />
+                                <span className="font-semibold text-sm text-gray-800 truncate">{a.name}</span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                                <span className={a.status === 'active' ? 'badge-green' : a.status === 'paused' ? 'badge-orange' : 'badge-gray'} style={{ fontSize: '10px' }}>{a.status}</span>
+                                <span className="text-[10px] text-gray-400">{a.llmModel}</span>
+                            </div>
+                        </button>
+                    ))}
+                    {agents.length === 0 && <p className="text-xs text-gray-400 text-center py-6">No agents yet. Create one!</p>}
+                </div>
+
+                {/* Main Configuration Panel */}
+                {(selected || newAgent) ? (
+                    <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+
+                        {/* Top Sticky Header for Agent Name & Save */}
+                        <div className="p-5 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between sticky top-0 z-10">
+                            <div className="flex items-center gap-4 flex-1">
+                                <input className="text-xl font-bold text-gray-900 bg-transparent border-none outline-none placeholder-gray-300 w-1/3" placeholder="Agent Name..." {...F('name')} />
+                                <select className="text-xs font-semibold bg-white border border-gray-200 rounded-lg px-2 py-1 outline-none text-gray-600" value={form.status || 'draft'} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+                                    <option value="draft">Draft (Testing)</option><option value="active">Active (Production)</option><option value="paused">Paused</option>
+                                </select>
+                            </div>
+                            <div className="flex gap-2">
+                                <button className="btn-primary py-2 text-sm" onClick={saveAgent}><Save size={14} /> Save Changes</button>
+                                {selected && <button className="btn-secondary py-2 text-red-600 border-red-100 hover:bg-red-50" onClick={() => deleteAgent(selected.id)}><Trash2 size={14} /></button>}
+                            </div>
+                        </div>
+
+                        <div className="flex flex-1 overflow-hidden">
+                            {/* Inner Vertical Tabs */}
+                            <div className="w-56 bg-white border-r border-gray-100 flex flex-col gap-1 p-3 overflow-y-auto">
+                                {TAB_LABELS.map(t => {
+                                    const Icon = t.icon;
+                                    const isActive = tab === t.id;
+                                    return (
+                                        <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-3 px-3 py-3 rounded-xl text-xs font-bold transition-all ${isActive ? 'bg-orange-50 text-orange-700' : 'text-gray-500 hover:bg-gray-50'}`}>
+                                            <Icon size={16} className={isActive ? 'text-orange-500' : 'text-gray-400'} />
+                                            {t.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Scrollable Form Content */}
+                            <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scroll bg-gray-50/30">
+
+                                {/* TAB: IDENTITY & PROMPT */}
+                                {tab === 'identity' && (
+                                    <div className="space-y-6 animate-fade-in">
+                                        <div className="grid grid-cols-2 gap-6">
+                                            <div><label className="label text-gray-700">Agent Description</label><input className="input-field max-w-2xl text-sm" placeholder="e.g. Inbound billing support bot for North America..." {...F('description')} /></div>
+                                            <div>
+                                                <label className="label text-gray-700">Agent Language</label>
+                                                <select className="input-field text-sm" value={form.language || 'en-US'} onChange={e => setForm(f => ({ ...f, language: e.target.value }))}>
+                                                    <option value="en-US">English (US)</option>
+                                                    <option value="en-GB">English (UK)</option>
+                                                    <option value="es-ES">Spanish</option>
+                                                    <option value="fr-FR">French</option>
+                                                    <option value="de-DE">German</option>
+                                                    <option value="hi-IN">Hindi</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-6">
+                                            <div>
+                                                <label className="label">TTS Opening Line</label>
+                                                <textarea className="input-field h-20 text-sm" placeholder="Hello! I am Callex, how can I help you today?" {...F('openingLine')} />
+                                            </div>
+                                            <div>
+                                                <label className="label">RAG Fallback Message</label>
+                                                <textarea className="input-field h-20 text-sm" placeholder="I'm sorry, I couldn't find that in my knowledge base. Let me transfer you." {...F('fallbackMessage')} />
+                                                <p className="text-[10px] text-gray-400 mt-1">Played when documentation similarity threshold is missed.</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4 shadow-sm">
+                                            <div className="flex items-center justify-between">
+                                                <h3 className="font-bold text-gray-800 flex items-center gap-2"><Sparkles size={16} className="text-blue-500" /> Train your Script ("System Prompt")</h3>
+                                                <button className="btn-secondary text-xs py-1 px-3" onClick={savePromptVersion}><Copy size={12} /> Save Revision</button>
+                                            </div>
+                                            <textarea className="input-field h-64 font-mono text-xs leading-5 p-4 bg-gray-50" placeholder="You are a helpful assistant..." {...F('systemPrompt')} />
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-6">
+                                            <div className="bg-white p-4 rounded-xl border border-gray-100">
+                                                <label className="label mb-2 flex items-center gap-2"><ShieldAlert size={14} className="text-red-400" /> Profanity Filter</label>
+                                                <select className="input-field text-sm" value={form.profanityFilter || 'redact'} onChange={e => setForm(f => ({ ...f, profanityFilter: e.target.value }))}>
+                                                    <option value="redact">Redact (Bleep out profanity)</option>
+                                                    <option value="block">Block (Hang up immediately)</option>
+                                                    <option value="allow">Allow (No filtering)</option>
+                                                </select>
+                                            </div>
+                                            <div className="bg-white p-4 rounded-xl border border-gray-100 flex items-center justify-between">
+                                                <div>
+                                                    <label className="label mb-0">Strict Topic Restriction</label>
+                                                    <p className="text-xs text-gray-400 mt-1">Prevent LLM from going off-topic</p>
+                                                </div>
+                                                <label className="relative inline-flex items-center cursor-pointer">
+                                                    <input type="checkbox" className="sr-only peer" {...FBool('topicRestriction')} />
+                                                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* TAB: SPEECH & VOICE */}
+                                {tab === 'speech' && (
+                                    <div className="space-y-6 animate-fade-in">
+                                        <div className="grid grid-cols-2 gap-6">
+                                            <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4">
+                                                <h3 className="font-bold text-gray-800 border-b border-gray-50 pb-2 flex items-center gap-2"><Volume2 size={16} className="text-blue-500" /> Voice Synthesis (TTS)</h3>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Voice Persona</label>
+                                                    <select className="input-field text-sm" value={form.voice || 'alloy'} onChange={e => setForm(f => ({ ...f, voice: e.target.value }))}>
+                                                        <option value="alloy">Alloy (Neutral, professional)</option><option value="nova">Nova (Warm, female)</option><option value="shimmer">Shimmer (Clear, female)</option><option value="echo">Echo (Deep, male)</option><option value="onyx">Onyx (Authoritative, male)</option><option value="fable">Fable (Expressive, neutral)</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Speaking Style</label>
+                                                    <select className="input-field text-sm" value={form.speakingStyle || 'professional'} onChange={e => setForm(f => ({ ...f, speakingStyle: e.target.value }))}>
+                                                        <option value="professional">Professional / Corporate</option><option value="friendly">Friendly / Casual</option><option value="urgent">Urgent / Fast-paced</option><option value="empathetic">Empathetic / Soft</option>
+                                                    </select>
+                                                </div>
+                                                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                                    <div className="flex justify-between text-[11px] font-bold text-gray-500 mb-2 uppercase"><span>Prosody Speed</span><span className="text-orange-600">{form.prosodyRate ?? 1.0}x</span></div>
+                                                    <input type="range" min="0.5" max="2.0" step="0.1" value={form.prosodyRate ?? 1.0} onChange={e => setForm(f => ({ ...f, prosodyRate: parseFloat(e.target.value) }))} className="w-full accent-orange-500 mb-4" />
+                                                    <div className="flex justify-between text-[11px] font-bold text-gray-500 mb-2 uppercase"><span>Pitch Modulation</span><span className="text-orange-600">{(form.prosodyPitch ?? 1.0).toFixed(1)}</span></div>
+                                                    <input type="range" min="0.5" max="2.0" step="0.1" value={form.prosodyPitch ?? 1.0} onChange={e => setForm(f => ({ ...f, prosodyPitch: parseFloat(e.target.value) }))} className="w-full accent-orange-500" />
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4">
+                                                <h3 className="font-bold text-gray-800 border-b border-gray-50 pb-2 flex items-center gap-2"><Mic size={16} className="text-green-500" /> Speech Recognition (STT)</h3>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Voice Engine</label>
+                                                    <select className="input-field text-sm" value={form.sttEngine || 'callex-1.1'} onChange={e => setForm(f => ({ ...f, sttEngine: e.target.value }))}>
+                                                        <option value="callex-1.1">Callex-1.1 (General Accents)</option><option value="callex-1.2">Callex-1.2 (Thick Accents / Code-switching)</option><option value="callex-1.3">Callex-1.3 (Global Multilingual)</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Barge-in / Interruption Mode</label>
+                                                    <select className="input-field text-sm" value={form.bargeInMode || 'balanced'} onChange={e => setForm(f => ({ ...f, bargeInMode: e.target.value }))}>
+                                                        <option value="disabled">Disabled (Do not interrupt bot)</option><option value="polite">Polite (Only interrupt on full sentences)</option><option value="balanced">Balanced (Interrupt on 3+ words)</option><option value="aggressive">Aggressive (Interrupt instantly on noise)</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 flex justify-between"><span>End-of-Turn Patience</span><span className="text-orange-600">{form.patienceMs ?? 800} ms</span></label>
+                                                    <p className="text-[10px] text-gray-400 mb-2">How long to wait for silence before assuming user is done speaking.</p>
+                                                    <input type="range" min="200" max="3000" step="100" value={form.patienceMs ?? 800} onChange={e => setForm(f => ({ ...f, patienceMs: parseInt(e.target.value) }))} className="w-full accent-orange-500" />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-white p-5 rounded-xl border border-gray-100">
+                                            <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2"><Globe size={16} className="text-purple-500" /> Environmental Acoustics</h3>
+                                            <div className="grid grid-cols-2 gap-6">
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Background Ambience Injection</label>
+                                                    <p className="text-[10px] text-gray-400 mb-2">Inject synthetic background noise to mask AI silence and sound like a real human.</p>
+                                                    <select className="input-field text-sm" value={form.backgroundAmbience || 'none'} onChange={e => setForm(f => ({ ...f, backgroundAmbience: e.target.value }))}>
+                                                        <option value="none">None (Crystal Clear)</option><option value="office">Quiet Office (Keyboard typing)</option><option value="call_center">Busy Call Center (Muffled chatter)</option><option value="static">Subtle Analog Static</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Dynamic Cognitive Fillers</label>
+                                                    <p className="text-[10px] text-gray-400 mb-2">Bot will say these randomly if API latency exceeds 1.5s.</p>
+                                                    <div className="flex flex-wrap gap-1.5 mb-2">
+                                                        {(Array.isArray(form.fillerPhrases) ? form.fillerPhrases : []).map((p, i) => (
+                                                            <span key={i} className="text-xs bg-orange-50 text-orange-700 px-2 py-1 rounded-md border border-orange-100 cursor-pointer hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors" onClick={() => setForm(f => ({ ...f, fillerPhrases: f.fillerPhrases.filter((_, j) => j !== i) }))}>{p} <span className="text-red-400 ml-1">×</span></span>
+                                                        ))}
+                                                    </div>
+                                                    <input className="input-field text-xs bg-gray-50" placeholder="Type a filler phrase and press Enter... (e.g. 'Just a sec')" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { setForm(f => ({ ...f, fillerPhrases: [...(Array.isArray(f.fillerPhrases) ? f.fillerPhrases : []), e.target.value.trim()] })); e.target.value = ''; } }} />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* TAB: TELEPHONY & POST-CALL */}
+                                {tab === 'telephony' && (
+                                    <div className="space-y-6 animate-fade-in">
+                                        <div className="grid grid-cols-2 gap-6">
+                                            <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4">
+                                                <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2"><SlidersHorizontal size={16} className="text-gray-800" /> Session & Telephony</h3>
+
+                                                <div className="flex bg-gray-100 p-1 rounded-xl mb-4">
+                                                    <button type="button" onClick={() => setForm(f => ({ ...f, callDirection: 'inbound' }))} className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors ${(form.callDirection || 'inbound') === 'inbound' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>Inbound Calls</button>
+                                                    <button type="button" onClick={() => setForm(f => ({ ...f, callDirection: 'outbound' }))} className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors ${form.callDirection === 'outbound' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>Outbound Dialer</button>
+                                                </div>
+
+                                                {form.callDirection === 'outbound' && (
+                                                    <div className="mb-4 bg-orange-50 border border-orange-100 p-3 rounded-xl flex items-center justify-between">
+                                                        <div>
+                                                            <div className="text-xs font-bold text-orange-900">Upload Numbers</div>
+                                                            <div className="text-[10px] text-orange-700">CSV of contacts to call</div>
+                                                        </div>
+                                                        <label className="btn-primary py-1.5 px-3 text-xs cursor-pointer">
+                                                            <input type="file" accept=".csv" className="hidden" onChange={(e) => { e.target.value = null; showToast('CSV Uploaded! Ready for dialer.', 'success'); }} />
+                                                            Upload CSV
+                                                        </label>
+                                                    </div>
+                                                )}
+
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Maximum Call Duration Limit (Minutes)</label>
+                                                    <input type="number" className="input-field text-sm" {...FNum('maxDuration')} placeholder="30" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">No Answer Ring Timeout (Seconds)</label>
+                                                    <input type="number" className="input-field text-sm" {...FNum('ringTimeout')} placeholder="30" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Voicemail Detection Protocol</label>
+                                                    <select className="input-field text-sm" value={form.voicemailLogic || 'hangup'} onChange={e => setForm(f => ({ ...f, voicemailLogic: e.target.value }))}>
+                                                        <option value="hangup">Instantly Hang up</option><option value="leave_message">Leave dynamic voice message</option><option value="human_escalate">Wait for human operator</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Call Forwarding Enable</label>
+                                                    <select className="input-field text-sm" value={form.callForwarding || 'none'} onChange={e => setForm(f => ({ ...f, callForwarding: e.target.value }))}>
+                                                        <option value="none">Disabled</option><option value="human">Forward to Human Operator</option><option value="agent">Forward to Another Agent</option>
+                                                    </select>
+                                                </div>
+                                                <div className="flex items-center justify-between pt-2 border-t border-gray-50">
+                                                    <span className="text-xs font-semibold text-gray-700">Listen for DTMF Tones (Dialpad)</span>
+                                                    <label className="relative inline-flex items-center cursor-pointer">
+                                                        <input type="checkbox" className="sr-only peer" {...FBool('processDtmf')} />
+                                                        <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4">
+                                                <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2"><FileArchive size={16} className="text-emerald-500" /> Pipeline Integrations</h3>
+                                                <div>
+                                                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Completion Webhook URL</label>
+                                                    <p className="text-[10px] text-gray-400 mb-1">Send a POST request immediately when call finishes.</p>
+                                                    <input type="text" className="input-field text-sm font-mono" placeholder="https://api.yourcrm.com/webhooks/callex" {...F('webhookUrl')} />
+                                                </div>
+
+                                                <div className="space-y-3 pt-4 border-t border-gray-50">
+                                                    <div className="flex items-center justify-between bg-gray-50/50 p-2 rounded-lg">
+                                                        <span className="text-xs font-semibold text-gray-700">Auto-Generate LLM Summary</span>
+                                                        <input type="checkbox" className="w-4 h-4 accent-orange-500" {...FBool('autoSummary')} />
+                                                    </div>
+                                                    <div className="flex items-center justify-between bg-gray-50/50 p-2 rounded-lg">
+                                                        <span className="text-xs font-semibold text-gray-700">Auto-Tag Sentiment Score</span>
+                                                        <input type="checkbox" className="w-4 h-4 accent-orange-500" {...FBool('autoSentiment')} />
+                                                    </div>
+                                                    <div className="flex items-center justify-between bg-gray-50/50 p-2 rounded-lg">
+                                                        <span className="text-xs font-semibold text-gray-700">Save MP3 Audio Recording</span>
+                                                        <input type="checkbox" className="w-4 h-4 accent-orange-500" {...FBool('recordCall')} />
+                                                    </div>
+                                                    <div className="flex items-center justify-between bg-gray-50/50 p-2 rounded-lg">
+                                                        <div>
+                                                            <div className="text-xs font-semibold text-gray-700">Auto Follow-Up Module</div>
+                                                            <div className="text-[10px] text-gray-400">Agent schedules texts/emails based on convo</div>
+                                                        </div>
+                                                        <label className="relative inline-flex items-center cursor-pointer">
+                                                            <input type="checkbox" className="sr-only peer" {...FBool('autoFollowUp')} />
+                                                            <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-orange-500"></div>
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 bg-gray-50/30 rounded-2xl border border-gray-100 border-dashed">
+                        <div className="text-center"><Bot size={48} className="mx-auto mb-3 opacity-20 text-orange-500" /><p className="text-sm font-semibold text-gray-400">Select an agent or create a new one to unlock advanced settings</p></div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}

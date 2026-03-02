@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Script Manager - Lakhu Teleservices</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* ═══════════════════════════════════════════ */
+        /* SCRIPT MANAGER — PAGE-SPECIFIC STYLES      */
+        /* ═══════════════════════════════════════════ */
+
+        .scripts-layout {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 20px;
+            min-height: 72vh;
+            animation: fadeInUp 0.5s ease 0.1s both;
+        }
+
+        /* Sidebar */
+        .scripts-sidebar {
+            background: var(--bg-card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            overflow-y: auto;
+            max-height: 80vh;
+        }
+
+        .scripts-sidebar::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .scripts-sidebar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .sidebar-header h3 {
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .btn-new-script {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            font-size: 0.8rem;
+            font-weight: 700;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+            box-shadow: 0 2px 8px var(--primary-glow);
+        }
+
+        .btn-new-script:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 16px var(--primary-glow);
+        }
+
+        .script-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            padding: 14px 16px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+            position: relative;
+        }
+
+        .script-card:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: var(--border-hover);
+            transform: translateX(3px);
+        }
+
+        .script-card.selected {
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.06);
+            box-shadow: inset 3px 0 0 var(--primary);
+        }
+
+        .script-card.active-script {
+            border-left: 3px solid var(--success);
+        }
+
+        .script-card.active-script.selected {
+            border-left: 3px solid var(--success);
+            box-shadow: inset 3px 0 0 var(--success);
+        }
+
+        .script-card-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .script-card-meta {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .active-badge {
+            display: inline-flex;
+            align-items: center;
+            background: var(--success-glow);
+            color: var(--success);
+            font-size: 0.62rem;
+            font-weight: 800;
+            padding: 2px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .no-scripts {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+            font-size: 0.88rem;
+        }
+
+        /* Editor */
+        .script-editor {
+            background: var(--bg-card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            padding: 28px;
+        }
+
+        .editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .editor-header h2 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--text-primary), var(--primary-light));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .field-group {
+            margin-bottom: 24px;
+        }
+
+        .field-group label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .field-group label .field-hint {
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            display: block;
+            margin-top: 3px;
+            opacity: 0.7;
+        }
+
+        .field-group input[type="text"],
+        .field-group textarea {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 0.88rem;
+            font-family: 'Inter', sans-serif;
+            transition: all var(--transition-smooth);
+            resize: vertical;
+        }
+
+        .field-group input[type="text"]:focus,
+        .field-group textarea:focus {
+            outline: none;
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+
+        .field-group textarea.opener-field {
+            min-height: 90px;
+        }
+
+        .field-group textarea.logic-field {
+            min-height: 180px;
+            font-family: 'JetBrains Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 0.82rem;
+            line-height: 1.7;
+        }
+
+        .field-group textarea.prompt-field {
+            min-height: 200px;
+            font-family: 'JetBrains Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 0.82rem;
+            line-height: 1.7;
+        }
+
+        .field-group textarea.goal-field {
+            min-height: 56px;
+        }
+
+        /* Editor footer */
+        .editor-footer {
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 22px;
+            border-top: 1px solid var(--border-subtle);
+            margin-top: 8px;
+        }
+
+        .footer-left,
+        .footer-right {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            border: none;
+            padding: 12px 26px;
+            border-radius: var(--radius-sm);
+            font-weight: 700;
+            font-size: 0.88rem;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+            box-shadow: 0 2px 10px var(--primary-glow);
+        }
+
+        .btn-save:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--primary-glow);
+        }
+
+        .btn-save-as {
+            background: transparent;
+            color: var(--primary-light);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            padding: 12px 20px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            font-size: 0.88rem;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+        }
+
+        .btn-save-as:hover {
+            background: rgba(99, 102, 241, 0.08);
+            border-color: var(--primary);
+        }
+
+        .btn-activate {
+            background: linear-gradient(135deg, var(--success), #059669);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: var(--radius-sm);
+            font-weight: 700;
+            font-size: 0.88rem;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+            box-shadow: 0 2px 10px var(--success-glow);
+        }
+
+        .btn-activate:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--success-glow);
+        }
+
+        .btn-activate.already-active {
+            background: var(--success-glow);
+            color: var(--success);
+            box-shadow: none;
+            cursor: default;
+        }
+
+        .btn-delete {
+            background: transparent;
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            padding: 12px 20px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            font-size: 0.88rem;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all var(--transition-smooth);
+        }
+
+        .btn-delete:hover {
+            background: var(--danger-glow);
+            border-color: var(--danger);
+        }
+
+        .btn-delete:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+
+        /* Empty state */
+        .empty-editor {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 400px;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        .empty-editor .empty-icon {
+            font-size: 3.5rem;
+            margin-bottom: 18px;
+            opacity: 0.4;
+        }
+
+        .empty-editor p {
+            font-size: 1.05rem;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+
+        .empty-editor .empty-hint {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            max-width: 360px;
+        }
+
+        /* Status */
+        .script-status {
+            padding: 14px 18px;
+            border-radius: var(--radius-sm);
+            margin-top: 18px;
+            font-weight: 600;
+            font-size: 0.88rem;
+            animation: fadeInUp 0.3s ease;
+        }
+
+        .script-status.success {
+            background: var(--success-glow);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+        }
+
+        .script-status.error {
+            background: var(--danger-glow);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+        }
+
+        .script-status.info {
+            background: rgba(99, 102, 241, 0.1);
+            color: var(--primary-light);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+
+        .script-status.hidden {
+            display: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .scripts-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .scripts-sidebar {
+                max-height: 280px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-title">
+                <h1>Script Manager</h1>
+                <p class="subtitle">Create, edit and switch bot scripts live</p>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button onclick="location.href='index.html'" class="btn-secondary">Dashboard</button>
+                <button onclick="location.href='settings.html'" class="btn-secondary">Settings</button>
+            </div>
+        </header>
+
+        <div class="scripts-layout">
+            <!-- Sidebar -->
+            <div class="scripts-sidebar">
+                <div class="sidebar-header">
+                    <h3>Scripts</h3>
+                    <button class="btn-new-script" onclick="newScript()">+ New Script</button>
+                </div>
+                <div id="scripts-list">
+                    <div class="no-scripts">Loading scripts...</div>
+                </div>
+            </div>
+
+            <!-- Editor -->
+            <div class="script-editor">
+                <div id="editor-empty" class="empty-editor">
+                    <div class="empty-icon" style="font-size:2rem;opacity:0.3;">—</div>
+                    <p>Select a script or create a new one</p>
+                    <span class="empty-hint">Scripts control the bot's opening line, conversation logic, and behavior on
+                        calls</span>
+                </div>
+
+                <div id="editor-form" style="display:none;">
+                    <div class="editor-header">
+                        <h2 id="editor-title">Edit Script</h2>
+                        <div>
+                            <span id="editor-active-badge" class="active-badge" style="display:none;">ACTIVE</span>
+                        </div>
+                    </div>
+
+                    <input type="hidden" id="script-id">
+
+                    <div class="field-group">
+                        <label>Script Name</label>
+                        <input type="text" id="script-name" placeholder="e.g. DishTV Recharge Script">
+                    </div>
+
+                    <div class="field-group">
+                        <label>
+                            End Goal
+                            <span class="field-hint">What is the main objective? What should the customer agree
+                                to?</span>
+                        </label>
+                        <textarea id="script-end-goal" class="goal-field"
+                            placeholder="e.g. ग्राहक को 200 रुपये का रिचार्ज करवाने के लिए मनाना"></textarea>
+                    </div>
+
+                    <div class="field-group">
+                        <label>
+                            Opening Line
+                            <span class="field-hint">First thing the bot says when the call connects (TTS)</span>
+                        </label>
+                        <textarea id="script-opener" class="opener-field"
+                            placeholder="e.g. महत्वपूर्ण जानकारी का कॉल है..."></textarea>
+                    </div>
+
+                    <div class="field-group">
+                        <label>
+                            Conversation Logic & Rules
+                            <span class="field-hint">Smart counters, objection handling, scenarios</span>
+                        </label>
+                        <textarea id="script-logic" class="logic-field"
+                            placeholder="Define scenarios, objection counters, and conversation rules..."></textarea>
+                    </div>
+
+                    <div class="field-group">
+                        <label>
+                            System Prompt (Advanced)
+                            <span class="field-hint">Optional. Leave empty to auto-generate from End Goal + Logic</span>
+                        </label>
+                        <textarea id="script-system-prompt" class="prompt-field"
+                            placeholder="Leave empty for smart auto-generated prompt..."></textarea>
+                    </div>
+
+                    <div class="editor-footer">
+                        <div class="footer-left">
+                            <button class="btn-save" onclick="saveScript()">Save Script</button>
+                            <button class="btn-save-as" onclick="saveAsNew()">Save As New</button>
+                        </div>
+                        <div class="footer-right">
+                            <button class="btn-activate" id="btn-activate" onclick="activateScript()">Activate</button>
+                            <button class="btn-delete" id="btn-delete" onclick="deleteScript()">Delete</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="script-status" class="script-status hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+    <script src="scripts.js"></script>
+</body>
+
+</html>

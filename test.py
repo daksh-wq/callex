@@ -645,10 +645,13 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
         end_goal = script.get('end_goal', '').strip()
         logic = script.get('logic', '').strip()
         
+        end_goal_section = f"मुख्य लक्ष्य (End Goal): {end_goal}" if end_goal else ""
+        logic_section = f"संदर्भ और नियम:\n{logic}" if logic else ""
+        
         system_prompt = f"""आप एक स्मार्ट AI कॉलिंग एजेंट हैं।
 भाषा: स्वाभाविक हिंदी (Devanagari)।
 
-{"मुख्य लक्ष्य (End Goal): " + end_goal if end_goal else ""}
+{end_goal_section}
 
 निर्देश:
 1. **इंसानों जैसा व्यवहार**: "जी सर", "मैं समझती हूँ" जैसे शब्द प्रयोग करें।
@@ -660,7 +663,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 7. **शब्दावली**: "RS" या "Rs" नहीं, हमेशा "रुपये" लिखें।
 8. **कॉल समाप्ति**: जब ग्राहक राजी हो जाए तो शुक्रिया कहें और [HANGUP] लिखें। जब ग्राहक कॉल काटना चाहे तो "नमस्ते" कहें और [HANGUP] लिखें।
 
-{"संदर्भ और नियम:\n" + logic if logic else ""}"""
+{logic_section}"""
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GENARTML_SERVER_KEY}"
     
