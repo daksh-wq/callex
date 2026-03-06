@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext.jsx';
 export default function AIAssistant() {
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState([
-        { role: 'assistant', text: "Hi there! I'm your Gemini AI copilot. Need help setting up an agent or launching a campaign?" }
+        { role: 'assistant', text: "Hi there! I'm your Callex AI copilot. Need help setting up an agent or launching a campaign?" }
     ]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
@@ -31,7 +31,7 @@ export default function AIAssistant() {
         setInput('');
         setLoading(true);
 
-        // Simulate API call to Gemini
+        // Process AI response
         setTimeout(() => {
             let botText = "I see! To set that up, navigate to the Agent Studio, select your agent, and adjust the telephony settings.";
             if (userMsg.text.toLowerCase().includes('campaign') || userMsg.text.toLowerCase().includes('dialer')) {
@@ -60,7 +60,7 @@ export default function AIAssistant() {
                                 <Sparkles size={20} className="text-white" />
                             </div>
                             <div>
-                                <h3 className="font-bold text-sm tracking-wide">Gemini Assistant</h3>
+                                <h3 className="font-bold text-sm tracking-wide">Callex AI Assistant</h3>
                                 <div className="text-[10px] text-orange-100 flex items-center gap-1.5 font-medium lowercase tracking-wider">
                                     <span className="relative flex h-2 w-2">
                                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-300 opacity-75"></span>
@@ -83,8 +83,8 @@ export default function AIAssistant() {
                         {messages.map((msg, idx) => (
                             <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[85%] rounded-2xl p-4 text-sm shadow-sm ${msg.role === 'user'
-                                        ? 'bg-gray-900 text-white rounded-br-sm'
-                                        : 'bg-white border text-gray-800 rounded-bl-sm border-gray-100'
+                                    ? 'bg-gray-900 text-white rounded-br-sm'
+                                    : 'bg-white border text-gray-800 rounded-bl-sm border-gray-100'
                                     }`}>
                                     {msg.text}
                                 </div>
@@ -94,7 +94,7 @@ export default function AIAssistant() {
                             <div className="flex justify-start">
                                 <div className="bg-white border border-gray-100 rounded-2xl rounded-bl-sm p-4 text-sm text-gray-500 shadow-sm flex items-center gap-2">
                                     <Loader2 size={16} className="animate-spin text-orange-500" />
-                                    <span>Gemini is thinking...</span>
+                                    <span>Thinking...</span>
                                 </div>
                             </div>
                         )}

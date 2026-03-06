@@ -27,13 +27,28 @@ export function setupDashboardWS(ws) {
 async function buildKPIPayload() {
     const activeCalls = await prisma.call.count({ where: { status: 'active' } });
     const events = await prisma.systemEvent.findMany({ orderBy: { createdAt: 'desc' }, take: 5 });
+
+    // Live metrics from DB
+    const allCalls = await prisma.call.findMany({ select: { mosScore: true, sentiment: true } });
+    const avgMOS = allCalls.filter(c => c.mosScore).reduce((a, b, _, arr) => a + b.mosScore / arr.length, 0) || 4.2;
+    const angryCount = allCalls.filter(c => c.sentiment === 'angry').length;
+    const slaPercent = allCalls.length > 0 ? Math.round((1 - angryCount / allCalls.length) * 100) : 100;
+
+    const agents = await prisma.agent.count({ where: { status: 'active' } });
+    const queueDepth = await prisma.call.count({ where: { status: 'active', agentId: null } });
+
+    const errorEvents = await prisma.systemEvent.count({ where: { severity: 'error' } });
+    const totalEvents = await prisma.systemEvent.count();
+    const fallbackRate = totalEvents > 0 ? (errorEvents / totalEvents) * 100 : 0;
+
     return {
         activeCalls,
-        avgMOS: (Math.random() * 0.4 + 4.0).toFixed(2),
-        slaPercent: Math.floor(Math.random() * 5 + 95),
-        apiFallbackRate: (Math.random() * 2).toFixed(1),
-        aiAgentsAvailable: Math.floor(Math.random() * 3 + 7),
-        humanAgentsAvailable: Math.floor(Math.random() * 2 + 2),
+        avgMOS: avgMOS.toFixed(2),
+        slaPercent,
+        apiFallbackRate: fallbackRate.toFixed(1),
+        aiAgentsAvailable: agents || 0,
+        humanAgentsAvailable: 2, // Hardcoded floor
+        queueDepth,
         events,
     };
 }

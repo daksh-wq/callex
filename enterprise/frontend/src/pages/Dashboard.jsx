@@ -20,21 +20,25 @@ function KPICard({ icon: Icon, label, value, color = 'orange', sub }) {
     );
 }
 
-const genChartData = () => Array.from({ length: 12 }, (_, i) => ({
-    time: `${i * 5}m`, calls: Math.floor(Math.random() * 40 + 10), mos: +(Math.random() * 0.8 + 3.6).toFixed(2),
-}));
+// Build chart data from the latest KPI snapshot (appends to history)
+const buildChartPoint = (kpi) => ({
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    calls: kpi?.activeCalls ?? 0,
+    mos: parseFloat(kpi?.avgMOS ?? 0),
+});
 
 export default function Dashboard() {
     const [kpis, setKPIs] = useState(null);
     const [abTest, setABTest] = useState(null);
     const [events, setEvents] = useState([]);
-    const [chartData, setChartData] = useState(genChartData());
+    const [chartData, setChartData] = useState([]);
     const wsRef = useRef(null);
     const { showToast } = useStore();
 
     useEffect(() => {
         Promise.all([api.kpis(), api.abTest(), api.events()]).then(([k, ab, ev]) => {
             setKPIs(k); setABTest(ab); setEvents(ev);
+            if (k) setChartData(prev => [...prev.slice(-11), buildChartPoint(k)]);
         }).catch(() => { });
 
         // WebSocket for live updates — only in dev
@@ -47,7 +51,7 @@ export default function Dashboard() {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'kpi') {
                         setKPIs(msg.data);
-                        setChartData(genChartData());
+                        setChartData(prev => [...prev.slice(-11), buildChartPoint(msg.data)]);
                         if (msg.data.events?.length) setEvents(msg.data.events);
                     }
                 } catch { }

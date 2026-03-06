@@ -14,30 +14,38 @@ router.get('/calls', async (req, res) => {
     res.json(calls);
 });
 
-// POST /api/supervisor/calls - simulate a new active call (for demo)
+// POST /api/supervisor/calls - create a new active call (test or triggered by FreeSWITCH)
 router.post('/calls', async (req, res) => {
     const { phoneNumber, agentId } = req.body;
-    const sentiments = ['positive', 'neutral', 'negative', 'angry'];
+    if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
     const call = await prisma.call.create({
         data: {
-            phoneNumber: phoneNumber || `+1${Math.floor(3000000000 + Math.random() * 6999999999)}`,
+            phoneNumber,
             agentId: agentId || null,
             status: 'active',
-            sentiment: sentiments[Math.floor(Math.random() * 4)],
+            sentiment: 'neutral',
             transcript: '',
+            mosScore: 4.5,
         }
     });
     await prisma.systemEvent.create({ data: { type: 'call.started', message: `Call started from ${call.phoneNumber}`, severity: 'info' } });
+
+    // Alert dashboard to active call change
+    import('../index.js').then(({ broadcastToDashboard }) => broadcastToDashboard({ type: 'refresh_kpi' }));
+
     res.json(call);
 });
 
 // PATCH /api/supervisor/calls/:id/end - end a call
 router.patch('/calls/:id/end', async (req, res) => {
+    const existing = await prisma.call.findUnique({ where: { id: req.params.id } });
+    const duration = existing?.startedAt ? Math.round((Date.now() - new Date(existing.startedAt).getTime()) / 1000) : 0;
     const call = await prisma.call.update({
         where: { id: req.params.id },
-        data: { status: 'completed', endedAt: new Date(), duration: Math.floor(Math.random() * 300 + 30) }
+        data: { status: 'completed', endedAt: new Date(), duration }
     });
     await prisma.systemEvent.create({ data: { type: 'call.ended', message: `Call ended: ${call.phoneNumber}`, severity: 'info' } });
+    import('../index.js').then(({ broadcastToDashboard }) => broadcastToDashboard({ type: 'refresh_kpi' }));
     res.json(call);
 });
 

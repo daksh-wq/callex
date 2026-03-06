@@ -38,7 +38,8 @@ const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
 // Middleware
-app.use(cors({ origin: '*' }));
+// Middleware
+app.use(cors({ origin: true, credentials: true })); // allow all for deep integration test
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));

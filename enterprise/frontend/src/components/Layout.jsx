@@ -159,7 +159,7 @@ export default function Layout() {
                 </div>
             </main>
 
-            {/* Floating Gemini AI Assistant */}
+            {/* Floating AI Assistant */}
             {userRole === 'user' && <AIAssistant />}
 
             {/* Global Command Palette */}
@@ -239,13 +239,21 @@ function CommandPalette({ activeRoutes }) {
 function LiveStatusBar() {
     const [stats, setStats] = useState({ activeCalls: 0, mos: '4.20', sla: 98 });
     useEffect(() => {
-        const tick = () => setStats({
-            activeCalls: Math.floor(Math.random() * 15 + 5),
-            mos: (Math.random() * 0.5 + 3.9).toFixed(2),
-            sla: Math.floor(Math.random() * 4 + 96),
-        });
-        tick();
-        const t = setInterval(tick, 5000);
+        const fetchKPIs = async () => {
+            try {
+                const res = await fetch((import.meta.env.VITE_API_URL || 'http://localhost:4000') + '/api/dashboard/kpis');
+                if (res.ok) {
+                    const data = await res.json();
+                    setStats({
+                        activeCalls: data.activeCalls || 0,
+                        mos: data.avgMOS ? parseFloat(data.avgMOS).toFixed(2) : '0.00',
+                        sla: data.slaPercent != null ? Math.round(data.slaPercent) : 0,
+                    });
+                }
+            } catch (e) { /* Backend offline, keep last known values */ }
+        };
+        fetchKPIs();
+        const t = setInterval(fetchKPIs, 8000);
         return () => clearInterval(t);
     }, []);
     return (

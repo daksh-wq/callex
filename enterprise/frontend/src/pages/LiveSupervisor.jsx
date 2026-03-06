@@ -51,11 +51,11 @@ export default function LiveSupervisor() {
         fetchCalls();
     }
 
-    async function simulateCall() {
+    async function startTestCall() {
         setLoading(true);
         const agents = await api.agents();
         await api.simulateCall({ agentId: agents[0]?.id });
-        showToast('Simulated call started', 'info');
+        showToast('Test call started', 'info');
         setLoading(false);
         fetchCalls();
     }
@@ -74,8 +74,8 @@ export default function LiveSupervisor() {
                     <h1 className="text-2xl font-bold text-gray-900">Live Supervisor</h1>
                     <p className="text-sm text-gray-400">Monitor, barge, and whisper to live AI agents</p>
                 </div>
-                <button className="btn-primary" onClick={simulateCall} disabled={loading}>
-                    <Phone size={15} /> {loading ? 'Starting…' : 'Simulate Call'}
+                <button className="btn-primary" onClick={startTestCall} disabled={loading}>
+                    <Phone size={15} /> {loading ? 'Starting…' : 'Test Call'}
                 </button>
             </div>
 
@@ -97,7 +97,7 @@ export default function LiveSupervisor() {
                         </thead>
                         <tbody>
                             {calls.length === 0 && (
-                                <tr><td colSpan={5} className="text-center py-12 text-gray-400 text-sm">No active calls. Click "Simulate Call" to start one.</td></tr>
+                                <tr><td colSpan={5} className="text-center py-12 text-gray-400 text-sm">No active calls. Click "Test Call" to start one.</td></tr>
                             )}
                             {calls.map(call => (
                                 <tr key={call.id} className={`hover:bg-gray-50 transition-colors cursor-pointer ${selectedCall?.id === call.id ? 'bg-orange-50' : ''} ${call.sentiment === 'angry' ? 'border-l-4 border-red-500' : ''}`}>

@@ -1,94 +1,7 @@
 // API client — proxied through Vite to http://localhost:4000 (or backend in prod)
 // Falls back to MOCK DATA when server is unreachable so the UI is fully testable.
 
-const BASE = '/api';
-
-// ─── Mock data library ──────────────────────────────────────────────────────
-const MOCK = {
-    '/dashboard/kpis': {
-        activeCalls: 47, avgMOS: '4.2', slaPercent: 97.3, apiFallbackRate: 0.8,
-        aiAgentsAvailable: 8, humanAgentsAvailable: 3, queueDepth: 6,
-    },
-    '/dashboard/ab-test': {
-        winner: 'champion', confidence: 94,
-        champion: { model: 'gemini-1.5-pro', csat: 4.7, avgDuration: 142, conversions: 31 },
-        challenger: { model: 'gemini-flash', csat: 4.4, avgDuration: 118, conversions: 27 },
-    },
-    '/dashboard/events': [
-        { id: 1, type: 'CALL_STARTED', message: 'New inbound call from +91-98765-43210', severity: 'info', createdAt: new Date().toISOString() },
-        { id: 2, type: 'AGENT_ESCALATION', message: 'Agent Alpha escalated call to human', severity: 'warning', createdAt: new Date(Date.now() - 60000).toISOString() },
-        { id: 3, type: 'SLA_BREACH', message: 'Queue wait exceeded 90s threshold', severity: 'error', createdAt: new Date(Date.now() - 120000).toISOString() },
-        { id: 4, type: 'CAMPAIGN_COMPLETE', message: 'Campaign "Morning Leads" completed 200 calls', severity: 'info', createdAt: new Date(Date.now() - 180000).toISOString() },
-    ],
-    '/supervisor/calls': [
-        { id: 'c1', caller: '+91-98765-43210', agent: 'Alpha Agent', duration: 142, status: 'active', sentiment: 'positive', mos: 4.3 },
-        { id: 'c2', caller: '+91-87654-32109', agent: 'Beta Agent', duration: 87, status: 'active', sentiment: 'neutral', mos: 4.0 },
-        { id: 'c3', caller: '+91-76543-21098', agent: 'Gamma Agent', duration: 213, status: 'hold', sentiment: 'negative', mos: 3.7 },
-    ],
-    '/agents': [
-        { id: 'a1', name: 'Alpha Agent', status: 'active', language: 'en-IN', calls: 1247, csat: 4.7, model: 'gemini-1.5-pro' },
-        { id: 'a2', name: 'Beta Agent', status: 'active', language: 'hi-IN', calls: 983, csat: 4.5, model: 'gemini-flash' },
-        { id: 'a3', name: 'Gamma Agent', status: 'inactive', language: 'en-IN', calls: 456, csat: 4.2, model: 'gemini-1.5-pro' },
-    ],
-    '/knowledge': [
-        { id: 'k1', name: 'Product FAQ.pdf', status: 'indexed', chunks: 142, updatedAt: new Date().toISOString() },
-        { id: 'k2', name: 'Return Policy.docx', status: 'indexed', chunks: 38, updatedAt: new Date().toISOString() },
-        { id: 'k3', name: 'Shipping Guide.pdf', status: 'processing', chunks: 0, updatedAt: new Date().toISOString() },
-    ],
-    '/analytics/calls': [
-        { id: 'l1', caller: '+91-98765-43210', agent: 'Alpha Agent', duration: 142, status: 'completed', sentiment: 'positive', createdAt: new Date().toISOString() },
-        { id: 'l2', caller: '+91-87654-32109', agent: 'Beta Agent', duration: 87, status: 'completed', sentiment: 'neutral', createdAt: new Date().toISOString() },
-        { id: 'l3', caller: '+91-76543-21098', agent: 'Gamma Agent', duration: 35, status: 'missed', sentiment: 'negative', createdAt: new Date().toISOString() },
-    ],
-    '/analytics/stats': {
-        totalCalls: 14872, avgDuration: 134, csat: 4.5, missedRate: 3.2,
-        topHour: '11:00', sentiment: { positive: 62, neutral: 28, negative: 10 },
-    },
-    '/dialer/campaigns': [
-        { id: 'dc1', name: 'Morning Leads Q1', status: 'running', total: 500, called: 320, answered: 210, agent: 'Alpha Agent', createdAt: new Date().toISOString() },
-        { id: 'dc2', name: 'Re-engagement Feb', status: 'paused', total: 200, called: 95, answered: 68, agent: 'Beta Agent', createdAt: new Date().toISOString() },
-    ],
-    '/followups': [
-        { id: 'f1', caller: '+91-98765-43210', reason: 'Requested callback for billing query', status: 'pending', dueAt: new Date(Date.now() + 86400000).toISOString() },
-        { id: 'f2', caller: '+91-87654-32109', reason: 'Escalated — needs manager call', status: 'in_progress', dueAt: new Date(Date.now() + 3600000).toISOString() },
-    ],
-    '/routing/rules': [
-        { id: 'r1', name: 'VIP Customers', condition: 'caller_tier == VIP', target: 'Alpha Agent', priority: 1, active: true },
-        { id: 'r2', name: 'Hindi Language', condition: 'language == hi', target: 'Beta Agent', priority: 2, active: true },
-    ],
-    '/integrations': [
-        { id: 'crm', name: 'Salesforce CRM', connected: true, icon: '🔵' },
-        { id: 'helpdesk', name: 'Freshdesk', connected: false, icon: '🟢' },
-        { id: 'calendar', name: 'Google Calendar', connected: true, icon: '🔴' },
-    ],
-    '/security/voice-signatures': [
-        { id: 's1', name: 'John Doe', enrolled: true, createdAt: new Date().toISOString() },
-        { id: 's2', name: 'Jane Smith', enrolled: false, createdAt: new Date().toISOString() },
-    ],
-    '/settings/api-keys': [
-        { id: 'key1', name: 'Production Key', prefix: 'cx_prod_****', createdAt: new Date().toISOString() },
-        { id: 'key2', name: 'Staging Key', prefix: 'cx_stg_****', createdAt: new Date().toISOString() },
-    ],
-    '/settings/webhooks': [
-        { id: 'wh1', url: 'https://your-app.com/webhook', events: ['call.ended', 'call.escalated'], active: true },
-    ],
-    '/billing/stats': {
-        planName: 'Enterprise', minutesUsed: 14872, minutesLimit: 50000,
-        costThisMonth: 1247.80, costLastMonth: 1089.40, nextBillingDate: '2026-04-01',
-    },
-};
-
-function getMock(path) {
-    // Strip query strings for matching
-    const cleanPath = path.split('?')[0];
-    // Match exact or prefix
-    for (const key of Object.keys(MOCK)) {
-        if (cleanPath === key || cleanPath.startsWith(key + '/')) {
-            return MOCK[key];
-        }
-    }
-    return [];
-}
+const BASE = 'http://localhost:4000/api';
 
 // ─── Fetch wrapper ───────────────────────────────────────────────────────────
 export async function apiFetch(path, options = {}) {
@@ -98,18 +11,22 @@ export async function apiFetch(path, options = {}) {
             ...options,
             body: options.body && typeof options.body !== 'string' ? JSON.stringify(options.body) : options.body,
         });
-        if (!res.ok) throw new Error(`API error ${res.status}`);
+
+        if (!res.ok) {
+            let errMsg = `API error ${res.status}`;
+            try {
+                const errData = await res.json();
+                if (errData.error) errMsg = errData.error;
+            } catch (e) { /* ignore parse error */ }
+            throw new Error(errMsg);
+        }
+
+        // Return null/empty for 204 No Content
+        if (res.status === 204) return null;
         return res.json();
     } catch (err) {
-        console.warn(`[API] ${path} failed (${err.message}) — using mock data`);
-        const mock = getMock(path);
-        // For mutations (POST/PATCH/DELETE), return a success-like object
-        if (options.method && options.method !== 'GET') {
-            return mock && typeof mock === 'object' && !Array.isArray(mock)
-                ? { ...mock, _mock: true }
-                : { success: true, _mock: true };
-        }
-        return mock;
+        console.error(`[API] ${path} failed:`, err.message);
+        throw err; // Genuine production error throw
     }
 }
 

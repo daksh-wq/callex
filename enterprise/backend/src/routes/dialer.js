@@ -1,7 +1,9 @@
-import { Router } from 'express';
-import { prisma } from '../index.js';
-
-const router = Router();
+const express = require('express');
+const router = express.Router();
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const { wss } = require('../server'); // Assuming wss is exported from server.js
+const fsManager = require('../services/freeswitch'); // Assuming freeswitch.js is in services folder
 
 // GET /api/dialer/campaigns
 router.get('/campaigns', async (req, res) => {
@@ -79,8 +81,10 @@ router.patch('/campaigns/:id/status', async (req, res) => {
     const campaign = await prisma.campaign.update({ where: { id: req.params.id }, data: { status } });
     if (status === 'running') {
         await prisma.systemEvent.create({ data: { type: 'campaign.started', message: `Campaign "${campaign.name}" started`, severity: 'info' } });
-        // Simulate progress
-        simulateCampaignProgress(campaign.id);
+        // Fire-and-forget background execution with concurrency limit
+        const phoneNumbers = JSON.parse(campaign.audience); // Assuming audience is stored as JSON string of phone numbers
+        executeRealCampaign(campaign.id, phoneNumbers, wss)
+            .catch(err => console.error(`[Dialer] Campaign ${campaign.id} error:`, err));
     }
     res.json(campaign);
 });
@@ -91,20 +95,104 @@ router.delete('/campaigns/:id', async (req, res) => {
     res.json({ success: true });
 });
 
-function simulateCampaignProgress(campaignId) {
-    const interval = setInterval(async () => {
-        try {
-            const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
-            if (!campaign || campaign.status !== 'running') { clearInterval(interval); return; }
-            if (campaign.dialedLeads >= campaign.totalLeads) {
-                await prisma.campaign.update({ where: { id: campaignId }, data: { status: 'completed' } });
-                clearInterval(interval); return;
+// --------------------------------------------------------------------------
+// REAL FREESWITCH CAMPAIGN EXECUTION
+// --------------------------------------------------------------------------
+async function executeRealCampaign(campaignId, phoneNumbers, wss) {
+    try {
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: { agent: true }
+        });
+
+        if (!campaign || !campaign.agent) {
+            console.error(`[Dialer] Campaign ${campaignId} or its Agent not found. Cannot originate calls.`);
+            return;
+        }
+
+        const maxConcurrent = campaign.concurrentCalls || 2;
+        console.log(`[Dialer] Starting real campaign ${campaignId} over FreeSWITCH (${maxConcurrent} concurrent)`);
+
+        // We will build a basic async queue to manage concurrency
+        const queue = [...phoneNumbers];
+        let activeCalls = 0;
+
+        // Create an initial empty call slice for WS broadcasting mapping
+        const metrics = {
+            total: phoneNumbers.length,
+            active: 0,
+            completed: 0,
+            failed: 0
+        };
+
+        const broadcastMetrics = () => {
+            if (wss) {
+                wss.clients.forEach(client => {
+                    if (client.readyState === 1 /* WebSocket.OPEN */) {
+                        client.send(JSON.stringify({
+                            type: 'CAMPAIGN_PROGRESS',
+                            data: { campaignId, metrics }
+                        }));
+                    }
+                });
             }
-            const newDialed = Math.min(campaign.dialedLeads + campaign.callsPerSecond, campaign.totalLeads);
-            const newConnected = Math.min(campaign.connectedLeads + Math.floor(campaign.callsPerSecond * 0.65), newDialed);
-            await prisma.campaign.update({ where: { id: campaignId }, data: { dialedLeads: newDialed, connectedLeads: newConnected } });
-        } catch { clearInterval(interval); }
-    }, 2000);
+        };
+
+        return new Promise((resolve) => {
+            const originateNext = async () => {
+                // Stop if paused or completed
+                const currentCampaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+                if (!currentCampaign || currentCampaign.status !== 'active' && currentCampaign.status !== 'running') {
+                    console.log(`[Dialer] Campaign ${campaignId} halted internally.`);
+                    resolve();
+                    return;
+                }
+
+                // Check if queue empty
+                if (queue.length === 0) {
+                    if (activeCalls === 0) {
+                        // All done entirely
+                        await prisma.campaign.update({
+                            where: { id: campaignId },
+                            data: { status: 'completed' }
+                        });
+                        console.log(`[Dialer] Campaign ${campaignId} fully complete.`);
+                        resolve();
+                    }
+                    return; // No more numbers to pop right now, waiting for activeCalls to finish
+                }
+
+                const phone = queue.shift();
+                activeCalls++;
+                metrics.active++;
+                broadcastMetrics();
+
+                try {
+                    const callUuidStr = await fsManager.originateCall(phone, campaign, campaign.agent);
+                    console.log(`[Dialer] Sent originate command for ${phone} - Job UUID: ${callUuidStr || 'unknown'}`);
+                    metrics.completed++;
+                } catch (error) {
+                    console.error(`[Dialer] Failed to originate ${phone}:`, error.message);
+                    metrics.failed++;
+                } finally {
+                    activeCalls--;
+                    metrics.active--;
+                    broadcastMetrics();
+
+                    // We wait 2 seconds between popping from queue to not swamp FreeSWITCH immediately
+                    setTimeout(originateNext, 2000);
+                }
+            };
+
+            // Fill initial concurrency slots
+            for (let i = 0; i < maxConcurrent; i++) {
+                originateNext();
+            }
+        });
+
+    } catch (error) {
+        console.error(`[Dialer] Critical execution error:`, error);
+    }
 }
 
-export default router;
+module.exports = router;

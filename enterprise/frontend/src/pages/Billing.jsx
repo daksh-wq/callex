@@ -23,19 +23,13 @@ export default function Billing() {
         setLoading(true);
         try {
             const data = await api.billingStats();
-
-            // If DB is totally empty, mock so UI is visible
-            if (!data || data.telecomMins === 0) {
-                setStats({
-                    month: new Date().toISOString().substring(0, 7),
-                    telecomMins: 45290,
-                    llmTokens: 8405000,
-                    sttMinutes: 44000,
-                    totalCostUsd: 2345.50
-                });
-            } else {
-                setStats(data);
-            }
+            setStats(data || {
+                month: new Date().toISOString().substring(0, 7),
+                telecomMins: 0,
+                llmTokens: 0,
+                sttMinutes: 0,
+                totalCostUsd: 0
+            });
         } catch (err) {
             console.error(err);
         } finally {

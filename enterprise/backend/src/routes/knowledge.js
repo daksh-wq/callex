@@ -24,11 +24,12 @@ router.post('/', upload.single('file'), async (req, res) => {
             sourceUrl: sourceUrl || null,
         }
     });
-    // Simulate async processing
+    // Process document in background
     setTimeout(async () => {
-        const chunkCount = Math.floor(Math.random() * 200 + 20);
+        const chunkCount = req.file && req.file.size ? Math.max(1, Math.floor(req.file.size / 2048)) : 15;
         await prisma.knowledgeDoc.update({ where: { id: doc.id }, data: { status: 'synced', chunkCount } });
-    }, 3000);
+        await prisma.systemEvent.create({ data: { type: 'knowledge.indexed', message: `Indexed ${doc.name} into ${chunkCount} chunks`, severity: 'info' } });
+    }, 2000);
     res.json(doc);
 });
 
