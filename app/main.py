@@ -81,19 +81,6 @@ print(f"[CONFIG] Voice: speed={VOICE_SPEED}x, stability={VOICE_STABILITY}")
 # History Management
 MAX_HISTORY_LENGTH = 12
 
-# Silence Follow-up Configuration
-SILENCE_FOLLOWUP_DELAY = 8.0  # Seconds of no voice before prompting
-SILENCE_AFTER_OPENER_DELAY = 8.0  # Longer wait after opener (customer needs time)
-MAX_SILENCE_FOLLOWUPS = 3     # Max follow-ups before hanging up
-SILENCE_FOLLOWUP_PHRASES = [
-    "सर, आप कॉल पे हैं? मेरी आवाज़ आ रही है?",
-    "हेलो सर, आप सुन रहे हैं?",
-    "सर, क्या आप अभी बात कर सकते हैं?",
-    "सर, मैं प्रिया बोल रही हूँ डिश टीवी से, आप कॉल पे हैं?",
-    "हेलो? सर आपकी आवाज़ नहीं आ रही है।",
-]
-SILENCE_HANGUP_TEXT = "सर, लगता है आप अभी व्यस्त हैं। मैं बाद में कॉल करती हूँ, नमस्ते।"
-
 # Retry Configuration
 MAX_RETRIES = 2
 RETRY_DELAY = 0.3
@@ -775,10 +762,6 @@ async def ws(ws: WebSocket):
     task_lock = asyncio.Lock()
     first_line_complete = False
     bot_speaking = False
-    silence_followup_count = 0
-    silence_timer: asyncio.Task | None = None
-    last_bot_speak_time = 0.0
-    last_any_voice_time = 0.0  # Tracks ANY voice detection from customer
 
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
@@ -798,79 +781,8 @@ async def ws(ws: WebSocket):
     if not classifier:
         print("[Noise Filter] ⚠️ YAMNet not available, noise classification disabled")
 
-    async def cancel_silence_timer():
-        """Cancel any pending silence follow-up timer"""
-        nonlocal silence_timer
-        if silence_timer and not silence_timer.done():
-            silence_timer.cancel()
-            try:
-                await asyncio.wait_for(silence_timer, timeout=0.2)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        silence_timer = None
-
-    async def silence_followup(delay_override: float = None):
-        """After delay, prompt customer if they haven't spoken"""
-        nonlocal silence_followup_count, ws_alive, history
-        try:
-            delay = delay_override or SILENCE_FOLLOWUP_DELAY
-            await asyncio.sleep(delay)
-            if not ws_alive or speaking:
-                return
-            
-            # Check if customer had ANY voice activity during the wait
-            if last_any_voice_time > 0 and (time.time() - last_any_voice_time) < delay:
-                # Customer was active recently, don't interrupt — restart timer
-                start_silence_timer(delay_override=delay)
-                return
-
-            silence_followup_count += 1
-            print(f"[SILENCE] No response for {delay}s (attempt {silence_followup_count}/{MAX_SILENCE_FOLLOWUPS})")
-
-            if silence_followup_count >= MAX_SILENCE_FOLLOWUPS:
-                # Too many unanswered — hang up
-                print("[SILENCE] Max follow-ups reached, hanging up")
-                hangup_text = SILENCE_HANGUP_TEXT
-                history.append({"role": "model", "parts": [{"text": hangup_text}]})
-                if call_uuid:
-                    tracker.log_message(call_uuid, "model", hangup_text)
-                async for audio_chunk in tts_stream_generate(client, hangup_text):
-                    if not ws_alive: break
-                    if not await send_audio_safe(audio_chunk): break
-                await asyncio.sleep(0.5)
-                if call_uuid:
-                    await freeswitch_hangup(call_uuid)
-                if ws_alive:
-                    await ws.send_json({"type": "hangup"})
-                    ws_alive = False
-            else:
-                # Pick a follow-up phrase (rotate through list)
-                phrase = SILENCE_FOLLOWUP_PHRASES[(silence_followup_count - 1) % len(SILENCE_FOLLOWUP_PHRASES)]
-                print(f"[SILENCE] Prompting: '{phrase}'")
-                history.append({"role": "model", "parts": [{"text": phrase}]})
-                if call_uuid:
-                    tracker.log_message(call_uuid, "model", phrase)
-                async for audio_chunk in tts_stream_generate(client, phrase):
-                    if not ws_alive: break
-                    if not await send_audio_safe(audio_chunk): break
-                # Start another silence timer after this prompt, wait 8 seconds for response
-                start_silence_timer(delay_override=SILENCE_FOLLOWUP_DELAY)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"[SILENCE ERROR] {e}")
-
-    def start_silence_timer(delay_override: float = None):
-        """Start a silence follow-up timer (cancels any existing one)"""
-        nonlocal silence_timer
-        if silence_timer and not silence_timer.done():
-            silence_timer.cancel()
-        if ws_alive and first_line_complete:
-            silence_timer = asyncio.create_task(silence_followup(delay_override))
-
     async def cancel_current():
         nonlocal current_task, bot_speaking
-        await cancel_silence_timer()
         async with task_lock:
             if current_task and not current_task.done():
                 print("[SYSTEM] Cancelling previous task (barge-in)")
@@ -934,9 +846,6 @@ async def ws(ws: WebSocket):
                     if not await send_audio_safe(audio_chunk):
                         break
                 bot_speaking = False
-                # Start silence timer — if customer doesn't respond, bot will prompt
-                if not should_hangup:
-                    start_silence_timer()
                 if should_hangup:
                     print("[SYSTEM] Hanging up call as per script logic.")
                     if ws_alive:
@@ -1007,8 +916,6 @@ async def ws(ws: WebSocket):
                 if silero_vad:
                     silero_vad.finalize_noise_profile()
                 print("[SYSTEM] Opener playback complete - barge-in now enabled")
-                # Start silence timer after opener with longer delay
-                start_silence_timer(delay_override=SILENCE_AFTER_OPENER_DELAY)
             except Exception as e:
                 print(f"[SYSTEM] Timer error: {e}")
 
@@ -1041,7 +948,6 @@ async def ws(ws: WebSocket):
                     now = time.time()
 
                     if speaking and now - last_voice > SILENCE_TIMEOUT:
-                        last_any_voice_time = now  # Update while speaking
                         speaking = False
                         duration = len(buffer) / SAMPLE_RATE
                         if duration >= MIN_SPEECH_DURATION:
@@ -1085,7 +991,6 @@ async def ws(ws: WebSocket):
                         continue
 
                     if audio_db > INTERRUPTION_THRESHOLD_DB:
-                        last_any_voice_time = now  # Always track when the customer makes any sound
                         if not speaking:
                             if not first_line_complete:
                                 continue
@@ -1099,15 +1004,11 @@ async def ws(ws: WebSocket):
                                     continue
                             vad_status = f"Silero: {vad_confidence:.2f}" if use_silero and silero_vad else "Basic"
                             print(f"\n[VAD] ✅ Speech started (dB: {audio_db:.1f}, {vad_status})")
-                            # Customer spoke — cancel silence timer & reset count
-                            await cancel_silence_timer()
-                            silence_followup_count = 0
                             await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                         speaking = True
                         last_voice = now
-                        last_any_voice_time = now  # Track exactly when the customer last made a sound
                         await cancel_current()
 
                 elif "text" in msg:
