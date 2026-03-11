@@ -5,6 +5,10 @@ import { WebSocketServer } from 'ws';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
+import dns from 'dns';
+
+// Fix for Node.js 18+ native fetch ENOTFOUND errors on macOS when resolving certain domains like api.elevenlabs.io over IPv6
+dns.setDefaultResultOrder('ipv4first');
 
 // Routes
 import dashboardRouter from './routes/dashboard.js';
@@ -35,7 +39,7 @@ export const prisma = new PrismaClient();
 
 const app = express();
 const httpServer = createServer(app);
-const wss = new WebSocketServer({ server: httpServer });
+export const wss = new WebSocketServer({ server: httpServer });
 
 // Middleware
 // Middleware

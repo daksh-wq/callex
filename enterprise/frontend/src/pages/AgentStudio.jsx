@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { useStore } from '../store/index.js';
-import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive } from 'lucide-react';
+import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive, X, Send, Loader2 } from 'lucide-react';
 
 // Callex AI Models
 const CALLEX_MODELS = [
@@ -23,6 +23,7 @@ export default function AgentStudio() {
     const [tab, setTab] = useState('identity');
     const [promptVersions, setPromptVersions] = useState([]);
     const [newAgent, setNewAgent] = useState(false);
+    const [showSimulation, setShowSimulation] = useState(false);
     const { showToast } = useStore();
 
     const fetchAgents = () => api.agents().then(setAgents);
@@ -118,7 +119,8 @@ export default function AgentStudio() {
                                 </select>
                             </div>
                             <div className="flex gap-2">
-                                <button className="btn-primary py-2 text-sm" onClick={saveAgent}><Save size={14} /> Save Changes</button>
+                                {selected && <button className="btn-secondary py-2 text-blue-600 border-blue-100 hover:bg-blue-50" onClick={() => setShowSimulation(true)}><PhoneCall size={14} /> Simulate</button>}
+                                <button className="btn-primary py-2 text-sm" onClick={saveAgent}><Save size={14} /> Save</button>
                                 {selected && <button className="btn-secondary py-2 text-red-600 border-red-100 hover:bg-red-50" onClick={() => deleteAgent(selected.id)}><Trash2 size={14} /></button>}
                             </div>
                         </div>
@@ -210,9 +212,69 @@ export default function AgentStudio() {
                                                 <h3 className="font-bold text-gray-800 border-b border-gray-50 pb-2 flex items-center gap-2"><Volume2 size={16} className="text-blue-500" /> Voice Synthesis (TTS)</h3>
                                                 <div>
                                                     <label className="text-xs font-semibold text-gray-500 mb-1 block">Voice Persona</label>
-                                                    <select className="input-field text-sm" value={form.voice || 'alloy'} onChange={e => setForm(f => ({ ...f, voice: e.target.value }))}>
-                                                        <option value="alloy">Alloy (Neutral, professional)</option><option value="nova">Nova (Warm, female)</option><option value="shimmer">Shimmer (Clear, female)</option><option value="echo">Echo (Deep, male)</option><option value="onyx">Onyx (Authoritative, male)</option><option value="fable">Fable (Expressive, neutral)</option>
-                                                    </select>
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <select className="input-field text-sm flex-1" value={form.voice || 'MF4J4IDTRo0AxOO4dpFR'} onChange={e => setForm(f => ({ ...f, voice: e.target.value }))}>
+                                                                <option value="MF4J4IDTRo0AxOO4dpFR">Devi (Clear Hindi)</option>
+                                                                <option value="1qEiC6qsybMkmnNdVMbK">Monika (Modulated, Professional)</option>
+                                                                <option value="qDuRKMlYmrm8trt5QyBn">Taksh (Powerful & Commanding)</option>
+                                                                <option value="LQ2auZHpAQ9h4azztqMT">Parveen (Confident Male)</option>
+                                                                <option value="s6cZdgI3j07hf4frz4Q8">Arvi (Desi Conversational)</option>
+                                                                {form.clonedVoiceId && <option value={form.clonedVoiceId}>Custom Cloned Voice ({form.clonedVoiceId})</option>}
+                                                            </select>
+                                                            <button type="button" className={`btn-secondary py-2 px-3 flex items-center gap-2 ${form.previewLoading ? 'opacity-50 cursor-not-allowed' : ''}`} disabled={form.previewLoading} title="Play 5s Hindi Preview" onClick={async () => {
+                                                                try {
+                                                                    setForm(f => ({ ...f, previewLoading: true }));
+                                                                    // Use the new dynamic streaming endpoint based on current prosody configurations
+                                                                    const res = await fetch('http://localhost:4000/api/agents/tts-preview', {
+                                                                        method: 'POST',
+                                                                        headers: { 'Content-Type': 'application/json' },
+                                                                        body: JSON.stringify({
+                                                                            voiceId: form.voice || 'MF4J4IDTRo0AxOO4dpFR',
+                                                                            prosodyRate: form.prosodyRate ?? 1.0,
+                                                                            prosodyPitch: form.prosodyPitch ?? 1.0
+                                                                        })
+                                                                    });
+
+                                                                    if (!res.ok) throw new Error('API failed');
+                                                                    const blob = await res.blob();
+                                                                    const url = URL.createObjectURL(blob);
+                                                                    const audio = new Audio(url);
+                                                                    audio.onended = () => URL.revokeObjectURL(url);
+                                                                    await audio.play();
+                                                                } catch (e) {
+                                                                    console.error("Audio play failed:", e);
+                                                                    showToast("Failed to fetch dynamic preview", "error");
+                                                                } finally {
+                                                                    setForm(f => ({ ...f, previewLoading: false }));
+                                                                }
+                                                            }}>
+                                                                <Volume2 size={14} className={form.previewLoading ? "text-gray-400 animate-pulse" : "text-orange-500"} />
+                                                                <span className="text-xs">{form.previewLoading ? "Loading..." : "Preview"}</span>
+                                                            </button>
+                                                        </div>
+                                                        <label className={`btn-primary py-2 px-3 flex items-center justify-center gap-2 text-xs cursor-pointer w-full transition-all ${form.cloningStatus ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                            <Mic size={14} className={form.cloningStatus ? 'animate-pulse' : ''} />
+                                                            <span>{form.cloningStatus || "🎙️ Train Own Voice (Upload MP3/WAV)"}</span>
+                                                            <input type="file" accept="audio/*" className="hidden" onChange={async (e) => {
+                                                                const file = e.target.files[0];
+                                                                if (!file) return;
+                                                                setForm(f => ({ ...f, cloningStatus: "Uploading & Cloning... Please wait." }));
+                                                                const formData = new FormData();
+                                                                formData.append('audio', file);
+                                                                try {
+                                                                    const res = await api.cloneVoice(formData);
+                                                                    setForm(f => ({ ...f, voice: res.voiceId, clonedVoiceId: res.voiceId, cloningStatus: null }));
+                                                                    showToast("Voice cloned and applied successfully!", "success");
+                                                                } catch (err) {
+                                                                    console.error(err);
+                                                                    showToast("Failed to clone voice", "error");
+                                                                    setForm(f => ({ ...f, cloningStatus: null }));
+                                                                }
+                                                                e.target.value = null; // reset input
+                                                            }} />
+                                                        </label>
+                                                    </div>
                                                 </div>
                                                 <div>
                                                     <label className="text-xs font-semibold text-gray-500 mb-1 block">Speaking Style</label>
@@ -373,6 +435,247 @@ export default function AgentStudio() {
                         <div className="text-center"><Bot size={48} className="mx-auto mb-3 opacity-20 text-orange-500" /><p className="text-sm font-semibold text-gray-400">Select an agent or create a new one to unlock advanced settings</p></div>
                     </div>
                 )}
+            </div>
+            {showSimulation && selected && <LiveSimulationModal agent={form} onClose={() => setShowSimulation(false)} />}
+        </div>
+    );
+}
+
+function LiveSimulationModal({ agent, onClose }) {
+    const [history, setHistory] = useState([]);
+    const historyRef = useRef([]);
+    const [callStatus, setCallStatus] = useState('connecting'); // connecting, listening, ai-speaking, error
+    const [duration, setDuration] = useState(0);
+    const recognitionRef = useRef(null);
+    const speakerActiveRef = useRef(false);
+    const isModalOpenRef = useRef(true);
+    const audioRef = useRef(null);
+    const activeReqIdRef = useRef(0);
+
+
+    // Call Timer
+    useEffect(() => {
+        if (callStatus === 'connecting' || callStatus === 'error') return;
+        const interval = setInterval(() => setDuration(d => d + 1), 1000);
+        return () => clearInterval(interval);
+    }, [callStatus]);
+
+    const formatTime = (secs) => `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
+
+    const triggerListen = () => {
+        if (!isModalOpenRef.current) return;
+        try {
+            recognitionRef.current?.start();
+            if (!speakerActiveRef.current) {
+                setCallStatus('listening');
+            }
+        } catch (e) { /* already started */ }
+    }
+
+    // Initialize Web Speech API
+    useEffect(() => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            setCallStatus('error');
+            return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true; // Stay on for continuous interruption
+        recognition.interimResults = true; // Allow instant barge-in detection
+        recognition.lang = agent.language || 'en-US';
+
+        let finalTranscript = '';
+
+        recognition.onresult = async (e) => {
+            let interimTranscript = '';
+            for (let i = e.resultIndex; i < e.results.length; ++i) {
+                if (e.results[i].isFinal) {
+                    finalTranscript += e.results[i][0].transcript + ' ';
+                } else {
+                    interimTranscript += e.results[i][0].transcript;
+                }
+            }
+
+            const currentText = (finalTranscript + interimTranscript).trim();
+            const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
+
+            // Immediate barge-in detection: Stop AI audio instantly only if actual speech (2+ words) is detected
+            if (wordCount >= 2 && speakerActiveRef.current) {
+                if (audioRef.current) {
+                    audioRef.current.pause();
+                    audioRef.current = null;
+                }
+                speakerActiveRef.current = false;
+                setCallStatus('listening');
+            }
+
+            if (e.results[e.results.length - 1].isFinal) {
+                const text = finalTranscript.trim();
+                finalTranscript = ''; // Reset for next utterance
+                if (text.length >= 2) {
+                    recognition.stop(); // Pause strictly to process turn
+                    await processSpeech(text);
+                }
+            }
+        };
+
+        recognition.onerror = (e) => {
+            if (e.error === 'no-speech' || e.error === 'aborted') {
+                setTimeout(triggerListen, 100);
+            } else {
+                console.error("Speech reco error:", e);
+                setCallStatus('error');
+            }
+        };
+
+        recognition.onend = () => {
+            setTimeout(triggerListen, 100);
+        };
+
+        recognitionRef.current = recognition;
+
+        // Simulated ring delay before outbound greeting starts
+        setTimeout(() => {
+            processSpeech(''); // Empty string triggers outbound greeting
+        }, 1500);
+
+        return () => {
+            isModalOpenRef.current = false;
+            recognitionRef.current?.stop();
+            if (audioRef.current) {
+                audioRef.current.pause();
+            }
+        };
+    }, []);
+
+    const processSpeech = async (userText) => {
+        const reqId = ++activeReqIdRef.current;
+
+        // Barge-in: if AI was speaking, interrupt it
+        if (speakerActiveRef.current && audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current = null;
+        }
+
+        speakerActiveRef.current = true;
+        setCallStatus('ai-speaking');
+
+        let currentHistory = [...historyRef.current];
+        if (userText) {
+            currentHistory.push({ role: 'user', text: userText });
+            historyRef.current = currentHistory;
+            setHistory([...currentHistory]); // Track context silently
+        }
+
+        try {
+            const res = await api.agentChat({
+                agentId: agent.id,
+                history: currentHistory,
+                userText: userText,
+                agentOverride: agent // Send the live, unsaved form state to override the DB!
+            });
+
+            if (activeReqIdRef.current !== reqId) return; // Stale request due to barge-in
+
+            if (!res.ok) throw new Error("API Failed");
+
+            const aiTextHeader = res.headers.get('x-agent-text');
+            const aiText = aiTextHeader ? decodeURIComponent(aiTextHeader) : "Audio generated.";
+
+            // Save AI context silently
+            historyRef.current = [...historyRef.current, { role: 'model', text: aiText }];
+            setHistory([...historyRef.current]);
+
+            // Play audio
+            const blob = await res.blob();
+            if (activeReqIdRef.current !== reqId) return; // Stale request during download
+
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audioRef.current = audio;
+
+            // Re-enable microphone WHIlE AI is speaking to allow for next barge-in
+            triggerListen();
+
+            await new Promise((resolve, reject) => {
+                audio.onended = () => {
+                    URL.revokeObjectURL(url);
+                    resolve();
+                };
+                audio.onerror = reject;
+                audio.play();
+            });
+
+        } catch (e) {
+            if (activeReqIdRef.current !== reqId) return;
+            console.error(e);
+            setCallStatus('error');
+        } finally {
+            if (activeReqIdRef.current === reqId) {
+                speakerActiveRef.current = false;
+                if (isModalOpenRef.current) {
+                    setCallStatus('listening');
+                    triggerListen();
+                }
+            }
+        }
+    };
+
+    const handleEndCall = () => {
+        isModalOpenRef.current = false;
+        recognitionRef.current?.abort();
+        if (audioRef.current) audioRef.current.pause();
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-md z-[100] flex items-center justify-center animate-fade-in p-4">
+            <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-sm overflow-hidden flex flex-col items-center py-12 px-6 relative border-4 border-gray-100">
+
+                {/* Status Indicator */}
+                <div className="absolute top-6 left-0 right-0 flex justify-center text-gray-400 text-xs tracking-widest uppercase font-semibold">
+                    {callStatus === 'connecting' ? 'Connecting...' : callStatus === 'error' ? 'Call Failed' : 'Active Call'}
+                </div>
+
+                {/* Avatar */}
+                <div className="relative mt-8 mb-6">
+                    {callStatus === 'ai-speaking' && (
+                        <div className="absolute inset-x-0 -inset-y-0.5 bg-orange-400/30 rounded-full blur-xl animate-pulse"></div>
+                    )}
+                    <div className={`w-32 h-32 rounded-full flex items-center justify-center relative z-10 shadow-lg transition-colors duration-500 ${callStatus === 'ai-speaking' ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                        <Bot size={64} />
+                    </div>
+                </div>
+
+                {/* Caller Info */}
+                <div className="text-center space-y-2 mb-12">
+                    <h2 className="text-3xl font-bold text-gray-900 max-w-[280px] truncate">{agent.name}</h2>
+                    <div className="text-lg font-mono font-medium text-gray-500">
+                        {callStatus === 'connecting' ? '...' : formatTime(duration)}
+                    </div>
+                </div>
+
+                {/* Action State text */}
+                <div className="h-8 mb-8 flex items-center justify-center">
+                    {callStatus === 'listening' ? (
+                        <div className="flex items-center gap-2 text-green-600 bg-green-50 px-4 py-1.5 rounded-full text-sm font-semibold animate-pulse">
+                            <Mic size={16} /> Listening...
+                        </div>
+                    ) : callStatus === 'ai-speaking' ? (
+                        <div className="flex items-center gap-2 text-orange-600 bg-orange-50 px-4 py-1.5 rounded-full text-sm font-semibold">
+                            <Volume2 size={16} className="animate-pulse" /> Agent is speaking...
+                        </div>
+                    ) : null}
+                </div>
+
+                {/* End Call Button */}
+                <button
+                    onClick={handleEndCall}
+                    className="w-20 h-20 rounded-full bg-red-500 hover:bg-red-600 shadow-xl shadow-red-500/30 flex items-center justify-center text-white transition-all hover:scale-105 active:scale-95"
+                >
+                    <PhoneCall size={32} className="rotate-[135deg]" />
+                </button>
             </div>
         </div>
     );

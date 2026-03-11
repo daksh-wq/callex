@@ -65,6 +65,8 @@ export const api = {
     agentPromptVersions: (id) => apiFetch(`/agents/${id}/prompt-versions`),
     savePromptVersion: (id, data) => apiFetch(`/agents/${id}/prompt-version`, { method: 'POST', body: data }),
     setAgentStatus: (id, status) => apiFetch(`/agents/${id}/status`, { method: 'PATCH', body: { status } }),
+    ttsPreview: (data) => apiFetch('/agents/tts-preview', { method: 'POST', body: data }),
+    cloneVoice: (formData) => fetch(`${BASE}/agents/clone-voice`, { method: 'POST', body: formData }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }),
 
     // Knowledge
     docs: () => apiFetch('/knowledge'),
@@ -75,6 +77,7 @@ export const api = {
     // Simulation
     runBatch: (data) => apiFetch('/simulation/batch', { method: 'POST', body: data }),
     runAdversarial: (data) => apiFetch('/simulation/adversarial', { method: 'POST', body: data }),
+    agentChat: (data) => fetch(`${BASE}/simulation/agent-chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
 
     // Dialer
     campaigns: () => apiFetch('/dialer/campaigns'),

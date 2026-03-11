@@ -38,25 +38,90 @@ router.get('/calls/:id', async (req, res) => {
     res.json(call);
 });
 
-// POST /api/analytics/calls/:id/acw - trigger LLM summarization (mocked)
+// POST /api/analytics/calls/:id/acw - trigger LLM summarization (REAL Gemini 2.5 Flash implementation)
+import { GoogleGenAI } from '@google/genai';
+
 router.post('/calls/:id/acw', async (req, res) => {
-    const call = await prisma.call.findUnique({ where: { id: req.params.id } });
-    if (!call) return res.status(404).json({ error: 'Call not found' });
+    try {
+        const call = await prisma.call.findUnique({ where: { id: req.params.id } });
+        if (!call) return res.status(404).json({ error: 'Call not found' });
 
-    const summary = `Executive Summary: Call with ${call.phoneNumber} lasted ${call.duration || 'N/A'}s. Customer sentiment: ${call.sentiment}. Agent handled the query professionally.`;
-    const structuredData = JSON.stringify({
-        intent: 'recharge_inquiry',
-        amount: '₹200',
-        agreed: call.sentiment === 'positive',
-        followUpRequired: call.sentiment === 'angry',
-    });
-    const redacted = (call.transcript || '').replace(/\d{10,}/g, '[REDACTED]').replace(/\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}/g, '****-****-****-****');
+        const rawTranscript = call.transcript || 'No transcript available.';
 
-    const updated = await prisma.call.update({
-        where: { id: req.params.id },
-        data: { summary, structuredData, redactedTranscript: redacted }
-    });
-    res.json(updated);
+        // Strip PII (Basic regex redaction)
+        const redactedMsg = rawTranscript
+            .replace(/\b\d{10,}\b/g, '[REDACTED PHONE]')
+            .replace(/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, '****-****-****-****');
+
+        // Check if API key is provided
+        if (!process.env.GEMINI_API_KEY) {
+            console.warn('[ACW] GEMINI_API_KEY missing - falling back to basic summary');
+            return res.json(await prisma.call.update({
+                where: { id: req.params.id },
+                data: {
+                    summary: `System Auto-Summary: Call with ${call.phoneNumber} lasted ${call.duration}s.`,
+                    redactedTranscript: redactedMsg
+                }
+            }));
+        }
+
+        // Initialize Gemini
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+        const prompt = `
+Analyze this call transcript between an AI agent and a customer.
+Transcript:
+---
+${redactedMsg}
+---
+
+Return ONLY raw strict JSON containing:
+1. "summary": A concise 2-sentence executive summary.
+2. "intent": The primary reason for the call (e.g. "recharge_inquiry", "objection", "pricing").
+3. "agreed": boolean (true if customer agreed to the main goal).
+4. "followUpRequired": boolean.
+`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                systemInstruction: "You are an expert Q&A Call Center Analyst.",
+                temperature: 0.2
+            }
+        });
+
+        // Clean JSON formatting
+        let jsonText = response.text || "{}";
+        jsonText = jsonText.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+        let structured = {};
+        try {
+            structured = JSON.parse(jsonText);
+        } catch (e) {
+            console.warn("[ACW] Failed to parse JSON from AI, using raw text", jsonText);
+            structured = { summary: jsonText.substring(0, 200) };
+        }
+
+        // Update Database
+        const updated = await prisma.call.update({
+            where: { id: req.params.id },
+            data: {
+                summary: structured.summary || 'Summary unavailable.',
+                structuredData: JSON.stringify({
+                    intent: structured.intent || 'unknown',
+                    agreed: structured.agreed || false,
+                    followUpRequired: structured.followUpRequired || false
+                }),
+                redactedTranscript: redactedMsg
+            }
+        });
+
+        res.json(updated);
+    } catch (err) {
+        console.error('[ACW Error]', err);
+        res.status(500).json({ error: 'AI Summarization failed' });
+    }
 });
 
 // GET /api/analytics/stats - aggregate stats

@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { prisma } from '../index.js';
+import multer from 'multer';
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/agents
 router.get('/', async (req, res) => {
@@ -122,6 +124,102 @@ router.patch('/:id/status', async (req, res) => {
     const { status } = req.body;
     const agent = await prisma.agent.update({ where: { id: req.params.id }, data: { status } });
     res.json(agent);
+});
+
+// POST /api/agents/tts-preview
+router.post('/tts-preview', async (req, res) => {
+    try {
+        const { voiceId, prosodyRate, prosodyPitch } = req.body;
+        if (!voiceId) return res.status(400).json({ error: 'Voice ID required' });
+
+        let stability = 0.5;
+        let similarity = 0.5;
+
+        // Map prosody rate/pitch conceptually to stability/similarity for ElevenLabs
+        // High speed = lower stability, High pitch = lower stability
+        if (prosodyRate > 1.2 || prosodyPitch > 1.2) stability = 0.3;
+        if (prosodyRate < 0.8 || prosodyPitch < 0.8) stability = 0.8;
+
+        // Fallback for known OpenAI legacy voice IDs
+        const legacyVoiceMap = {
+            'alloy': 'MF4J4IDTRo0AxOO4dpFR',
+            'echo': '1qEiC6qsybMkmnNdVMbK',
+            'fable': 'qDuRKMlYmrm8trt5QyBn',
+            'onyx': 'LQ2auZHpAQ9h4azztqMT',
+            'nova': 's6cZdgI3j07hf4frz4Q8',
+            'shimmer': 'MF4J4IDTRo0AxOO4dpFR'
+        };
+        const resolvedVoiceId = legacyVoiceMap[voiceId] || voiceId;
+
+        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${resolvedVoiceId}/stream`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'audio/mpeg',
+                'Content-Type': 'application/json',
+                'xi-api-key': process.env.ELEVENLABS_API_KEY || process.env.GENARTML_SECRET_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a'
+            },
+            body: JSON.stringify({
+                text: "नमस्ते, मैं Callex हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
+                model_id: "eleven_multilingual_v2",
+                voice_settings: {
+                    stability: stability,
+                    similarity_boost: similarity
+                }
+            })
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`ElevenLabs API Error: ${response.status} ${errText}`);
+        }
+
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        // Node 18+ native fetch body is a Web ReadableStream
+        for await (const chunk of response.body) {
+            res.write(chunk);
+        }
+        res.end();
+    } catch (e) {
+        console.error("TTS Preview Error:", e);
+        res.status(500).json({ error: 'Failed to generate TTS preview' });
+    }
+});
+
+// POST /api/agents/clone-voice
+router.post('/clone-voice', upload.single('audio'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
+
+        const formData = new FormData();
+        formData.append('name', req.body.name || 'Cloned Dashboard Voice');
+        formData.append('description', 'Instant Voice Clone created via Agent Studio');
+
+        // Convert the buffer to a Blob for native Fetch API
+        const audioBlob = new Blob([req.file.buffer], { type: req.file.mimetype });
+        formData.append('files', audioBlob, req.file.originalname || 'clone.mp3');
+
+        const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
+            method: 'POST',
+            headers: {
+                'xi-api-key': process.env.ELEVENLABS_API_KEY || process.env.GENARTML_SECRET_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a'
+                // Note: Do not set Content-Type header with FormData, fetch sets the boundary automatically
+            },
+            body: formData
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`ElevenLabs API Error: ${response.status} ${errText}`);
+        }
+
+        const data = await response.json();
+        res.json({ voiceId: data.voice_id });
+    } catch (e) {
+        console.error("Voice Cloning Error:", e);
+        res.status(500).json({ error: 'Failed to clone voice' });
+    }
 });
 
 export default router;
