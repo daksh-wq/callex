@@ -98,8 +98,21 @@ ESL_HOST = "127.0.0.1"
 ESL_PORT = 8021
 ESL_PASSWORD = "ClueCon"
 
-# AWS S3 Configuration (loaded from config which handles .env securely)
-from app.core.config import AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_REGION, AWS_BUCKET_NAME
+# Firebase Configuration (loaded from config which handles .env securely)
+from app.core.config import FIREBASE_CREDENTIALS_PATH, FIREBASE_STORAGE_BUCKET
+import firebase_admin
+from firebase_admin import credentials, storage
+
+# Initialize Firebase Admin SDK
+try:
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': FIREBASE_STORAGE_BUCKET
+        })
+        print(f"[FIREBASE] Initialized with bucket: {FIREBASE_STORAGE_BUCKET}")
+except Exception as e:
+    print(f"[FIREBASE ERROR] Failed to initialize: {e}")
 
 # ACTIVE_SCRIPT_ID is no longer used — agent_id from FreeSWITCH determines the agent
 
@@ -155,29 +168,25 @@ async def freeswitch_command(cmd: str):
         return None
 
 
-def upload_to_s3(file_path: str, object_name: str = None) -> Optional[str]:
-    """Upload a file to S3 and return the public URL"""
+def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]:
+    """Upload a file to Firebase Storage and return the public URL"""
     if object_name is None:
         object_name = os.path.basename(file_path)
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_KEY,
-            region_name=AWS_REGION
-        )
-        print(f"[S3] Uploading {object_name}...")
-        s3_client.upload_file(
-            file_path,
-            AWS_BUCKET_NAME,
-            object_name,
-            ExtraArgs={'ContentType': 'audio/wav'}
-        )
-        url = f"https://{AWS_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{object_name}"
-        print(f"[S3] Upload Successful: {url}")
+        print(f"[FIREBASE] Uploading {object_name}...")
+        bucket = storage.bucket()
+        blob = bucket.blob(f"recordings/{object_name}")
+        
+        # Upload the file
+        blob.upload_from_filename(file_path, content_type='audio/wav')
+        
+        # Make the file publicly accessible for the dashboard audio player
+        blob.make_public()
+        url = blob.public_url
+        print(f"[FIREBASE] Upload Successful: {url}")
         return url
     except Exception as e:
-        print(f"[S3 Error] Upload failed: {e}")
+        print(f"[FIREBASE Error] Upload failed: {e}")
         return None
 
 
@@ -1152,12 +1161,12 @@ async def ws(ws: WebSocket):
             if recording_filepath and os.path.exists(recording_filepath):
                 try:
                     print(f"[LOCAL RECORDING] File ready: {recording_filepath}")
-                    s3_url = upload_to_s3(recording_filepath)
-                    if s3_url:
-                        final_path = s3_url
+                    firebase_url = upload_to_firebase(recording_filepath)
+                    if firebase_url:
+                        final_path = firebase_url
                     else:
                         final_path = os.path.abspath(recording_filepath)
-                        print(f"[LOCAL RECORDING] ⚠️ S3 upload failed, using local path")
+                        print(f"[LOCAL RECORDING] ⚠️ Firebase upload failed, using local path")
                 except Exception as rec_e:
                     print(f"[LOCAL RECORDING ERROR] {rec_e}")
 

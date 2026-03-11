@@ -34,14 +34,12 @@ API_PREFIX = "/api"
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
-# ─── AWS S3 Configuration ───
-# Set these via environment variables on the server
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", "")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY", "")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "callex-callrecording-lakhu")
+# ─── Firebase Storage Configuration ───
+# Set these via environment variables or .env file
+FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase_credentials.json")
+FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET", "lakhuteleservices-1f9e0.appspot.com")
 
 print(f"[CONFIG] Database: {DATABASE_URL}")
 print(f"[CONFIG] Recordings: {RECORDINGS_DIR}")
-print(f"[CONFIG] S3 Bucket: {AWS_BUCKET_NAME} ({AWS_REGION})")
+print(f"[CONFIG] Firebase Bucket: {FIREBASE_STORAGE_BUCKET}")
 

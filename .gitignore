@@ -35,3 +35,4 @@ _archive/
 .idea/
 *.swp
 *.swo
+firebase_credentials.json
