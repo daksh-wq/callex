@@ -1039,6 +1039,7 @@ async def ws(ws: WebSocket):
                     now = time.time()
 
                     if speaking and now - last_voice > SILENCE_TIMEOUT:
+                        last_any_voice_time = now  # Update while speaking
                         speaking = False
                         duration = len(buffer) / SAMPLE_RATE
                         if duration >= MIN_SPEECH_DURATION:
@@ -1103,6 +1104,7 @@ async def ws(ws: WebSocket):
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                         speaking = True
                         last_voice = now
+                        last_any_voice_time = now  # Track exactly when the customer last made a sound
                         await cancel_current()
 
                 elif "text" in msg:
