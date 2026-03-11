@@ -30,6 +30,7 @@ from app.audio.classifier import SoundEventClassifier
 from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
 from app.audio.speaker_verifier import SpeakerVerifier
+from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
 
 # Force unbuffered output for PM2/Systemd logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -103,7 +104,7 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "callex-callrecording-lakhu")
 
-ACTIVE_SCRIPT_ID = "script1"
+# ACTIVE_SCRIPT_ID is no longer used — agent_id from FreeSWITCH determines the agent
 
 # Project root & Cache dir (relative to project root, not app/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -226,23 +227,27 @@ class LocalRecorder:
         return None
 
 
-async def ensure_opener_cache():
-    """Ensure opener audio is cached on startup"""
+async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None):
+    """Ensure opener audio is cached for an agent"""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
 
-    script = SCRIPTS[ACTIVE_SCRIPT_ID]
-    filename = f"{ACTIVE_SCRIPT_ID}_opener.pcm"
+    if not agent_id or not opener_text:
+        print("[CACHE] No agent/opener provided, skipping cache")
+        return
+
+    safe_id = agent_id.replace('-', '_')[:32]
+    filename = f"{safe_id}_opener.pcm"
     filepath = os.path.join(CACHE_DIR, filename)
 
     if os.path.exists(filepath):
         print(f"[CACHE] Opener found: {filepath}")
         return
 
-    print(f"[CACHE] Generating opener for {ACTIVE_SCRIPT_ID}...")
+    print(f"[CACHE] Generating opener for agent {agent_id}...")
     async with httpx.AsyncClient() as client:
         with open(filepath, "wb") as f:
-            async for chunk in tts_stream_generate(client, script['opener']):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id):
                 f.write(chunk)
     print(f"[CACHE] Opener saved to {filepath}")
 
@@ -256,7 +261,7 @@ GLOBAL_YAMNET_CLASSIFIER: Optional['SoundEventClassifier'] = None
 async def lifespan(app: FastAPI):
     global GLOBAL_SILERO_VAD, GLOBAL_YAMNET_CLASSIFIER
 
-    await ensure_opener_cache()
+    await ensure_opener_cache()  # No-op on startup, agents cached per-call
 
     print("\n" + "=" * 60)
     print("[STARTUP] Loading AI Models")
@@ -299,25 +304,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ───────── SCRIPT DEFINITIONS ─────────
+# ───────── SCRIPT DEFINITIONS (LEGACY FALLBACK) ─────────
+# These are no longer the primary source of truth.
+# Agent configs are now loaded dynamically from the database via agent_loader.
+# This dict is kept only for absolute last-resort fallback.
 SCRIPTS = {
     "script1": {
         "name": "Script 1: Mahatvapurn Jankari",
-        "opener": "महत्वपूर्ण जानकारी का कॉल है। आपका डिशटीवी का कनेक्शन कंपनी में से आज हमेशा के लिए बंध होने जा रहा है। ये कनेक्शन को कभी भी चालू रखना चाहते हो तो आज ही छोटा 200 रुपए का रिचार्ज करवाना जरूरी है, तो रिचार्ज करवा रहे हो तो में कनेक्शन चालु रखु ?",
-        "logic": """
-        परिदृश्य (Scenario): आप एक ग्राहक को कॉल कर रहे हैं जिसका डिश टीवी कनेक्शन आज निष्क्रियता के कारण हमेशा के लिए बंद होने वाला है।
-        आपका काम: उन्हें यह एहसास दिलाना कि अगर उन्होंने आज 200 रुपये का रिचार्ज नहीं किया, तो उनका बहुत बड़ा नुकसान होगा (कनेक्शन खो देंगे)।
-
-        महत्वपूर्ण निर्देश (Critical Logic):
-        - यदि ग्राहक "आज" (today) या "कल" (tomorrow) रिचार्ज करने के लिए मान जाए, तो उन्हें और बाध्य न करें (Do not force).
-        - तुरंत कहें: "जी सर, करवा लीजियेगा, शुक्रिया।" और कॉल काट दें।
-
-        मुख्य आपत्तियां और स्मार्ट जवाब (Smart Counters):
-        1. "हाँ, मैं कर दूँगा" या "कल करूँगा" या "आज करूँगा" -> "जी सर, करवा लीजियेगा, शुक्रिया।" [HANGUP]
-        2. "नहीं करना / बंद कर दो" -> "सर, जल्दबाजी मत कीजिये। भविष्य में कभी तो टीवी देखेंगे? आज बंद हो गया तो फिर से चालू नहीं होगा। सोच लीजिये।"
-        3. "पैसे नहीं हैं" -> "सर, सिर्फ 200 रुपये की बात है। किसी दोस्त या रिश्तेदार से गूगल पे करवा लीजिये, पर इतना पुराना कनेक्शन मत खोइये।"
-        4. "बाहर हूँ" -> "सर, ठीक है, आप कल तक करवा लीजियेगा। मैं अभी होल्ड पर डाल देती हूँ।"
-        """
+        "opener": FALLBACK_AGENT["openingLine"],
+        "logic": FALLBACK_AGENT["description"],
     }
 }
 
@@ -559,40 +554,37 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
 
 # ───────── LLM Response Generation ─────────
 
-async def generate_response(client: httpx.AsyncClient, user_text: str, history: List[Dict]) -> str:
+async def generate_response(client: httpx.AsyncClient, user_text: str, history: List[Dict], agent_config: Dict = None) -> str:
     if not user_text:
         return "..."
     start_time = time.time()
-    script = SCRIPTS[ACTIVE_SCRIPT_ID]
+
+    # Use agent config from database, fallback to FALLBACK_AGENT
+    agent = agent_config or FALLBACK_AGENT
+    system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
+    logic_context = agent.get('description', '') or ''
+    temperature = agent.get('temperature', 0.7)
+    max_tokens = agent.get('maxTokens', 250)
+
+    # Check for active prompt version (overrides systemPrompt)
+    if agent.get('id') and agent['id'] != 'fallback':
+        active_prompt = get_active_prompt(agent['id'])
+        if active_prompt:
+            system_prompt = active_prompt
+
+    # Append logic context if available
+    if logic_context:
+        system_prompt = f"{system_prompt}\n\nसंदर्भ: {logic_context}"
+
     clean_history = [m for m in history if m["parts"][0]["text"] != "SYSTEM_INITIATE_CALL"]
-    system_prompt = f"""
-    पहचान: "डिश टीवी" से "प्रिया"।
-    भाषा: स्वाभाविक हिंदी (Devanagari)।
-    उद्देश्य: ग्राहक को 200 रु रिचार्ज के लिए मनाना ताकि कनेक्शन बंद न हो।
-
-    निर्देश:
-    1. **इंसानों जैसा व्यवहार**: "जी सर", "मैं समझती हूँ" का प्रयोग करें।
-    2. **संक्षिप्त (Short)**: अधिकतम 2 वाक्य।
-    3. **सहानुभूति**: समस्या सुनें, स्वीकार करें, फिर समाधान दें।
-    4. **चेतावनी**: विनम्रता से कनेक्शन बंद होने का डर दिखाएं।
-    5. **बाधा (Interruption)**: यदि उपयोगकर्ता बीच में टोके, तो तुरंत रुकें और उनकी बात सुनें।
-    6. **कोई टैग नहीं**: अपने जवाब में कभी भी [Smart Counter] या [Objection] जैसे टैग न बोलें।
-    7. **शब्दावली (Vocabulary)**: लिखित में "RS" या "Rs" न लिखें, हमेशा "रुपये" लिखें।
-    8. **कॉल समाप्ति (Call End)**:
-    - यदि ग्राहक "कल" रिचार्ज करने के लिए कहे: "जी ठीक है सर, कल तक करवा लीजियेगा, शुक्रिया।" [HANGUP]
-    - यदि ग्राहक "आज", "आज रात तक", "शाम तक" या "अभी" मान जाए: "जी ठीक है सर, आप करवा लीजियेगा, शुक्रिया।" [HANGUP]
-    - यदि ग्राहक "हाँ" या "ठीक है" कहे: [HANGUP]
-    - यदि ग्राहक कॉल काटना चाहे: "नमस्ते, आपका दिन शुभ हो।" [HANGUP]
-    - हमेशा बातचीत के अंत में [HANGUP] लिखें।
-
-    संदर्भ: {script['logic']}
-    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "generationConfig": {
-            "thinkingConfig": {"thinkingBudget": 0}
+            "thinkingConfig": {"thinkingBudget": 0},
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens
         }
     }
     for attempt in range(MAX_RETRIES + 1):
@@ -701,10 +693,12 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
 
 # ───────── TTS (Text-to-Speech) Streaming ─────────
 
-async def tts_stream_generate(client: httpx.AsyncClient, text: str) -> AsyncGenerator[bytes, None]:
-    print(f"[TTS] Starting stream for: '{text[:50]}...'")
+async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None) -> AsyncGenerator[bytes, None]:
+    """Stream TTS audio from ElevenLabs. Uses agent-specific voice_id if provided."""
+    resolved_voice_id = voice_id or GENARTML_VOICE_ID
+    print(f"[TTS] Starting stream for: '{text[:50]}...' (voice={resolved_voice_id[:8]}...)")
     start_time = time.time()
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{GENARTML_VOICE_ID}/stream?output_format=pcm_16000"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
     headers = {
         "xi-api-key": GENARTML_SECRET_KEY,
         "Content-Type": "application/json"
@@ -765,6 +759,15 @@ async def ws(ws: WebSocket):
         or ws.query_params.get("uuid")
         or ws.query_params.get("call_id")
     )
+
+    # FreeSWITCH will pass agent_id in headers or query params
+    # e.g., {"agent_id": "abc-123"}
+    agent_id = (
+        ws.headers.get("x-agent-id")
+        or ws.headers.get("agent-id")
+        or ws.query_params.get("agent_id")
+    )
+    
     phone_number = (
         ws.headers.get("x-phone-number")
         or ws.headers.get("caller-id")
@@ -783,6 +786,22 @@ async def ws(ws: WebSocket):
 
     if phone_number:
         print(f"[CALL] Phone: {phone_number}")
+        
+    # --- LOAD AGENT CONFIGURATION ---
+    if agent_id:
+        print(f"[CALL] Requested Agent ID: {agent_id}")
+        agent_config = load_agent(agent_id)
+        if not agent_config:
+            print(f"[CALL] ⚠️ Agent {agent_id} not found, falling back to default")
+            agent_config = get_default_agent() or FALLBACK_AGENT
+    else:
+        print("[CALL] No agent_id provided, using default agent")
+        agent_config = get_default_agent() or FALLBACK_AGENT
+
+    print(f"[CALL] Using Agent: {agent_config['name']} (Voice: {agent_config['voice']}, Temp: {agent_config['temperature']})")
+    
+    # Store safe ID for caching
+    safe_agent_id = str(agent_config['id']).replace('-', '_')[:32]
 
     print(f"[DB] Creating call record for {call_uuid}")
     tracker.start_call(call_uuid, phone_number)
@@ -790,7 +809,6 @@ async def ws(ws: WebSocket):
 
     db = get_db_session()
 
-    script = SCRIPTS[ACTIVE_SCRIPT_ID]
     buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     vad_buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     history: List[Dict] = []
@@ -876,7 +894,7 @@ async def ws(ws: WebSocket):
                 if call_uuid:
                     tracker.log_message(call_uuid, "user", user_text)
                 history = trim_history(history)
-                reply_text = await generate_response(client, user_text, history)
+                reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
                 should_hangup = False
                 if "[HANGUP]" in reply_text:
                     should_hangup = True
@@ -887,7 +905,7 @@ async def ws(ws: WebSocket):
                     tracker.log_message(call_uuid, "model", reply_text)
                 history = trim_history(history)
                 bot_speaking = True
-                async for audio_chunk in tts_stream_generate(client, reply_text):
+                async for audio_chunk in tts_stream_generate(client, reply_text, voice_id=agent_config['voice']):
                     if not ws_alive:
                         break
                     if not await send_audio_safe(audio_chunk):
@@ -918,10 +936,12 @@ async def ws(ws: WebSocket):
                         print(f"[Fallback Error]: {fallback_error}")
 
         # Send opener
-        print(f"[Priya]: {script['opener']}")
-        history.append({"role": "model", "parts": [{"text": script['opener']}]})
+        opener_text = agent_config['openingLine']
+        print(f"[{agent_config['name']}]: {opener_text}")
+        history.append({"role": "model", "parts": [{"text": opener_text}]})
 
-        cache_path = os.path.join(CACHE_DIR, f"{ACTIVE_SCRIPT_ID}_opener.pcm")
+        # Cache path uses safe_agent_id
+        cache_path = os.path.join(CACHE_DIR, f"{safe_agent_id}_opener.pcm")
         total_opener_bytes = 0
         bot_speaking = True
 
@@ -939,7 +959,8 @@ async def ws(ws: WebSocket):
                         break
                     await asyncio.sleep(0.02)
         else:
-            async for chunk in tts_stream_generate(client, script['opener']):
+            print(f"[CACHE] Generating opener on the fly for agent {agent_config['id']}")
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice']):
                 if await send_audio_safe(chunk):
                     total_opener_bytes += len(chunk)
                 else:
