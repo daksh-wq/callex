@@ -11,7 +11,7 @@ You can generate API Keys securely from inside the Callex Agent Studio Dashboard
 ---
 
 ## 1. Create a New Agent
-`POST http://147.93.106.182:4000/api/v1/agents`
+`POST http://62.171.170.48:4000/api/v1/agents`
 
 This endpoint allows you to programmatically create a brand new AI agent. It automatically generates the initial prompt version and readies the agent for calls.
 
@@ -51,7 +51,7 @@ Authorization: Bearer <YOUR_API_KEY>
 
 ### Example cURL Request
 ```bash
-curl -X POST http://147.93.106.182:4000/api/v1/agents \
+curl -X POST http://62.171.170.48:4000/api/v1/agents \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer ck_live_YOUR_API_KEY_HERE" \
 -d '{
@@ -78,7 +78,7 @@ curl -X POST http://147.93.106.182:4000/api/v1/agents \
 ---
 
 ## 2. Fetch Agent Details
-`GET http://147.93.106.182:4000/api/v1/agents/{agentId}`
+`GET http://62.171.170.48:4000/api/v1/agents/{agentId}`
 
 Retrieve the full configuration and prompt history of an existing agent.
 
@@ -89,7 +89,7 @@ Authorization: Bearer <YOUR_API_KEY>
 
 ### Example cURL Request
 ```bash
-curl -X GET http://147.93.106.182:4000/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
+curl -X GET http://62.171.170.48:4000/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
 -H "Authorization: Bearer ck_live_YOUR_API_KEY_HERE"
 ```
 
