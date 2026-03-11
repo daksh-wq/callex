@@ -914,7 +914,7 @@ async def ws(ws: WebSocket):
 
         if os.path.exists(cache_path):
             print(f"[CACHE] Streaming opener from disk")
-            chunk_size = 50000
+            chunk_size = 60000
             with open(cache_path, "rb") as f:
                 while True:
                     data = f.read(chunk_size)
