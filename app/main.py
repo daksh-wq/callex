@@ -689,7 +689,8 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str) -> AsyncGene
             "stability": VOICE_STABILITY,
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
-            "use_speaker_boost": True
+            "use_speaker_boost": True,
+            "speed": 2.0  # INCREASED SPEED TO 2x
         }
     }
     try:
@@ -700,7 +701,8 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str) -> AsyncGene
                 return
             first_chunk = True
             buffer = b""
-            CHUNK_SIZE = 100000
+            # Stream exactly 0.5s chunks (16000 bytes = 8000 samples @ 16bit) for smooth, uninterrupted WebSocket delivery
+            CHUNK_SIZE = 16000
             async for chunk in response.aiter_bytes():
                 if first_chunk:
                     print(f"[TTS First Byte]: {time.time() - start_time:.2f}s")
