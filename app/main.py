@@ -82,7 +82,8 @@ print(f"[CONFIG] Voice: speed={VOICE_SPEED}x, stability={VOICE_STABILITY}")
 MAX_HISTORY_LENGTH = 12
 
 # Silence Follow-up Configuration
-SILENCE_FOLLOWUP_DELAY = 5.0  # Seconds to wait before prompting
+SILENCE_FOLLOWUP_DELAY = 4.0  # Seconds of no voice before prompting
+SILENCE_AFTER_OPENER_DELAY = 8.0  # Longer wait after opener (customer needs time)
 MAX_SILENCE_FOLLOWUPS = 3     # Max follow-ups before hanging up
 SILENCE_FOLLOWUP_PHRASES = [
     "सर, आप कॉल पे हैं? मेरी आवाज़ आ रही है?",
@@ -775,6 +776,7 @@ async def ws(ws: WebSocket):
     silence_followup_count = 0
     silence_timer: asyncio.Task | None = None
     last_bot_speak_time = 0.0
+    last_any_voice_time = 0.0  # Tracks ANY voice detection from customer
 
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
@@ -805,12 +807,19 @@ async def ws(ws: WebSocket):
                 pass
         silence_timer = None
 
-    async def silence_followup():
+    async def silence_followup(delay_override: float = None):
         """After delay, prompt customer if they haven't spoken"""
         nonlocal silence_followup_count, ws_alive, history
         try:
-            await asyncio.sleep(SILENCE_FOLLOWUP_DELAY)
+            delay = delay_override or SILENCE_FOLLOWUP_DELAY
+            await asyncio.sleep(delay)
             if not ws_alive or speaking:
+                return
+            
+            # Check if customer had ANY voice activity during the wait
+            if last_any_voice_time > 0 and (time.time() - last_any_voice_time) < delay:
+                # Customer was active recently, don't interrupt — restart timer
+                start_silence_timer()
                 return
 
             silence_followup_count += 1
@@ -849,13 +858,13 @@ async def ws(ws: WebSocket):
         except Exception as e:
             print(f"[SILENCE ERROR] {e}")
 
-    def start_silence_timer():
+    def start_silence_timer(delay_override: float = None):
         """Start a silence follow-up timer (cancels any existing one)"""
         nonlocal silence_timer
         if silence_timer and not silence_timer.done():
             silence_timer.cancel()
         if ws_alive and first_line_complete:
-            silence_timer = asyncio.create_task(silence_followup())
+            silence_timer = asyncio.create_task(silence_followup(delay_override))
 
     async def cancel_current():
         nonlocal current_task, bot_speaking
@@ -996,8 +1005,8 @@ async def ws(ws: WebSocket):
                 if silero_vad:
                     silero_vad.finalize_noise_profile()
                 print("[SYSTEM] Opener playback complete - barge-in now enabled")
-                # Start silence timer after opener
-                start_silence_timer()
+                # Start silence timer after opener with longer delay
+                start_silence_timer(delay_override=SILENCE_AFTER_OPENER_DELAY)
             except Exception as e:
                 print(f"[SYSTEM] Timer error: {e}")
 
