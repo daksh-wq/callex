@@ -4,9 +4,13 @@ Central configuration - all credentials and settings in one place
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Base directory (Project Root)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+# Load environment variables from .env
+load_dotenv(BASE_DIR / ".env")
 
 # ─── Database Configuration ───
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/data/call_recordings.db")
