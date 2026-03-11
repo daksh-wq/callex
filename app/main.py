@@ -430,7 +430,7 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     start_time = time.time()
     trimmed_pcm = trim_audio(pcm16)
     print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GENARTML_SERVER_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [{
             "role": "user",
@@ -516,7 +516,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
     संदर्भ: {script['logic']}
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GENARTML_SERVER_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]}
@@ -575,7 +575,7 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
         "notes": "Short summary of why"
     }
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GENARTML_SERVER_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\nTranscript:\n{transcript}"}]}],
         "generationConfig": {"responseMimeType": "application/json"}
