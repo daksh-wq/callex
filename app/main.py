@@ -690,7 +690,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str) -> AsyncGene
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": 2.0  # INCREASED SPEED TO 2x
+            "speed": 1.2  # Maximum allowed by ElevenLabs is 1.2
         }
     }
     try:
@@ -1085,6 +1085,7 @@ async def ws(ws: WebSocket):
                         continue
 
                     if audio_db > INTERRUPTION_THRESHOLD_DB:
+                        last_any_voice_time = now  # Always track when the customer makes any sound
                         if not speaking:
                             if not first_line_complete:
                                 continue
