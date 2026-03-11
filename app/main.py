@@ -98,11 +98,8 @@ ESL_HOST = "127.0.0.1"
 ESL_PORT = 8021
 ESL_PASSWORD = "ClueCon"
 
-# AWS S3 Configuration (loaded from environment variables)
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "callex-callrecording-lakhu")
+# AWS S3 Configuration (loaded from config which handles .env securely)
+from app.core.config import AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_REGION, AWS_BUCKET_NAME
 
 # ACTIVE_SCRIPT_ID is no longer used — agent_id from FreeSWITCH determines the agent
 
