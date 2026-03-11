@@ -455,9 +455,22 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
                 return None
             data = r.json()
             if "candidates" in data and data["candidates"]:
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                candidate = data["candidates"][0]
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                if parts and "text" in parts[0]:
+                    text = parts[0]["text"].strip()
+                else:
+                    print(f"[ASR] Empty response from model (blocked or no text)")
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
+                    return None
             else:
                 print(f"[ASR] No candidates in response")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
                 return None
             break
         except asyncio.TimeoutError:
@@ -532,8 +545,20 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 return "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
             data = r.json()
             if "candidates" not in data or not data["candidates"]:
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
                 return "माफ़ कीजिये, आवाज नहीं आई।"
-            reply = data["candidates"][0]["content"]["parts"][0]["text"].strip().replace("*", "")
+            candidate = data["candidates"][0]
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            if not parts or "text" not in parts[0]:
+                print(f"[LLM] Empty/blocked response from model")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+                return "माफ़ कीजिये, आवाज नहीं आई।"
+            reply = parts[0]["text"].strip().replace("*", "")
             print(f"\n🤖 [BOT REPLY]: '{reply}'\n")
             reply = reply.replace("RS", "रुपये").replace("Rs", "रुपये").replace("rs", "रुपये")
             reply = re.sub(r'\[.*?\]', '', reply).strip()
@@ -584,8 +609,14 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
         r = await client.post(url, json=payload, timeout=5.0)
         if r.status_code == 200:
             data = r.json()
-            if "candidates" in data:
-                raw_json = data["candidates"][0]["content"]["parts"][0]["text"]
+            if "candidates" in data and data["candidates"]:
+                candidate = data["candidates"][0]
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                if not parts or "text" not in parts[0]:
+                    print("[ANALYSIS] Empty response from model")
+                    return None
+                raw_json = parts[0]["text"]
                 result = json.loads(raw_json)
                 import datetime
                 today = datetime.date.today()
