@@ -19,18 +19,33 @@ import os
 from typing import Optional, Dict, Any
 
 
-# Path to the Prisma SQLite database (shared with enterprise backend)
-_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "enterprise", "backend", "prisma", "dev.db"
-)
+# Find the Prisma SQLite database
+_POSSIBLE_DB_PATHS = [
+    # Local Mac dev path (up 3 levels)
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "enterprise", "backend", "prisma", "dev.db"),
+    # PM2 Production path (current working dir)
+    os.path.join(os.getcwd(), "enterprise", "backend", "prisma", "dev.db"),
+    # Same level sibling path
+    os.path.join(os.path.dirname(os.getcwd()), "enterprise", "backend", "prisma", "dev.db"),
+]
 
+def _get_db_path() -> Optional[str]:
+    # Check for env override
+    if "PRISMA_DB_PATH" in os.environ and os.path.exists(os.environ["PRISMA_DB_PATH"]):
+        return os.environ["PRISMA_DB_PATH"]
+        
+    for path in _POSSIBLE_DB_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
 
 def _get_connection() -> sqlite3.Connection:
     """Get a read-only SQLite connection to the shared database."""
-    if not os.path.exists(_DB_PATH):
-        raise FileNotFoundError(f"[AgentLoader] Database not found: {_DB_PATH}")
-    conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True)
+    db_path = _get_db_path()
+    if not db_path:
+        raise FileNotFoundError("[AgentLoader] Database not found in any standard location. Set PRISMA_DB_PATH manually.")
+    
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -134,7 +149,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     defaults = {
         'systemPrompt': '',
         'openingLine': 'नमस्ते, मैं कैसे मदद कर सकती हूँ?',
-        'voice': 'alloy',
+        'voice': None,
         'language': 'en-US',
         'temperature': 0.7,
         'maxTokens': 250,
@@ -176,7 +191,7 @@ FALLBACK_AGENT = {
 - यदि ग्राहक कॉल काटना चाहे: "नमस्ते, आपका दिन शुभ हो।" [HANGUP]
 - हमेशा बातचीत के अंत में [HANGUP] लिखें।""",
     "openingLine": "महत्वपूर्ण जानकारी का कॉल है। आपका डिशटीवी का कनेक्शन कंपनी में से आज हमेशा के लिए बंध होने जा रहा है। ये कनेक्शन को कभी भी चालू रखना चाहते हो तो आज ही छोटा 200 रुपए का रिचार्ज करवाना जरूरी है, तो रिचार्ज करवा रहे हो तो में कनेक्शन चालु रखु ?",
-    "voice": "alloy",
+    "voice": None,
     "language": "hi-IN",
     "temperature": 0.7,
     "maxTokens": 250,
