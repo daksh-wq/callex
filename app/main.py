@@ -442,18 +442,28 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     start_time = time.time()
     trimmed_pcm = trim_audio(pcm16)
     print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
+
+    # Skip if audio is too short (< 0.5 seconds = 16000 bytes at 16kHz 16-bit)
+    MIN_ASR_BYTES = SAMPLE_RATE * 1  # 0.5 seconds = 16000 bytes
+    if len(trimmed_pcm) < MIN_ASR_BYTES:
+        print(f"[ASR] Audio too short ({len(trimmed_pcm)} bytes < {MIN_ASR_BYTES}), skipping")
+        return None
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [{
             "role": "user",
             "parts": [
-                {"text": "Transcribe audio to Hindi text. Return strictly text only."},
+                {"text": "Transcribe this audio to Hindi text. Output ONLY the transcribed words, nothing else. No explanations, no formatting, no commentary."},
                 {"inlineData": {
                     "mimeType": "audio/wav",
                     "data": base64.b64encode(wav_header(trimmed_pcm)).decode()
                 }}
             ]
-        }]
+        }],
+        "generationConfig": {
+            "thinkingConfig": {"thinkingBudget": 0}
+        }
     }
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -472,6 +482,16 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
                 parts = content.get("parts", [])
                 if parts and "text" in parts[0]:
                     text = parts[0]["text"].strip()
+                    # Clean any leaked model thinking (multi-line reasoning)
+                    if "\n" in text:
+                        lines = [l.strip() for l in text.split("\n") if l.strip()]
+                        # Take only the first line (actual transcription)
+                        text = lines[0] if lines else ""
+                    # Remove common thinking prefixes
+                    for prefix in ["think", "The user", "I will", "The output", "The audio"]:
+                        if text.startswith(prefix):
+                            text = ""
+                            break
                 else:
                     print(f"[ASR] Empty response from model (blocked or no text)")
                     if attempt < MAX_RETRIES:
@@ -544,7 +564,10 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]}
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "generationConfig": {
+            "thinkingConfig": {"thinkingBudget": 0}
+        }
     }
     for attempt in range(MAX_RETRIES + 1):
         try:
