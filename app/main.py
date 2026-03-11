@@ -687,7 +687,9 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
                     "notes": result.get("notes", "")
                 }
     except Exception as e:
-        print(f"[ANALYSIS ERROR] {e}")
+        import traceback
+        print(f"[ANALYSIS ERROR] {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
     return None
 
 
@@ -975,6 +977,10 @@ async def ws(ws: WebSocket):
                         continue
                     chunk = pcm.astype(np.float32) / 32768.0
                     filtered_chunk, is_valid_speech = noise_filter.process(chunk)
+                    
+                    if len(filtered_chunk) == 0:
+                        continue
+                        
                     energy = np.sqrt(np.mean(filtered_chunk * filtered_chunk))
                     audio_db = 20 * np.log10(energy + 1e-9)
                     now = time.time()
@@ -1099,7 +1105,9 @@ async def ws(ws: WebSocket):
                         if ai_outcome:
                             print(f"[ANALYSIS] Result: {ai_outcome}")
                 except Exception as e:
-                    print(f"[ANALYSIS ERROR] {e}")
+                    import traceback
+                    print(f"[ANALYSIS ERROR] {type(e).__name__}: {str(e)}")
+                    traceback.print_exc()
 
             if call_uuid:
                 print(f"[DB] Ending call record for {call_uuid}")
