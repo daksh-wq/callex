@@ -16,7 +16,6 @@ const NAV_SECTIONS = [
         items: [
             { to: '/dashboard', icon: LayoutDashboard, label: 'Command Center' },
             { to: '/supervisor', icon: Headphones, label: 'Live Supervisor' },
-            { to: '/wfm', icon: Users, label: 'Workforce & Teams' },
         ]
     },
     {
@@ -64,7 +63,7 @@ export default function Layout() {
     const location = useLocation();
 
     const activeSections = userRole === 'admin' ? NAV_SECTIONS : NAV_SECTIONS.map(s => {
-        const allowed = ['/dashboard', '/agents', '/billing', '/analytics', '/followups', '/routing', '/integrations', '/settings', '/wfm', '/dialer'];
+        const allowed = ['/dashboard', '/agents', '/billing', '/analytics', '/followups', '/routing', '/integrations', '/settings', '/dialer'];
         const items = s.items.filter(i => allowed.includes(i.to));
         return items.length > 0 ? { ...s, items } : null;
     }).filter(Boolean);

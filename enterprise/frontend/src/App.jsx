@@ -14,7 +14,7 @@ import Routing from './pages/Routing.jsx';
 import Integrations from './pages/Integrations.jsx';
 import Security from './pages/Security.jsx';
 import Settings from './pages/Settings.jsx';
-import WFM from './pages/WFM.jsx';
+
 import QA from './pages/QA.jsx';
 import Reports from './pages/Reports.jsx';
 import Telecom from './pages/Telecom.jsx';
@@ -90,7 +90,7 @@ export default function App() {
                         <Route path="integrations" element={<ErrorBoundary><Integrations /></ErrorBoundary>} />
                         <Route path="security" element={<ErrorBoundary><Security /></ErrorBoundary>} />
                         <Route path="settings" element={<ErrorBoundary><Settings /></ErrorBoundary>} />
-                        <Route path="wfm" element={<ErrorBoundary><WFM /></ErrorBoundary>} />
+
                         <Route path="qa" element={<ErrorBoundary><QA /></ErrorBoundary>} />
                         <Route path="reports" element={<ErrorBoundary><Reports /></ErrorBoundary>} />
                         <Route path="telecom" element={<ErrorBoundary><Telecom /></ErrorBoundary>} />

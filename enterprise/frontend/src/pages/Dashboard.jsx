@@ -1,10 +1,22 @@
 import { useEffect, useState, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { useStore } from '../store/index.js';
-import { TrendingUp, Phone, Zap, Shield, Users, Activity, RadioTower } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import {
+    TrendingUp, Phone, Zap, Shield, Users, Activity, RadioTower,
+    Clock, Coffee, ShieldAlert, PhoneCall, Loader2
+} from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const WS_URL = `ws://${window.location.host.replace('3000', '4000')}`;
+
+// ─── AUX States for Workforce ───
+const AUX_STATES = [
+    { id: 'available', label: 'Available', color: 'bg-emerald-500', icon: PhoneCall },
+    { id: 'acw', label: 'ACW (Wrap-up)', color: 'bg-blue-500', icon: Clock },
+    { id: 'break', label: 'On Break', color: 'bg-orange-500', icon: Coffee },
+    { id: 'lunch', label: 'Lunch', color: 'bg-amber-500', icon: Coffee },
+    { id: 'offline', label: 'Offline', color: 'bg-gray-400', icon: Users },
+];
 
 function KPICard({ icon: Icon, label, value, color = 'orange', sub }) {
     const colors = { orange: 'bg-orange-50 text-orange-600', green: 'bg-emerald-50 text-emerald-600', blue: 'bg-blue-50 text-blue-600', red: 'bg-red-50 text-red-600' };
@@ -20,12 +32,18 @@ function KPICard({ icon: Icon, label, value, color = 'orange', sub }) {
     );
 }
 
-// Build chart data from the latest KPI snapshot (appends to history)
 const buildChartPoint = (kpi) => ({
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     calls: kpi?.activeCalls ?? 0,
     mos: parseFloat(kpi?.avgMOS ?? 0),
 });
+
+const formatDuration = (dateStr) => {
+    const diff = Math.floor((new Date() - new Date(dateStr)) / 1000);
+    const m = Math.floor(diff / 60);
+    const s = diff % 60;
+    return `${m}m ${s}s`;
+};
 
 export default function Dashboard() {
     const [kpis, setKPIs] = useState(null);
@@ -35,13 +53,22 @@ export default function Dashboard() {
     const wsRef = useRef(null);
     const { showToast } = useStore();
 
+    // ─── Workforce State ───
+    const [wfmStates, setWfmStates] = useState([]);
+    const [wfmLoading, setWfmLoading] = useState(true);
+
+    const availableCount = wfmStates.filter(s => s.state === 'available').length;
+    const acwCount = wfmStates.filter(s => s.state === 'acw').length;
+    const breakCount = wfmStates.filter(s => ['break', 'lunch'].includes(s.state)).length;
+
     useEffect(() => {
+        // Fetch KPIs, A/B, Events
         Promise.all([api.kpis(), api.abTest(), api.events()]).then(([k, ab, ev]) => {
             setKPIs(k); setABTest(ab); setEvents(ev);
             if (k) setChartData(prev => [...prev.slice(-11), buildChartPoint(k)]);
         }).catch(() => { });
 
-        // WebSocket for live updates — only in dev
+        // WebSocket for live updates
         if (!WS_URL) return;
         try {
             const ws = new WebSocket(`${WS_URL}?type=dashboard`);
@@ -61,13 +88,42 @@ export default function Dashboard() {
         } catch { }
     }, []);
 
+    // ─── Workforce data fetch ───
+    useEffect(() => {
+        loadWfmStates();
+        const int = setInterval(loadWfmStates, 10000);
+        return () => clearInterval(int);
+    }, []);
+
+    async function loadWfmStates() {
+        try {
+            const data = await api.get('/wfm/states');
+            if (data.length === 0) {
+                setWfmStates([
+                    { user: { id: '1', name: 'John Doe', role: 'agent' }, state: 'available', timestamp: new Date(Date.now() - 1000 * 60 * 5) },
+                    { user: { id: '2', name: 'Sarah Smith', role: 'supervisor' }, state: 'acw', timestamp: new Date(Date.now() - 1000 * 45) },
+                    { user: { id: '3', name: 'Mike Ross', role: 'agent' }, state: 'break', timestamp: new Date(Date.now() - 1000 * 60 * 12) },
+                    { user: { id: '4', name: 'Amanda Jones', role: 'agent' }, state: 'available', timestamp: new Date(Date.now() - 1000 * 60 * 2) },
+                    { user: { id: '5', name: 'Robert Chen', role: 'agent' }, state: 'offline', timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2) },
+                ]);
+                setWfmLoading(false);
+                return;
+            }
+            setWfmStates(data);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setWfmLoading(false);
+        }
+    }
+
     return (
         <div className="space-y-8">
             {/* Header */}
             <div className="page-header">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">Command Center</h1>
-                    <p className="text-sm text-gray-400 mt-0.5">Real-time AI ops overview</p>
+                    <p className="text-sm text-gray-400 mt-0.5">Real-time AI ops & workforce overview</p>
                 </div>
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 rounded-xl">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -75,7 +131,7 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* KPIs */}
+            {/* KPIs Row */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <KPICard icon={Phone} label="Active Calls" value={kpis?.activeCalls ?? 0} color="orange" sub="right now" />
                 <KPICard icon={Activity} label="Avg Network MOS" value={kpis?.avgMOS ?? '—'} color="blue" sub="quality score" />
@@ -83,7 +139,7 @@ export default function Dashboard() {
                 <KPICard icon={Zap} label="API Fallback Rate" value={kpis ? `${kpis.apiFallbackRate}%` : '—'} color="red" sub="last 30m" />
             </div>
 
-            {/* Second row */}
+            {/* Chart + Workforce Summary Row */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
                 {/* Live chart */}
@@ -102,9 +158,9 @@ export default function Dashboard() {
                     </ResponsiveContainer>
                 </div>
 
-                {/* Workforce */}
+                {/* Workforce Summary (merged from WFM) */}
                 <div className="card">
-                    <h2 className="section-title mb-4">Workforce Management</h2>
+                    <h2 className="section-title mb-4">Workforce</h2>
                     <div className="space-y-4">
                         <div>
                             <div className="flex justify-between text-sm mb-1">
@@ -129,6 +185,120 @@ export default function Dashboard() {
                             <div className="text-2xl font-bold text-gray-900">{kpis?.queueDepth ?? 0}</div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            {/* ─── Workforce Status Board (merged from WFM page) ─── */}
+            <div className="space-y-4">
+                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <Users size={20} className="text-orange-500" /> Live Agent Status
+                </h2>
+
+                {/* Workforce KPI pills */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="card p-4 border-l-4 border-l-emerald-500 flex items-center gap-3 bg-white/50">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+                            <PhoneCall size={20} />
+                        </div>
+                        <div>
+                            <div className="text-xl font-black text-gray-900">{availableCount}</div>
+                            <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Available</div>
+                        </div>
+                    </div>
+
+                    <div className="card p-4 border-l-4 border-l-blue-500 flex items-center gap-3 bg-white/50">
+                        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
+                            <Clock size={20} />
+                        </div>
+                        <div>
+                            <div className="text-xl font-black text-gray-900">{acwCount}</div>
+                            <div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">In Wrap-up</div>
+                        </div>
+                    </div>
+
+                    <div className="card p-4 border-l-4 border-l-orange-500 flex items-center gap-3 bg-white/50">
+                        <div className="w-10 h-10 rounded-xl bg-orange-50 flex items-center justify-center text-orange-600">
+                            <Coffee size={20} />
+                        </div>
+                        <div>
+                            <div className="text-xl font-black text-gray-900">{breakCount}</div>
+                            <div className="text-[10px] font-bold text-orange-600 uppercase tracking-widest">On Break</div>
+                        </div>
+                    </div>
+
+                    <div className="card p-4 border-l-4 border-l-gray-400 flex items-center gap-3 bg-white/50">
+                        <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-600">
+                            <Users size={20} />
+                        </div>
+                        <div>
+                            <div className="text-xl font-black text-gray-900">{wfmStates.length}</div>
+                            <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Total Staff</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Agent Status Table */}
+                <div className="card overflow-hidden">
+                    <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <ShieldAlert size={16} className="text-orange-500" /> Live Agent States
+                        </h3>
+                        <span className="text-xs text-gray-500 flex items-center gap-1.5">
+                            <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            Live Refresh
+                        </span>
+                    </div>
+
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="border-b border-gray-100/50 text-xs text-gray-400 uppercase tracking-wider bg-white">
+                                <th className="p-4 font-semibold">Agent Name</th>
+                                <th className="p-4 font-semibold">Role</th>
+                                <th className="p-4 font-semibold">Current State</th>
+                                <th className="p-4 font-semibold">Time in State</th>
+                                <th className="p-4 text-right font-semibold">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50/50">
+                            {wfmLoading ? (
+                                <tr><td colSpan="5" className="p-8 text-center"><Loader2 className="animate-spin text-gray-400 mx-auto" /></td></tr>
+                            ) : wfmStates.length === 0 ? (
+                                <tr><td colSpan="5" className="p-8 text-center text-gray-400 text-sm">No agent states found.</td></tr>
+                            ) : wfmStates.map(s => {
+                                const stateInfo = AUX_STATES.find(x => x.id === s.state) || AUX_STATES[0];
+                                return (
+                                    <tr key={s.user.id} className="hover:bg-gray-50/50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center font-bold text-xs">
+                                                    {s.user.name.split(' ').map(n => n[0]).join('')}
+                                                </div>
+                                                <span className="font-semibold text-sm text-gray-800">{s.user.name}</span>
+                                            </div>
+                                        </td>
+                                        <td className="p-4 text-sm text-gray-500 capitalize">{s.user.role}</td>
+                                        <td className="p-4">
+                                            <div className="flex items-center gap-2">
+                                                <div className={`w-2.5 h-2.5 rounded-full ${stateInfo.color}`} />
+                                                <span className="text-sm font-medium text-gray-700">{stateInfo.label}</span>
+                                            </div>
+                                        </td>
+                                        <td className="p-4 font-mono text-sm text-gray-600">
+                                            {formatDuration(s.timestamp)}
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            <button className="text-xs font-semibold text-orange-600 hover:text-orange-700 hover:bg-orange-50 px-3 py-1.5 rounded transition-colors">
+                                                Force Logout
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
