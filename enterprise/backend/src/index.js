@@ -68,6 +68,10 @@ app.use('/api/billing', billingRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/followups', followupsRouter);
 
+// Set up public authenticated developer APIs
+import externalRouter from './routes/external.js';
+app.use('/api/v1', externalRouter);
+
 // WebSocket routing
 export const wsClients = new Map(); // callId -> Set<ws>
 export const dashboardClients = new Set();
