@@ -659,7 +659,7 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
         "generationConfig": {"responseMimeType": "application/json"}
     }
     try:
-        r = await client.post(url, json=payload, timeout=5.0)
+        r = await client.post(url, json=payload, timeout=15.0)
         if r.status_code == 200:
             data = r.json()
             if "candidates" in data and data["candidates"]:

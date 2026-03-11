@@ -3,7 +3,7 @@ import { api } from '../lib/api.js';
 import { useStore } from '../store/index.js';
 import {
     TrendingUp, Phone, Zap, Shield, Users, Activity, RadioTower,
-    Clock, Coffee, ShieldAlert, PhoneCall, Loader2
+    Clock, Coffee, ShieldAlert, PhoneCall, Loader2, PhoneOff, PhoneForwarded
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -19,7 +19,7 @@ const AUX_STATES = [
 ];
 
 function KPICard({ icon: Icon, label, value, color = 'orange', sub }) {
-    const colors = { orange: 'bg-orange-50 text-orange-600', green: 'bg-emerald-50 text-emerald-600', blue: 'bg-blue-50 text-blue-600', red: 'bg-red-50 text-red-600' };
+    const colors = { orange: 'bg-orange-50 text-orange-600', green: 'bg-emerald-50 text-emerald-600', blue: 'bg-blue-50 text-blue-600', red: 'bg-red-50 text-red-600', purple: 'bg-purple-50 text-purple-600', amber: 'bg-amber-50 text-amber-600' };
     return (
         <div className="kpi-card hover:shadow-md transition-shadow">
             <div className={`w-10 h-10 rounded-xl ${colors[color]} flex items-center justify-center mb-3`}>
@@ -59,7 +59,8 @@ export default function Dashboard() {
 
     const availableCount = wfmStates.filter(s => s.state === 'available').length;
     const acwCount = wfmStates.filter(s => s.state === 'acw').length;
-    const breakCount = wfmStates.filter(s => ['break', 'lunch'].includes(s.state)).length;
+    const dialingCount = wfmStates.filter(s => s.state === 'dialing').length;
+    const idleCount = wfmStates.filter(s => s.state === 'offline').length;
 
     useEffect(() => {
         // Fetch KPIs, A/B, Events
@@ -133,8 +134,11 @@ export default function Dashboard() {
 
             {/* KPIs Row */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KPICard icon={Phone} label="Active Calls" value={kpis?.activeCalls ?? 0} color="orange" sub="right now" />
-                <KPICard icon={Activity} label="Avg Network MOS" value={kpis?.avgMOS ?? '—'} color="blue" sub="quality score" />
+                <KPICard icon={Phone} label="Total Calls" value={kpis?.totalCalls ?? 0} color="orange" sub="today" />
+                <KPICard icon={Phone} label="Active Calls" value={kpis?.activeCalls ?? 0} color="blue" sub="right now" />
+                <KPICard icon={PhoneOff} label="Calls Idle" value={kpis?.callsIdle ?? 0} color="amber" sub="waiting" />
+                <KPICard icon={PhoneForwarded} label="Dialing & Ringing" value={kpis?.dialingRinging ?? 0} color="purple" sub="in progress" />
+                <KPICard icon={Clock} label="Wrap Up" value={kpis?.wrapUp ?? 0} color="red" sub="post-call" />
                 <KPICard icon={Shield} label="SLA Rate" value={kpis ? `${kpis.slaPercent}%` : '—'} color="green" sub="target: 95%" />
                 <KPICard icon={Zap} label="API Fallback Rate" value={kpis ? `${kpis.apiFallbackRate}%` : '—'} color="red" sub="last 30m" />
             </div>
@@ -212,17 +216,17 @@ export default function Dashboard() {
                         </div>
                         <div>
                             <div className="text-xl font-black text-gray-900">{acwCount}</div>
-                            <div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">In Wrap-up</div>
+                            <div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Wrap-up</div>
                         </div>
                     </div>
 
-                    <div className="card p-4 border-l-4 border-l-orange-500 flex items-center gap-3 bg-white/50">
-                        <div className="w-10 h-10 rounded-xl bg-orange-50 flex items-center justify-center text-orange-600">
-                            <Coffee size={20} />
+                    <div className="card p-4 border-l-4 border-l-purple-500 flex items-center gap-3 bg-white/50">
+                        <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600">
+                            <PhoneForwarded size={20} />
                         </div>
                         <div>
-                            <div className="text-xl font-black text-gray-900">{breakCount}</div>
-                            <div className="text-[10px] font-bold text-orange-600 uppercase tracking-widest">On Break</div>
+                            <div className="text-xl font-black text-gray-900">{dialingCount}</div>
+                            <div className="text-[10px] font-bold text-purple-600 uppercase tracking-widest">Dialing</div>
                         </div>
                     </div>
 
