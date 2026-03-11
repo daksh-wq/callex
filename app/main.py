@@ -29,6 +29,7 @@ from app.core.database import get_db_session, update_call_outcome
 from app.audio.classifier import SoundEventClassifier
 from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
+from app.audio.speaker_verifier import SpeakerVerifier
 
 # Force unbuffered output for PM2/Systemd logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -65,9 +66,14 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.50
+SILERO_CONFIDENCE_THRESHOLD = 0.65
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
+
+# Speaker Verification Configuration
+SPEAKER_SIMILARITY_THRESHOLD = 0.75
+SPEAKER_ENROLLMENT_SECONDS = 3.0
+BARGE_IN_CONFIRM_MS = 300  # milliseconds of continuous speech required before barge-in
 
 # Voice Settings (from config)
 VOICE_SPEED = bot_config.voice.speed
@@ -796,6 +802,7 @@ async def ws(ws: WebSocket):
     task_lock = asyncio.Lock()
     first_line_complete = False
     bot_speaking = False
+    barge_in_confirm_start = None  # Timestamp when continuous caller speech started
 
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
@@ -814,6 +821,12 @@ async def ws(ws: WebSocket):
 
     if not classifier:
         print("[Noise Filter] ⚠️ YAMNet not available, noise classification disabled")
+
+    speaker_verifier = SpeakerVerifier(
+        sample_rate=SAMPLE_RATE,
+        enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
+        similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD
+    )
 
     async def cancel_current():
         nonlocal current_task, bot_speaking
@@ -1001,6 +1014,7 @@ async def ws(ws: WebSocket):
                             vad_buffer.clear()
 
                     if not is_valid_speech:
+                        barge_in_confirm_start = None  # Reset confirmation buffer on silence
                         if speaking:
                             buffer.extend(chunk)
                         continue
@@ -1011,6 +1025,10 @@ async def ws(ws: WebSocket):
                             if speaking:
                                 buffer.extend(chunk)
                             continue
+
+                    # Feed confirmed speech to speaker enrollment
+                    if not speaker_verifier.is_enrolled:
+                        speaker_verifier.enroll(filtered_chunk)
 
                     buffer.extend(chunk)
                     vad_buffer.extend(filtered_chunk)
@@ -1032,6 +1050,30 @@ async def ws(ws: WebSocket):
                         if not speaking:
                             if not first_line_complete:
                                 continue
+
+                            # Stage 3: Speaker Verification
+                            is_caller, sim_score = speaker_verifier.verify(filtered_chunk)
+                            if not is_caller:
+                                barge_in_confirm_start = None
+                                buffer.clear()
+                                vad_buffer.clear()
+                                continue
+
+                            # Stage 4: Confirmation Buffer (300ms continuous caller speech)
+                            if barge_in_confirm_start is None:
+                                barge_in_confirm_start = now
+
+                            elapsed_ms = (now - barge_in_confirm_start) * 1000
+                            if elapsed_ms < BARGE_IN_CONFIRM_MS:
+                                # Still waiting for confirmation — buffer audio but don't barge-in yet
+                                buffer.extend(chunk)
+                                vad_buffer.extend(filtered_chunk)
+                                last_voice = now
+                                continue
+
+                            # ✅ 300ms of continuous caller speech confirmed — FIRE barge-in
+                            barge_in_confirm_start = None
+
                             if len(vad_buffer) > 4000 and classifier:
                                 recent_audio = np.array(vad_buffer)[-15000:]
                                 is_safe, label, conf = classifier.classify(recent_audio)
@@ -1041,13 +1083,17 @@ async def ws(ws: WebSocket):
                                     vad_buffer.clear()
                                     continue
                             vad_status = f"Silero: {vad_confidence:.2f}" if use_silero and silero_vad else "Basic"
-                            print(f"\n[VAD] ✅ Speech started (dB: {audio_db:.1f}, {vad_status})")
+                            caller_status = f"Caller: {sim_score:.2f}" if speaker_verifier.is_enrolled else "Enrolling"
+                            print(f"\n[VAD] ✅ Speech started (dB: {audio_db:.1f}, {vad_status}, {caller_status})")
                             await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                         speaking = True
                         last_voice = now
                         await cancel_current()
+                    else:
+                        # Audio below threshold — reset confirmation buffer
+                        barge_in_confirm_start = None
 
                 elif "text" in msg:
                     try:
