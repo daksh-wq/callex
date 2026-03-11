@@ -82,7 +82,7 @@ print(f"[CONFIG] Voice: speed={VOICE_SPEED}x, stability={VOICE_STABILITY}")
 MAX_HISTORY_LENGTH = 12
 
 # Silence Follow-up Configuration
-SILENCE_FOLLOWUP_DELAY = 4.0  # Seconds of no voice before prompting
+SILENCE_FOLLOWUP_DELAY = 8.0  # Seconds of no voice before prompting
 SILENCE_AFTER_OPENER_DELAY = 8.0  # Longer wait after opener (customer needs time)
 MAX_SILENCE_FOLLOWUPS = 3     # Max follow-ups before hanging up
 SILENCE_FOLLOWUP_PHRASES = [
@@ -819,11 +819,11 @@ async def ws(ws: WebSocket):
             # Check if customer had ANY voice activity during the wait
             if last_any_voice_time > 0 and (time.time() - last_any_voice_time) < delay:
                 # Customer was active recently, don't interrupt — restart timer
-                start_silence_timer()
+                start_silence_timer(delay_override=delay)
                 return
 
             silence_followup_count += 1
-            print(f"[SILENCE] No response for {SILENCE_FOLLOWUP_DELAY}s (attempt {silence_followup_count}/{MAX_SILENCE_FOLLOWUPS})")
+            print(f"[SILENCE] No response for {delay}s (attempt {silence_followup_count}/{MAX_SILENCE_FOLLOWUPS})")
 
             if silence_followup_count >= MAX_SILENCE_FOLLOWUPS:
                 # Too many unanswered — hang up
@@ -851,8 +851,8 @@ async def ws(ws: WebSocket):
                 async for audio_chunk in tts_stream_generate(client, phrase):
                     if not ws_alive: break
                     if not await send_audio_safe(audio_chunk): break
-                # Start another silence timer after this prompt
-                start_silence_timer()
+                # Start another silence timer after this prompt, wait 8 seconds for response
+                start_silence_timer(delay_override=SILENCE_FOLLOWUP_DELAY)
         except asyncio.CancelledError:
             pass
         except Exception as e:
