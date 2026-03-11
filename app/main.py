@@ -21,6 +21,7 @@ import sys
 import shutil
 import boto3
 from botocore.exceptions import NoCredentialsError
+import webrtcvad
 
 # ─── Updated imports for new modular structure ───
 from app.utils.logger import tracker          # Database logging
@@ -328,8 +329,9 @@ else:
 class NoiseFilter:
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
-        self.noise_floor = None
-        self.silence_frames_for_learning = []
+        self.vad = webrtcvad.Vad(3)  # Maximum aggressiveness for filtering out non-speech
+        self.pcm_buffer = bytearray()
+        
         nyquist = sample_rate / 2
         cutoff = 80
         self.highpass_b, self.highpass_a = signal.butter(4, cutoff / nyquist, btype='high')
@@ -349,38 +351,68 @@ class NoiseFilter:
         flatness = geometric_mean / arithmetic_mean
         return np.clip(flatness, 0, 1)
 
-    def learn_noise_floor(self, audio: np.ndarray):
-        self.silence_frames_for_learning.append(audio)
-        if len(self.silence_frames_for_learning) >= ADAPTIVE_LEARNING_FRAMES:
-            self.noise_floor = np.mean(self.silence_frames_for_learning, axis=0)
-            self.silence_frames_for_learning = []
-            if not hasattr(self, '_noise_floor_logged'):
-                print(f"[Noise Filter] Noise floor learned from {ADAPTIVE_LEARNING_FRAMES} frames")
-                self._noise_floor_logged = True
-
     def process(self, audio: np.ndarray) -> tuple:
         if len(audio) == 0:
             return audio, False
-        filtered = signal.filtfilt(self.highpass_b, self.highpass_a, audio)
+            
+        # 1. Convert incoming float32 array to PCM16 bytes
+        pcm16_bytes = (audio * 32767.0).astype(np.int16).tobytes()
+        self.pcm_buffer.extend(pcm16_bytes)
+        
+        # 2. Process strictly in 30ms chunks (480 samples * 2 bytes = 960 bytes for 16kHz)
+        FRAME_SIZE = 960 if self.sample_rate == 16000 else 480 
+        clean_pcm = bytearray()
+        
+        processed_bytes = 0
+        while len(self.pcm_buffer) - processed_bytes >= FRAME_SIZE:
+            frame = bytes(self.pcm_buffer[processed_bytes:processed_bytes+FRAME_SIZE])
+            processed_bytes += FRAME_SIZE
+            
+            try:
+                # If WebRTC says it's noise, we ZERO it out.
+                if self.vad.is_speech(frame, self.sample_rate):
+                    clean_pcm.extend(frame)
+                else:
+                    clean_pcm.extend(b'\x00' * FRAME_SIZE)
+            except Exception as e:
+                # Fallback if frame is somehow invalid
+                clean_pcm.extend(frame)
+                
+        # Keep remaining bytes for the next incoming chunk
+        self.pcm_buffer = self.pcm_buffer[processed_bytes:]
+        
+        # If we didn't process anything yet (e.g. initial few bytes), return empty
+        if len(clean_pcm) == 0:
+            return np.array([], dtype=np.float32), False
+            
+        # Convert the cleaned, processed frames back to float32
+        cleaned_audio = np.frombuffer(bytes(clean_pcm), dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Now do the existing frequency/dB checks on the cleaned audio
+        filtered = signal.filtfilt(self.highpass_b, self.highpass_a, cleaned_audio)
         filtered = signal.filtfilt(self.bandpass_b, self.bandpass_a, filtered)
         energy = np.sqrt(np.mean(filtered ** 2))
         db = 20 * np.log10(energy + 1e-9)
         spectral_flatness = self.calculate_spectral_flatness(filtered)
+        
         is_valid = True
         rejection_reason = None
-        if db < NOISE_GATE_DB:
+        
+        # If the WebRTC VAD aggressively zeroed out everything, the energy will be basically 0
+        if energy < 1e-6:
+             is_valid = False
+             rejection_reason = "WebRTC VAD rejected background noise"
+        elif db < NOISE_GATE_DB:
             is_valid = False
         elif spectral_flatness > SPECTRAL_FLATNESS_THRESHOLD:
             is_valid = False
             rejection_reason = f"Fan/constant noise (Flatness={spectral_flatness:.2f})"
-            if db < -30:
-                self.learn_noise_floor(audio)
         elif db < INTERRUPTION_THRESHOLD_DB:
             is_valid = False
-            if db < -30:
-                self.learn_noise_floor(audio)
+            
         if not is_valid and rejection_reason:
-            print(f"[Noise Filter] {rejection_reason}")
+            pass # Silenced the explicit print because WebRTC triggers it constantly for background noise
+            
         return filtered, is_valid
 
 
