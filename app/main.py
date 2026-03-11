@@ -1046,6 +1046,7 @@ async def ws(ws: WebSocket):
                             buffer.extend(chunk)
                         continue
 
+                    vad_confidence = 1.0  # Fallback
                     if use_silero and silero_vad:
                         is_speech, vad_confidence = silero_vad.is_speech(filtered_chunk)
                         if not is_speech or vad_confidence < SILERO_CONFIDENCE_THRESHOLD:
@@ -1078,27 +1079,33 @@ async def ws(ws: WebSocket):
                             if not first_line_complete:
                                 continue
 
-                            # Stage 3: Speaker Verification
-                            is_caller, sim_score = speaker_verifier.verify(filtered_chunk)
-                            if not is_caller:
+                            # Stage 3: Speaker Verification (Continuous verification of latest chunk)
+                            is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
+                            if not is_caller or speaker_similarity < 0.65: # Loose initial filter
                                 barge_in_confirm_start = None
                                 buffer.clear()
                                 vad_buffer.clear()
                                 continue
 
-                            # Stage 4: Confirmation Buffer (300ms continuous caller speech)
+                            # Stage 4: Confirmation Buffer
                             if barge_in_confirm_start is None:
                                 barge_in_confirm_start = now
 
                             elapsed_ms = (now - barge_in_confirm_start) * 1000
-                            if elapsed_ms < BARGE_IN_CONFIRM_MS:
-                                # Still waiting for confirmation — buffer audio but don't barge-in yet
+                            
+                            # Interruption Confidence Score Logic
+                            duration_factor = min(1.0, elapsed_ms / 1000.0)
+                            
+                            confidence = (0.4 * speaker_similarity) + (0.3 * vad_confidence) + (0.2 * duration_factor) + (0.1 * 1.0)
+                            
+                            if elapsed_ms < BARGE_IN_CONFIRM_MS or confidence < 0.82:
+                                # Still verifying the caller. Not enough confidence or duration yet!
                                 buffer.extend(chunk)
                                 vad_buffer.extend(filtered_chunk)
                                 last_voice = now
                                 continue
 
-                            # ✅ 300ms of continuous caller speech confirmed — FIRE barge-in
+                            # ✅ Interruption Pass confirmed!
                             barge_in_confirm_start = None
 
                             if len(vad_buffer) > 4000 and classifier:
@@ -1109,9 +1116,10 @@ async def ws(ws: WebSocket):
                                     buffer.clear()
                                     vad_buffer.clear()
                                     continue
-                            vad_status = f"Silero: {vad_confidence:.2f}" if use_silero and silero_vad else "Basic"
-                            caller_status = f"Caller: {sim_score:.2f}" if speaker_verifier.is_enrolled else "Enrolling"
-                            print(f"\n[VAD] ✅ Speech started (dB: {audio_db:.1f}, {vad_status}, {caller_status})")
+                                    
+                            vad_status = f"Silero: {vad_confidence:.2f}" if use_silero else "Basic"
+                            caller_status = f"Caller: {speaker_similarity:.2f}" if speaker_verifier.is_enrolled else "Enrolling"
+                            print(f"\n[VAD] ✅ Speech started (dB: {audio_db:.1f}, {vad_status}, {caller_status}) [CONFIDENCE: {confidence:.2f}]")
                             await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
