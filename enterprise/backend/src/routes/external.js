@@ -7,6 +7,41 @@ const router = Router();
 // Apply auth middleware to ALL external v1 routes
 router.use(requireApiKey);
 
+// GET /v1/agents - List all agents with pagination
+router.get('/agents', async (req, res) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const status = req.query.status; // optional filter: draft, active, paused
+
+        const where = status ? { status } : {};
+        const skip = (page - 1) * limit;
+
+        const [agents, total] = await Promise.all([
+            prisma.agent.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit,
+            }),
+            prisma.agent.count({ where }),
+        ]);
+
+        res.json({
+            agents,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit),
+            },
+        });
+    } catch (e) {
+        console.error('[EXTERNAL API ERROR]', e);
+        res.status(500).json({ error: 'Failed to list agents' });
+    }
+});
+
 // POST /v1/agents - Create a new Agent purely via API
 router.post('/agents', async (req, res) => {
     try {
@@ -110,6 +145,58 @@ router.get('/agents/:id', async (req, res) => {
     } catch (e) {
         console.error('[EXTERNAL API ERROR]', e);
         res.status(500).json({ error: "Failed to retrieve agent" });
+    }
+});
+
+// PUT /v1/agents/:id - Update an existing agent via API
+router.put('/agents/:id', async (req, res) => {
+    try {
+        const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
+        if (!existing) return res.status(404).json({ error: 'Agent not found' });
+
+        const data = { ...req.body };
+
+        // Serialize JSON fields if provided as arrays/objects
+        if (data.fillerPhrases && Array.isArray(data.fillerPhrases)) data.fillerPhrases = JSON.stringify(data.fillerPhrases);
+        if (data.ipaLexicon && typeof data.ipaLexicon === 'object') data.ipaLexicon = JSON.stringify(data.ipaLexicon);
+        if (data.tools && Array.isArray(data.tools)) data.tools = JSON.stringify(data.tools);
+
+        // Prevent overwriting the id or timestamps
+        delete data.id;
+        delete data.createdAt;
+        delete data.updatedAt;
+
+        const agent = await prisma.agent.update({ where: { id: req.params.id }, data });
+
+        res.json({
+            message: 'Agent updated successfully.',
+            agentId: agent.id,
+            agent,
+        });
+    } catch (e) {
+        console.error('[EXTERNAL API ERROR]', e);
+        res.status(500).json({ error: 'Failed to update agent' });
+    }
+});
+
+// DELETE /v1/agents/:id - Delete an agent via API
+router.delete('/agents/:id', async (req, res) => {
+    try {
+        const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
+        if (!existing) return res.status(404).json({ error: 'Agent not found' });
+
+        // Delete related records first (Prisma SQLite doesn't always cascade)
+        await prisma.promptVersion.deleteMany({ where: { agentId: req.params.id } });
+        await prisma.followUp.deleteMany({ where: { agentId: req.params.id } });
+        await prisma.agent.delete({ where: { id: req.params.id } });
+
+        res.json({
+            message: 'Agent deleted successfully.',
+            agentId: req.params.id,
+        });
+    } catch (e) {
+        console.error('[EXTERNAL API ERROR]', e);
+        res.status(500).json({ error: 'Failed to delete agent' });
     }
 });
 

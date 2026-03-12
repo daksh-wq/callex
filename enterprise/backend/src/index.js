@@ -111,8 +111,24 @@ export function broadcastToCall(callId, data) {
     wsClients.get(callId)?.forEach(c => { if (c.readyState === 1) c.send(msg); });
 }
 
+// Serve the Enterprise Dashboard frontend (built Vite dist)
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DASHBOARD_DIST = path.resolve(__dirname, '../../frontend/dist');
+
+// Serve static assets (JS, CSS, images, etc.)
+app.use(express.static(DASHBOARD_DIST));
+
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', ts: new Date() }));
+
+// SPA catch-all: any non-API route serves index.html (React Router handles the rest)
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+    res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
+});
 
 const PORT = process.env.PORT || 4000;
 httpServer.listen(PORT, () => {
