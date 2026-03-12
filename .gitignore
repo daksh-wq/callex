@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 dist/
+!enterprise/frontend/dist/
 build/
 *.egg
 
