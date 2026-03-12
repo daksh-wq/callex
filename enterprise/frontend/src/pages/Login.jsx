@@ -167,7 +167,7 @@ export default function Login() {
                         {tab === 'signup' && (
                             <div><label className="label">Full Name</label><input required className="input-field" placeholder="John Smith" {...F('name')} /></div>
                         )}
-                        <div><label className="label">Email Address</label><input required type="email" className="input-field" placeholder="you@company.com" {...F('email')} /></div>
+                        <div><label className="label">Email / Username</label><input required type="text" className="input-field" placeholder="you@company.com or username" {...F('email')} /></div>
                         {tab !== 'reset' && (
                             <div>
                                 <div className="flex items-center justify-between mb-1">
