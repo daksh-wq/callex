@@ -14,7 +14,7 @@ router.get('/agents', async (req, res) => {
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const status = req.query.status; // optional filter: draft, active, paused
 
-        const where = status ? { status } : {};
+        const where = status ? { status, userId: req.apiUser.userId } : { userId: req.apiUser.userId };
         const skip = (page - 1) * limit;
 
         const [agents, total] = await Promise.all([
@@ -63,6 +63,7 @@ router.post('/agents', async (req, res) => {
 
         const agent = await prisma.agent.create({
             data: {
+                userId: req.apiUser.userId,
                 name, description: description || '', systemPrompt: systemPrompt || '', openingLine: openingLine || '',
                 voice: voice || 'alloy', language: language || 'en-US', sttEngine: sttEngine || 'callex-1.1',
                 llmModel: llmModel || 'callex-1.3',
@@ -136,8 +137,8 @@ router.post('/agents', async (req, res) => {
 // GET /v1/agents/:id - Retrieve an existing agent via API
 router.get('/agents/:id', async (req, res) => {
     try {
-        const agent = await prisma.agent.findUnique({
-            where: { id: req.params.id },
+        const agent = await prisma.agent.findFirst({
+            where: { id: req.params.id, userId: req.apiUser.userId },
             include: { PromptVersion: { orderBy: { version: 'desc' } } }
         });
         if (!agent) return res.status(404).json({ error: 'Agent not found' });
@@ -151,7 +152,7 @@ router.get('/agents/:id', async (req, res) => {
 // PUT /v1/agents/:id - Update an existing agent via API
 router.put('/agents/:id', async (req, res) => {
     try {
-        const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
+        const existing = await prisma.agent.findFirst({ where: { id: req.params.id, userId: req.apiUser.userId } });
         if (!existing) return res.status(404).json({ error: 'Agent not found' });
 
         const data = { ...req.body };
@@ -182,7 +183,7 @@ router.put('/agents/:id', async (req, res) => {
 // DELETE /v1/agents/:id - Delete an agent via API
 router.delete('/agents/:id', async (req, res) => {
     try {
-        const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
+        const existing = await prisma.agent.findFirst({ where: { id: req.params.id, userId: req.apiUser.userId } });
         if (!existing) return res.status(404).json({ error: 'Agent not found' });
 
         // Delete related records first (Prisma SQLite doesn't always cascade)

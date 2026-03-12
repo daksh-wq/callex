@@ -7,6 +7,7 @@ const router = Router();
 router.get('/', async (req, res) => {
     try {
         const followups = await prisma.followUp.findMany({
+            where: { userId: req.userId },
             include: { agent: true },
             orderBy: { scheduledFor: 'asc' }
         });
@@ -21,7 +22,7 @@ router.post('/', async (req, res) => {
     try {
         const { phoneNumber, agentId, campaignId, scheduledFor, reason } = req.body;
         const record = await prisma.followUp.create({
-            data: { phoneNumber, agentId, campaignId, scheduledFor: new Date(scheduledFor), reason, status: 'pending' }
+            data: { userId: req.userId, phoneNumber, agentId, campaignId, scheduledFor: new Date(scheduledFor), reason, status: 'pending' }
         });
         res.json(record);
     } catch (error) {

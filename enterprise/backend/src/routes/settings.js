@@ -9,7 +9,7 @@ const router = Router();
 // GET /api/settings/api-keys
 router.get('/api-keys', async (req, res) => {
     const keys = await prisma.apiKey.findMany({
-        where: { active: true },
+        where: { active: true, userId: req.userId },
         orderBy: { createdAt: 'desc' },
         select: { id: true, name: true, prefix: true, env: true, lastUsed: true, createdAt: true, active: true }
     });
@@ -23,12 +23,7 @@ router.post('/api-keys', async (req, res) => {
     const prefix = env === 'live' ? `ck_live_${rawKey.slice(0, 8)}` : `ck_test_${rawKey.slice(0, 8)}`;
     const fullKey = `${prefix}_${rawKey.slice(8)}`;
     const keyHash = crypto.createHash('sha256').update(fullKey).digest('hex');
-    // Need a userId - use placeholder for now
-    let user = await prisma.user.findFirst();
-    if (!user) {
-        user = await prisma.user.create({ data: { email: 'admin@callex.ai', name: 'Admin', password: 'hashed', role: 'admin' } });
-    }
-    const key = await prisma.apiKey.create({ data: { userId: user.id, name, keyHash, prefix, env: env || 'test' } });
+    const key = await prisma.apiKey.create({ data: { userId: req.userId, name, keyHash, prefix, env: env || 'test' } });
     res.json({ ...key, fullKey }); // Only time we return the full key
 });
 
@@ -40,13 +35,13 @@ router.delete('/api-keys/:id', async (req, res) => {
 
 // GET /api/settings/webhooks
 router.get('/webhooks', async (req, res) => {
-    res.json(await prisma.webhook.findMany({ orderBy: { createdAt: 'desc' } }));
+    res.json(await prisma.webhook.findMany({ where: { userId: req.userId }, orderBy: { createdAt: 'desc' } }));
 });
 
 // POST /api/settings/webhooks
 router.post('/webhooks', async (req, res) => {
     const { url, events, secret } = req.body;
-    const webhook = await prisma.webhook.create({ data: { url, events: JSON.stringify(events || []), secret } });
+    const webhook = await prisma.webhook.create({ data: { userId: req.userId, url, events: JSON.stringify(events || []), secret } });
     res.json(webhook);
 });
 

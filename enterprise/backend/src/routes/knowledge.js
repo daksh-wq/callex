@@ -8,7 +8,7 @@ const router = Router();
 
 // GET /api/knowledge
 router.get('/', async (req, res) => {
-    res.json(await prisma.knowledgeDoc.findMany({ orderBy: { createdAt: 'desc' } }));
+    res.json(await prisma.knowledgeDoc.findMany({ where: { userId: req.userId }, orderBy: { createdAt: 'desc' } }));
 });
 
 // POST /api/knowledge - upload document
@@ -16,6 +16,7 @@ router.post('/', upload.single('file'), async (req, res) => {
     const { name, type, sourceUrl } = req.body;
     const doc = await prisma.knowledgeDoc.create({
         data: {
+            userId: req.userId,
             name: name || req.file?.originalname || 'Untitled',
             type: type || 'pdf',
             status: 'processing',

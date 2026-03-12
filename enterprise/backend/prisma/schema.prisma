@@ -21,10 +21,19 @@ model User {
   QAScores  QAScore[]
   WfmStates WfmState[]
   AuditLogs AuditLog[]
+  Agents       Agent[]
+  Campaigns    Campaign[]
+  Calls        Call[]       @relation("UserCalls")
+  KnowledgeDocs KnowledgeDoc[]
+  Webhooks     Webhook[]
+  RoutingRules RoutingRule[]
+  FollowUps    FollowUp[]
 }
 
 model Agent {
   id                String    @id @default(uuid())
+  userId            String?
+  user              User?     @relation(fields: [userId], references: [id])
   name              String
   description       String?
   status            String    @default("draft") // draft, active, paused
@@ -94,6 +103,8 @@ model Agent {
 
 model FollowUp {
   id              String   @id @default(uuid())
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id])
   phoneNumber     String
   originalCallId  String?
   agentId         String
@@ -119,6 +130,8 @@ model PromptVersion {
 
 model Call {
   id            String    @id @default(uuid())
+  userId        String?
+  user          User?     @relation("UserCalls", fields: [userId], references: [id])
   agentId       String?
   agent         Agent?    @relation(fields: [agentId], references: [id])
   campaignId    String?
@@ -145,6 +158,8 @@ model Call {
 
 model Campaign {
   id               String   @id @default(uuid())
+  userId           String?
+  user             User?    @relation(fields: [userId], references: [id])
   name             String
   status           String   @default("draft") // draft, running, paused, completed
   agentId          String?
@@ -192,6 +207,8 @@ model Campaign {
 
 model KnowledgeDoc {
   id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
   name        String
   type        String   @default("pdf") // pdf, api, web
   status      String   @default("processing") // processing, synced, error
@@ -214,6 +231,8 @@ model Integration {
 
 model Webhook {
   id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
   url       String
   events    String   @default("[]") // JSON array of event names
   secret    String?
@@ -236,6 +255,8 @@ model ApiKey {
 
 model RoutingRule {
   id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
   name        String
   intentTag   String
   priority    Int      @default(0)

@@ -5,12 +5,12 @@ const router = Router();
 
 // GET /api/routing/rules
 router.get('/rules', async (req, res) => {
-    res.json(await prisma.routingRule.findMany({ orderBy: { priority: 'asc' } }));
+    res.json(await prisma.routingRule.findMany({ where: { userId: req.userId }, orderBy: { priority: 'asc' } }));
 });
 
 // POST /api/routing/rules
 router.post('/rules', async (req, res) => {
-    const rule = await prisma.routingRule.create({ data: req.body });
+    const rule = await prisma.routingRule.create({ data: { ...req.body, userId: req.userId } });
     res.json(rule);
 });
 

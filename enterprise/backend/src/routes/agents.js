@@ -7,14 +7,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/agents
 router.get('/', async (req, res) => {
-    const agents = await prisma.agent.findMany({ orderBy: { createdAt: 'desc' } });
+    const agents = await prisma.agent.findMany({ where: { userId: req.userId }, orderBy: { createdAt: 'desc' } });
     res.json(agents);
 });
 
 // GET /api/agents/:id
 router.get('/:id', async (req, res) => {
-    const agent = await prisma.agent.findUnique({
-        where: { id: req.params.id },
+    const agent = await prisma.agent.findFirst({
+        where: { id: req.params.id, userId: req.userId },
         include: { PromptVersion: { orderBy: { version: 'desc' } } }
     });
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
@@ -35,6 +35,7 @@ router.post('/', async (req, res) => {
     } = req.body;
     const agent = await prisma.agent.create({
         data: {
+            userId: req.userId,
             name, description, systemPrompt, openingLine, voice: voice || 'alloy',
             language: language || 'en-US', sttEngine: sttEngine || 'callex-1.1',
             llmModel: llmModel || 'callex-1.3',
@@ -88,6 +89,8 @@ router.post('/', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
+    const existing = await prisma.agent.findFirst({ where: { id: req.params.id, userId: req.userId } });
+    if (!existing) return res.status(404).json({ error: 'Agent not found' });
     const data = { ...req.body };
     if (data.fillerPhrases && Array.isArray(data.fillerPhrases)) data.fillerPhrases = JSON.stringify(data.fillerPhrases);
     if (data.ipaLexicon && typeof data.ipaLexicon === 'object') data.ipaLexicon = JSON.stringify(data.ipaLexicon);
@@ -98,6 +101,8 @@ router.patch('/:id', async (req, res) => {
 
 // DELETE /api/agents/:id
 router.delete('/:id', async (req, res) => {
+    const existing = await prisma.agent.findFirst({ where: { id: req.params.id, userId: req.userId } });
+    if (!existing) return res.status(404).json({ error: 'Agent not found' });
     await prisma.agent.delete({ where: { id: req.params.id } });
     res.json({ success: true });
 });

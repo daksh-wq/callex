@@ -50,6 +50,15 @@ app.use('/uploads', express.static('uploads'));
 
 // Routes
 app.use('/api/auth', authRouter);
+
+// Apply JWT auth middleware to all other /api routes (except /api/auth above and /api/v1 below)
+import { requireAuth } from './middleware/auth.js';
+app.use('/api', (req, res, next) => {
+    // Skip external API (has its own API key auth)
+    if (req.path.startsWith('/v1')) return next();
+    requireAuth(req, res, next);
+});
+
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/supervisor', supervisorRouter);
 app.use('/api/agents', agentsRouter);

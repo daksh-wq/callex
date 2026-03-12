@@ -6,7 +6,7 @@ const router = Router();
 
 // GET /api/dialer/campaigns
 router.get('/campaigns', async (req, res) => {
-    res.json(await prisma.campaign.findMany({ orderBy: { createdAt: 'desc' } }));
+    res.json(await prisma.campaign.findMany({ where: { userId: req.userId }, orderBy: { createdAt: 'desc' } }));
 });
 
 // POST /api/dialer/campaigns
@@ -26,6 +26,7 @@ router.post('/campaigns', async (req, res) => {
 
     const campaign = await prisma.campaign.create({
         data: {
+            userId: req.userId,
             name, agentId, dialingMode: dialingMode || 'predictive',
             callsPerSecond: callsPerSecond || 5,
             tcpaLock: tcpaLock ?? true, dncScrubbing: dncScrubbing ?? true,

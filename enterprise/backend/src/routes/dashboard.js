@@ -6,20 +6,24 @@ const router = Router();
 
 // GET /api/dashboard/kpis - live KPI data
 router.get('/kpis', async (req, res) => {
-    const activeCalls = await prisma.call.count({ where: { status: 'active' } });
+    // Get user's agent IDs for scoping
+    const userAgents = await prisma.agent.findMany({ where: { userId: req.userId }, select: { id: true } });
+    const agentIds = userAgents.map(a => a.id);
+
+    const activeCalls = await prisma.call.count({ where: { status: 'active', agentId: { in: agentIds } } });
     const completedToday = await prisma.call.count({
-        where: { status: 'completed', startedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
+        where: { status: 'completed', agentId: { in: agentIds }, startedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
     });
-    const allCalls = await prisma.call.findMany({ select: { mosScore: true, duration: true, sentiment: true } });
+    const allCalls = await prisma.call.findMany({ where: { agentId: { in: agentIds } }, select: { mosScore: true, duration: true, sentiment: true } });
     const avgMOS = allCalls.filter(c => c.mosScore).reduce((a, b, _, arr) => a + b.mosScore / arr.length, 0) || 4.2;
     const angryCount = allCalls.filter(c => c.sentiment === 'angry').length;
     const slaRate = allCalls.length > 0 ? Math.round((1 - angryCount / allCalls.length) * 100) : 100;
 
     // Genuine queue depth = active calls not yet assigned an agent
-    const queueDepth = await prisma.call.count({ where: { status: 'active', agentId: null } });
+    const queueDepth = await prisma.call.count({ where: { status: 'active', agentId: null, userId: req.userId } });
 
     // Count active agents vs human staff fallback
-    const aiAgentsAvailable = await prisma.agent.count({ where: { status: 'active' } });
+    const aiAgentsAvailable = agentIds.length;
     const errorEvents = await prisma.systemEvent.count({ where: { severity: 'error' } });
     const totalEvents = await prisma.systemEvent.count();
     const fallbackRate = totalEvents > 0 ? (errorEvents / totalEvents) * 100 : 0;

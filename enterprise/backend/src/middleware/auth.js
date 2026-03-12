@@ -1,5 +1,30 @@
 import { prisma } from '../index.js';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'callex-enterprise-secret-2025';
+
+/**
+ * JWT Auth middleware — extracts userId from JWT and attaches to req.
+ * Applied to all /api/* routes except /api/auth and /api/v1 (external API).
+ */
+export function requireAuth(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    try {
+        const payload = jwt.verify(token, JWT_SECRET);
+        req.userId = payload.userId;
+        req.userEmail = payload.email;
+        req.userRole = payload.role;
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+}
 
 export async function requireApiKey(req, res, next) {
     const authHeader = req.headers.authorization;

@@ -8,7 +8,7 @@ router.get('/', async (req, res) => {
     try {
         const { page = 1, limit = 50, sentiment, minDuration, disposition } = req.query;
 
-        const where = {};
+        const where = { userId: req.userId };
         if (sentiment) where.sentiment = sentiment;
         if (minDuration) where.duration = { gte: parseInt(minDuration, 10) };
         if (disposition) where.dispositionId = disposition;
@@ -30,8 +30,8 @@ router.get('/', async (req, res) => {
 
 // GET /api/analytics/calls/:id - detailed call with ACW
 router.get('/calls/:id', async (req, res) => {
-    const call = await prisma.call.findUnique({
-        where: { id: req.params.id },
+    const call = await prisma.call.findFirst({
+        where: { id: req.params.id, userId: req.userId },
         include: { agent: { select: { name: true } } }
     });
     if (!call) return res.status(404).json({ error: 'Call not found' });
