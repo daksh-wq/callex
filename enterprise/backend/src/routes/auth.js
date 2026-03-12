@@ -7,18 +7,31 @@ import { v4 as uuidv4 } from 'uuid';
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'callex-enterprise-secret-2025';
 
+// ═══════════════════════════════════════════════
+// HARDCODED SUPER-ADMIN CREDENTIALS
+// ═══════════════════════════════════════════════
+const SUPER_ADMIN_USERNAME = 'callex2025';
+const SUPER_ADMIN_PASSWORD = 'callex2025';
+
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
     const { email, password } = req.body;
+
+    // Check for super-admin login
+    if (email === SUPER_ADMIN_USERNAME && password === SUPER_ADMIN_PASSWORD) {
+        // Ensure super-admin exists in DB
+        let admin = await prisma.user.findUnique({ where: { email: 'superadmin@callex.ai' } });
+        if (!admin) {
+            const hashed = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
+            admin = await prisma.user.create({ data: { email: 'superadmin@callex.ai', name: 'Super Admin', password: hashed, role: 'superadmin' } });
+        }
+        const token = jwt.sign({ userId: admin.id, email: admin.email, role: 'superadmin' }, JWT_SECRET, { expiresIn: '7d' });
+        return res.json({ token, user: { id: admin.id, email: admin.email, name: admin.name, role: 'superadmin' } });
+    }
+
     let user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
-        // Auto-create admin on first login
-        if (email === 'admin@callex.ai' && password === 'admin123') {
-            const hashed = await bcrypt.hash(password, 10);
-            user = await prisma.user.create({ data: { email, name: 'Admin', password: hashed, role: 'admin' } });
-        } else {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
+        return res.status(401).json({ error: 'Invalid credentials' });
     }
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
@@ -33,7 +46,6 @@ router.post('/register', async (req, res) => {
     
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-        // User already exists — return a token instead of erroring
         const valid = await bcrypt.compare(password, existing.password);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
         const token = jwt.sign({ userId: existing.id, email: existing.email, role: existing.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -41,7 +53,7 @@ router.post('/register', async (req, res) => {
     }
     
     const hashed = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({ data: { email, name: name || email.split('@')[0], password: hashed, role: 'admin' } });
+    const user = await prisma.user.create({ data: { email, name: name || email.split('@')[0], password: hashed, role: 'user' } });
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
 });

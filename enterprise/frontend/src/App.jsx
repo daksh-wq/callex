@@ -20,6 +20,7 @@ import Reports from './pages/Reports.jsx';
 import Telecom from './pages/Telecom.jsx';
 import Billing from './pages/Billing.jsx';
 import FollowUps from './pages/FollowUps.jsx';
+import AdminUsers from './pages/AdminUsers.jsx';
 import Toast from './components/Toast.jsx';
 import { Loader2, ServerCrash } from 'lucide-react';
 
@@ -96,6 +97,7 @@ export default function App() {
                         <Route path="telecom" element={<ErrorBoundary><Telecom /></ErrorBoundary>} />
                         <Route path="billing" element={<ErrorBoundary><Billing /></ErrorBoundary>} />
                         <Route path="followups" element={<ErrorBoundary><FollowUps /></ErrorBoundary>} />
+                        <Route path="admin/users" element={<ErrorBoundary><AdminUsers /></ErrorBoundary>} />
                     </Route>
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>

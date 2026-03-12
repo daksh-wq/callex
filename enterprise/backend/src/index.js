@@ -77,6 +77,10 @@ app.use('/api/billing', billingRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/followups', followupsRouter);
 
+// Admin panel (super-admin only)
+import adminRouter from './routes/admin.js';
+app.use('/api/admin', adminRouter);
+
 // Set up public authenticated developer APIs
 import externalRouter from './routes/external.js';
 app.use('/api/v1', externalRouter);

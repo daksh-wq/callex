@@ -14,12 +14,14 @@ const AuthContext = createContext(null);
 
 const API_BASE = '/api';
 
+// Super-admin credentials (matched on backend)
+const SUPER_ADMIN_USERNAME = 'callex2025';
+
 /**
  * Sync with backend — auto-create user if needed, get JWT token
  */
 async function syncBackendAuth(email, password, name) {
     try {
-        // Try login first
         let res = await fetch(`${API_BASE}/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -27,7 +29,6 @@ async function syncBackendAuth(email, password, name) {
         });
 
         if (res.status === 401) {
-            // User doesn't exist in backend yet — register
             res = await fetch(`${API_BASE}/auth/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -39,12 +40,11 @@ async function syncBackendAuth(email, password, name) {
             const data = await res.json();
             if (data.token) {
                 localStorage.setItem('token', data.token);
-                console.log('[AUTH] Backend JWT stored');
                 return data;
             }
         }
     } catch (err) {
-        console.warn('[AUTH] Backend sync failed (non-blocking):', err.message);
+        console.warn('[AUTH] Backend sync failed:', err.message);
     }
     return null;
 }
@@ -55,6 +55,17 @@ export function AuthProvider({ children }) {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        // Check if super-admin session exists (no Firebase)
+        const savedRole = localStorage.getItem('userRole');
+        const savedToken = localStorage.getItem('token');
+        if (savedRole === 'superadmin' && savedToken) {
+            setUser({ email: 'superadmin@callex.ai', displayName: 'Super Admin' });
+            setUserRole('superadmin');
+            setLoading(false);
+            // Still listen for Firebase state but don't override superadmin
+            return () => {};
+        }
+
         const unsub = onAuthStateChanged(auth, (u) => {
             setUser(u);
             setLoading(false);
@@ -63,36 +74,60 @@ export function AuthProvider({ children }) {
     }, []);
 
     const login = async (email, password, role = 'user') => {
+        // ═══ SUPER-ADMIN: bypass Firebase, go directly to backend ═══
+        if (email === SUPER_ADMIN_USERNAME) {
+            const res = await fetch(`${API_BASE}/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw { code: 'auth/invalid-credential', message: err.error || 'Invalid credentials' };
+            }
+
+            const data = await res.json();
+            localStorage.setItem('token', data.token);
+            localStorage.setItem('userRole', data.user.role);
+            setUserRole(data.user.role);
+            setUser({ email: data.user.email, displayName: data.user.name });
+            return data;
+        }
+
+        // ═══ Regular user: Firebase + backend bridge ═══
         localStorage.setItem('userRole', role);
         setUserRole(role);
         const cred = await signInWithEmailAndPassword(auth, email, password);
-        // Bridge: sync with backend to get JWT
         await syncBackendAuth(email, password);
         return cred;
     };
+
     const signup = async (email, password, displayName, role = 'user') => {
         localStorage.setItem('userRole', role);
         setUserRole(role);
         const cred = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(cred.user, { displayName });
-        // Bridge: register in backend and get JWT
         await syncBackendAuth(email, password, displayName);
         return cred;
     };
+
     const loginWithGoogle = async (role = 'user') => {
         localStorage.setItem('userRole', role);
         setUserRole(role);
         const cred = await signInWithPopup(auth, googleProvider);
-        // Bridge: sync Google user with backend (use Firebase UID as password fallback)
         await syncBackendAuth(cred.user.email, cred.user.uid, cred.user.displayName);
         return cred;
     };
+
     const logout = () => {
         localStorage.removeItem('userRole');
         localStorage.removeItem('token');
         setUserRole('user');
-        return signOut(auth);
+        setUser(null);
+        return signOut(auth).catch(() => {}); // Firebase signOut may fail for superadmin (no Firebase session)
     };
+
     const resetPassword = (email) => sendPasswordResetEmail(auth, email);
 
     return (

@@ -7,7 +7,7 @@ import AIAssistant from './AIAssistant.jsx';
 import {
     LayoutDashboard, Headphones, Bot, BookOpen, FlaskConical,
     PhoneOutgoing, BarChart3, GitBranch, Plug, ShieldCheck, Settings, LogOut, Activity,
-    Users, Search, Command, FileAudio, CheckCircle2, Phone, CreditCard, Download, CalendarClock
+    Users, Search, Command, FileAudio, CheckCircle2, Phone, CreditCard, Download, CalendarClock, Crown
 } from 'lucide-react';
 // Enterprise navigation grouped by category
 const NAV_SECTIONS = [
@@ -62,11 +62,22 @@ export default function Layout() {
     const { showToast } = useStore();
     const location = useLocation();
 
-    const activeSections = userRole === 'admin' ? NAV_SECTIONS : NAV_SECTIONS.map(s => {
+    const activeSections = (userRole === 'admin' || userRole === 'superadmin') ? NAV_SECTIONS : NAV_SECTIONS.map(s => {
         const allowed = ['/dashboard', '/agents', '/billing', '/analytics', '/followups', '/routing', '/integrations', '/settings', '/dialer'];
         const items = s.items.filter(i => allowed.includes(i.to));
         return items.length > 0 ? { ...s, items } : null;
     }).filter(Boolean);
+
+    // Add Super Admin section for superadmin only
+    if (userRole === 'superadmin') {
+        activeSections.push({
+            title: 'Super Admin',
+            items: [
+                { to: '/admin/users', icon: Crown, label: 'Users Management' },
+            ]
+        });
+    }
+
     const activeRoutes = activeSections.flatMap(s => s.items);
 
     async function handleLogout() {
@@ -240,7 +251,9 @@ function LiveStatusBar() {
     useEffect(() => {
         const fetchKPIs = async () => {
             try {
-                const res = await fetch((import.meta.env.VITE_API_URL || 'http://localhost:4000') + '/api/dashboard/kpis');
+                const token = localStorage.getItem('token');
+                const headers = token ? { Authorization: `Bearer ${token}` } : {};
+                const res = await fetch('/api/dashboard/kpis', { headers });
                 if (res.ok) {
                     const data = await res.json();
                     setStats({
