@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { prisma } from '../index.js';
-import { GoogleGenAI } from '@google/genai';
 
 const router = Router();
 
@@ -115,6 +114,7 @@ router.post('/agent-chat', async (req, res) => {
         const geminiKey = process.env.GEMINI_API_KEY || process.env.GENARTML_SECRET_KEY || 'MISSING_KEY'; // fallback
         if (geminiKey && geminiKey !== 'MISSING_KEY') {
             try {
+                const { GoogleGenAI } = await import('@google/genai');
                 const ai = new GoogleGenAI({ apiKey: geminiKey });
                 const aiResponse = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',

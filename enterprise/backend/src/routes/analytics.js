@@ -39,7 +39,6 @@ router.get('/calls/:id', async (req, res) => {
 });
 
 // POST /api/analytics/calls/:id/acw - trigger LLM summarization (REAL Gemini 2.5 Flash implementation)
-import { GoogleGenAI } from '@google/genai';
 
 router.post('/calls/:id/acw', async (req, res) => {
     try {
@@ -66,6 +65,7 @@ router.post('/calls/:id/acw', async (req, res) => {
         }
 
         // Initialize Gemini
+        const { GoogleGenAI } = await import('@google/genai');
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
         const prompt = `
