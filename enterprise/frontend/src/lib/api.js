@@ -1,13 +1,17 @@
 // API client — proxied through Vite to http://localhost:4000 (or backend in prod)
 // Falls back to MOCK DATA when server is unreachable so the UI is fully testable.
 
-const BASE = 'http://localhost:4000/api';
+const BASE = '/api';
 
 // ─── Fetch wrapper ───────────────────────────────────────────────────────────
 export async function apiFetch(path, options = {}) {
     try {
+        // Get JWT token from localStorage (set during login)
+        const token = localStorage.getItem('token');
+        const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
         const res = await fetch(`${BASE}${path}`, {
-            headers: { 'Content-Type': 'application/json', ...options.headers },
+            headers: { 'Content-Type': 'application/json', ...authHeaders, ...options.headers },
             ...options,
             body: options.body && typeof options.body !== 'string' ? JSON.stringify(options.body) : options.body,
         });
