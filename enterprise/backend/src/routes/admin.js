@@ -1,46 +1,36 @@
 import { Router } from 'express';
-import { prisma } from '../index.js';
+import { db, docToObj, queryToArray } from '../firebase.js';
 import bcrypt from 'bcryptjs';
 
 const router = Router();
 
-// ═══════════════════════════════════════════════
-// MIDDLEWARE: Super-admin only
-// ═══════════════════════════════════════════════
+// Middleware: Super-admin only
 function requireSuperAdmin(req, res, next) {
-    if (req.userRole !== 'superadmin') {
-        return res.status(403).json({ error: 'Super-admin access required' });
-    }
+    if (req.userRole !== 'superadmin') return res.status(403).json({ error: 'Super-admin access required' });
     next();
 }
 router.use(requireSuperAdmin);
 
-// ═══════════════════════════════════════════════
-// GET /api/admin/stats — Platform-wide statistics
-// ═══════════════════════════════════════════════
+// GET /api/admin/stats
 router.get('/stats', async (req, res) => {
     try {
-        const [
-            totalUsers, totalAgents, totalCalls, totalCampaigns,
-            totalApiKeys, activeCalls, totalDocs
-        ] = await Promise.all([
-            prisma.user.count(),
-            prisma.agent.count(),
-            prisma.call.count(),
-            prisma.campaign.count(),
-            prisma.apiKey.count({ where: { active: true } }),
-            prisma.call.count({ where: { status: 'active' } }),
-            prisma.knowledgeDoc.count(),
+        const [usersSnap, agentsSnap, callsSnap, campaignsSnap, apiKeysSnap, activeCallsSnap, docsSnap] = await Promise.all([
+            db.collection('users').get(),
+            db.collection('agents').get(),
+            db.collection('calls').get(),
+            db.collection('campaigns').get(),
+            db.collection('apiKeys').where('active', '==', true).get(),
+            db.collection('calls').where('status', '==', 'active').get(),
+            db.collection('knowledgeDocs').get(),
         ]);
-
         res.json({
-            totalUsers,
-            totalAgents,
-            totalCalls,
-            totalCampaigns,
-            totalApiKeys,
-            activeCalls,
-            totalDocs,
+            totalUsers: usersSnap.size,
+            totalAgents: agentsSnap.size,
+            totalCalls: callsSnap.size,
+            totalCampaigns: campaignsSnap.size,
+            totalApiKeys: apiKeysSnap.size,
+            activeCalls: activeCallsSnap.size,
+            totalDocs: docsSnap.size,
         });
     } catch (e) {
         console.error('[ADMIN] Stats error:', e);
@@ -48,46 +38,30 @@ router.get('/stats', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════
-// GET /api/admin/users — All users with activity stats
-// ═══════════════════════════════════════════════
+// GET /api/admin/users
 router.get('/users', async (req, res) => {
     try {
-        const users = await prisma.user.findMany({
-            orderBy: { createdAt: 'desc' },
-            select: {
-                id: true, email: true, name: true, role: true, createdAt: true,
-                _count: {
-                    select: {
-                        Agents: true,
-                        Campaigns: true,
-                        Calls: true,
-                        ApiKey: true,
-                        KnowledgeDocs: true,
-                        Webhooks: true,
-                        RoutingRules: true,
-                        FollowUps: true,
-                    }
-                }
-            }
-        });
+        const usersSnap = await db.collection('users').orderBy('createdAt', 'desc').get();
+        const users = queryToArray(usersSnap);
 
-        const enriched = users.map(u => ({
-            id: u.id,
-            email: u.email,
-            name: u.name,
-            role: u.role,
-            createdAt: u.createdAt,
-            agents: u._count.Agents,
-            campaigns: u._count.Campaigns,
-            calls: u._count.Calls,
-            apiKeys: u._count.ApiKey,
-            knowledgeDocs: u._count.KnowledgeDocs,
-            webhooks: u._count.Webhooks,
-            routingRules: u._count.RoutingRules,
-            followUps: u._count.FollowUps,
+        const enriched = await Promise.all(users.map(async u => {
+            const [agents, campaigns, calls, apiKeys, docs, webhooks, rules, followups] = await Promise.all([
+                db.collection('agents').where('userId', '==', u.id).get(),
+                db.collection('campaigns').where('userId', '==', u.id).get(),
+                db.collection('calls').where('userId', '==', u.id).get(),
+                db.collection('apiKeys').where('userId', '==', u.id).get(),
+                db.collection('knowledgeDocs').where('userId', '==', u.id).get(),
+                db.collection('webhooks').where('userId', '==', u.id).get(),
+                db.collection('routingRules').where('userId', '==', u.id).get(),
+                db.collection('followUps').where('userId', '==', u.id).get(),
+            ]);
+            return {
+                id: u.id, email: u.email, name: u.name, role: u.role, createdAt: u.createdAt,
+                agents: agents.size, campaigns: campaigns.size, calls: calls.size,
+                apiKeys: apiKeys.size, knowledgeDocs: docs.size, webhooks: webhooks.size,
+                routingRules: rules.size, followUps: followups.size,
+            };
         }));
-
         res.json(enriched);
     } catch (e) {
         console.error('[ADMIN] Users error:', e);
@@ -95,37 +69,28 @@ router.get('/users', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════
-// GET /api/admin/users/:id — Detailed user activity
-// ═══════════════════════════════════════════════
+// GET /api/admin/users/:id
 router.get('/users/:id', async (req, res) => {
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.params.id },
-            select: { id: true, email: true, name: true, role: true, createdAt: true }
-        });
+        const doc = await db.collection('users').doc(req.params.id).get();
+        const user = docToObj(doc);
         if (!user) return res.status(404).json({ error: 'User not found' });
 
-        // Get all user's data
         const [agents, campaigns, apiKeys, calls, docs, webhooks, followups] = await Promise.all([
-            prisma.agent.findMany({ where: { userId: user.id }, select: { id: true, name: true, status: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
-            prisma.campaign.findMany({ where: { userId: user.id }, select: { id: true, name: true, status: true, totalLeads: true, connectedLeads: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
-            prisma.apiKey.findMany({ where: { userId: user.id }, select: { id: true, name: true, prefix: true, env: true, active: true, lastUsed: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
-            prisma.call.findMany({ where: { userId: user.id }, take: 50, select: { id: true, phoneNumber: true, status: true, sentiment: true, duration: true, startedAt: true }, orderBy: { startedAt: 'desc' } }),
-            prisma.knowledgeDoc.findMany({ where: { userId: user.id }, select: { id: true, name: true, type: true, status: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
-            prisma.webhook.findMany({ where: { userId: user.id }, select: { id: true, url: true, active: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
-            prisma.followUp.findMany({ where: { userId: user.id }, select: { id: true, phoneNumber: true, status: true, scheduledFor: true, reason: true }, orderBy: { scheduledFor: 'desc' } }),
+            db.collection('agents').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
+            db.collection('campaigns').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
+            db.collection('apiKeys').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
+            db.collection('calls').where('userId', '==', user.id).orderBy('startedAt', 'desc').limit(50).get(),
+            db.collection('knowledgeDocs').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
+            db.collection('webhooks').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
+            db.collection('followUps').where('userId', '==', user.id).orderBy('scheduledFor', 'desc').get(),
         ]);
 
         res.json({
-            user,
-            agents,
-            campaigns,
-            apiKeys,
-            recentCalls: calls,
-            knowledgeDocs: docs,
-            webhooks,
-            followups,
+            user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt },
+            agents: queryToArray(agents), campaigns: queryToArray(campaigns),
+            apiKeys: queryToArray(apiKeys), recentCalls: queryToArray(calls),
+            knowledgeDocs: queryToArray(docs), webhooks: queryToArray(webhooks), followups: queryToArray(followups),
         });
     } catch (e) {
         console.error('[ADMIN] User detail error:', e);
@@ -133,40 +98,34 @@ router.get('/users/:id', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════
-// POST /api/admin/users — Create a new user
-// ═══════════════════════════════════════════════
+// POST /api/admin/users
 router.post('/users', async (req, res) => {
     try {
         const { email, name, password, role } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const existing = await prisma.user.findUnique({ where: { email } });
-        if (existing) return res.status(409).json({ error: 'User with this email already exists' });
+        const existing = await db.collection('users').where('email', '==', email).limit(1).get();
+        if (!existing.empty) return res.status(409).json({ error: 'User with this email already exists' });
 
         const hashed = await bcrypt.hash(password, 10);
-        const user = await prisma.user.create({
-            data: { email, name: name || email.split('@')[0], password: hashed, role: role || 'user' }
-        });
-
-        res.json({ id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt });
+        const ref = await db.collection('users').add({ email, name: name || email.split('@')[0], password: hashed, role: role || 'user', createdAt: new Date() });
+        res.json({ id: ref.id, email, name: name || email.split('@')[0], role: role || 'user', createdAt: new Date() });
     } catch (e) {
         console.error('[ADMIN] Create user error:', e);
         res.status(500).json({ error: 'Failed to create user' });
     }
 });
 
-// ═══════════════════════════════════════════════
-// PATCH /api/admin/users/:id — Update user (role, name)
-// ═══════════════════════════════════════════════
+// PATCH /api/admin/users/:id
 router.patch('/users/:id', async (req, res) => {
     try {
         const { name, role } = req.body;
         const data = {};
         if (name) data.name = name;
         if (role) data.role = role;
-
-        const user = await prisma.user.update({ where: { id: req.params.id }, data });
+        await db.collection('users').doc(req.params.id).update(data);
+        const doc = await db.collection('users').doc(req.params.id).get();
+        const user = docToObj(doc);
         res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
     } catch (e) {
         console.error('[ADMIN] Update user error:', e);
@@ -174,35 +133,270 @@ router.patch('/users/:id', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════
-// DELETE /api/admin/users/:id — Delete user & all their data
-// ═══════════════════════════════════════════════
+// DELETE /api/admin/users/:id
 router.delete('/users/:id', async (req, res) => {
     try {
-        const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+        const doc = await db.collection('users').doc(req.params.id).get();
+        const user = docToObj(doc);
         if (!user) return res.status(404).json({ error: 'User not found' });
         if (user.role === 'superadmin') return res.status(403).json({ error: 'Cannot delete super-admin' });
 
-        // Delete user's data in order (foreign keys)
-        await prisma.apiKey.deleteMany({ where: { userId: user.id } });
-        await prisma.webhook.deleteMany({ where: { userId: user.id } });
-        await prisma.followUp.deleteMany({ where: { userId: user.id } });
-        await prisma.knowledgeDoc.deleteMany({ where: { userId: user.id } });
-        await prisma.routingRule.deleteMany({ where: { userId: user.id } });
-        await prisma.campaign.deleteMany({ where: { userId: user.id } });
-
-        // Delete agents and their prompt versions
-        const agentIds = (await prisma.agent.findMany({ where: { userId: user.id }, select: { id: true } })).map(a => a.id);
-        if (agentIds.length) {
-            await prisma.promptVersion.deleteMany({ where: { agentId: { in: agentIds } } });
-            await prisma.agent.deleteMany({ where: { userId: user.id } });
+        // Delete user's data
+        const collections = ['apiKeys', 'webhooks', 'followUps', 'knowledgeDocs', 'routingRules', 'campaigns'];
+        for (const col of collections) {
+            const snap = await db.collection(col).where('userId', '==', user.id).get();
+            const batch = db.batch();
+            snap.forEach(d => batch.delete(d.ref));
+            if (!snap.empty) await batch.commit();
         }
 
-        await prisma.user.delete({ where: { id: user.id } });
+        // Delete agents and their prompt versions
+        const agentsSnap = await db.collection('agents').where('userId', '==', user.id).get();
+        if (!agentsSnap.empty) {
+            for (const agentDoc of agentsSnap.docs) {
+                const pvSnap = await db.collection('promptVersions').where('agentId', '==', agentDoc.id).get();
+                const pvBatch = db.batch();
+                pvSnap.forEach(d => pvBatch.delete(d.ref));
+                if (!pvSnap.empty) await pvBatch.commit();
+                await agentDoc.ref.delete();
+            }
+        }
+
+        await db.collection('users').doc(req.params.id).delete();
         res.json({ success: true, message: `User ${user.email} and all their data deleted` });
     } catch (e) {
         console.error('[ADMIN] Delete user error:', e);
         res.status(500).json({ error: 'Failed to delete user' });
+    }
+});
+
+// GET /api/admin/agents
+router.get('/agents', async (req, res) => {
+    try {
+        const snap = await db.collection('agents').orderBy('createdAt', 'desc').get();
+        const agents = [];
+        for (const doc of snap.docs) {
+            const agent = { id: doc.id, ...doc.data() };
+            if (agent.userId) {
+                const userDoc = await db.collection('users').doc(agent.userId).get();
+                agent.user = userDoc.exists ? { id: userDoc.id, email: userDoc.data().email, name: userDoc.data().name } : null;
+            }
+            agents.push(agent);
+        }
+        res.json(agents);
+    } catch (e) {
+        console.error('[ADMIN] Agents error:', e);
+        res.status(500).json({ error: 'Failed to fetch agents' });
+    }
+});
+
+// PATCH /api/admin/agents/:id
+router.patch('/agents/:id', async (req, res) => {
+    try {
+        const { prosodyRate, llmModel, patienceMs, bargeInMode } = req.body;
+        const data = {};
+        if (prosodyRate !== undefined) data.prosodyRate = prosodyRate;
+        if (llmModel !== undefined) data.llmModel = llmModel;
+        if (patienceMs !== undefined) data.patienceMs = patienceMs;
+        if (bargeInMode !== undefined) data.bargeInMode = bargeInMode;
+        data.updatedAt = new Date();
+
+        await db.collection('agents').doc(req.params.id).update(data);
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        res.json(docToObj(doc));
+    } catch (e) {
+        console.error('[ADMIN] Update agent error:', e);
+        res.status(500).json({ error: 'Failed to update agent' });
+    }
+});
+
+// POST /api/admin/maintenance
+router.post('/maintenance', async (req, res) => {
+    try {
+        const { durationMinutes = 60 } = req.body;
+        const until = new Date(Date.now() + durationMinutes * 60 * 1000);
+
+        await db.collection('systemEvents').add({
+            type: 'maintenance',
+            severity: 'warning',
+            message: `Maintenance mode activated until ${until.toLocaleTimeString()}. All agents paused for ${durationMinutes} minutes.`,
+            meta: '{}',
+            createdAt: new Date(),
+        });
+
+        // Pause all active agents
+        const activeSnap = await db.collection('agents').where('status', '==', 'active').get();
+        const batch = db.batch();
+        activeSnap.forEach(d => batch.update(d.ref, { status: 'paused', updatedAt: new Date() }));
+        if (!activeSnap.empty) await batch.commit();
+
+        res.json({ success: true, maintenanceUntil: until, agentsPaused: true });
+    } catch (e) {
+        console.error('[ADMIN] Maintenance error:', e);
+        res.status(500).json({ error: 'Failed to activate maintenance mode' });
+    }
+});
+
+// GET /api/admin/agents-by-user — Agents grouped by user
+router.get('/agents-by-user', async (req, res) => {
+    try {
+        const usersSnap = await db.collection('users').orderBy('createdAt', 'desc').get();
+        const result = [];
+
+        for (const userDoc of usersSnap.docs) {
+            const u = { id: userDoc.id, ...userDoc.data() };
+            const agentsSnap = await db.collection('agents').where('userId', '==', u.id).orderBy('createdAt', 'desc').get();
+            const agents = queryToArray(agentsSnap);
+            result.push({
+                user: { id: u.id, email: u.email, name: u.name, role: u.role },
+                agents,
+                totalAgents: agents.length,
+            });
+        }
+        res.json(result);
+    } catch (e) {
+        console.error('[ADMIN] Agents by user error:', e);
+        res.status(500).json({ error: 'Failed to fetch agents by user' });
+    }
+});
+
+// GET /api/admin/users/:userId/export — Full data export for a specific user
+router.get('/users/:userId/export', async (req, res) => {
+    try {
+        const userDoc = await db.collection('users').doc(req.params.userId).get();
+        if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
+        const user = { id: userDoc.id, ...userDoc.data() };
+        delete user.password;
+
+        const [agentsSnap, callsSnap, campaignsSnap, apiKeysSnap, docsSnap, webhooksSnap, rulesSnap, followupsSnap] = await Promise.all([
+            db.collection('agents').where('userId', '==', user.id).get(),
+            db.collection('calls').where('userId', '==', user.id).get(),
+            db.collection('campaigns').where('userId', '==', user.id).get(),
+            db.collection('apiKeys').where('userId', '==', user.id).get(),
+            db.collection('knowledgeDocs').where('userId', '==', user.id).get(),
+            db.collection('webhooks').where('userId', '==', user.id).get(),
+            db.collection('routingRules').where('userId', '==', user.id).get(),
+            db.collection('followUps').where('userId', '==', user.id).get(),
+        ]);
+
+        const agents = queryToArray(agentsSnap);
+        const calls = queryToArray(callsSnap);
+        const campaigns = queryToArray(campaignsSnap);
+
+        // Get calls linked to this user's agents
+        const agentIds = agents.map(a => a.id);
+        let agentCalls = [];
+        if (agentIds.length > 0) {
+            for (let i = 0; i < agentIds.length; i += 30) {
+                const chunk = agentIds.slice(i, i + 30);
+                const snap = await db.collection('calls').where('agentId', 'in', chunk).get();
+                agentCalls = agentCalls.concat(queryToArray(snap));
+            }
+        }
+        // Combine user's direct calls + agent-related calls (deduplicate)
+        const allCallIds = new Set(calls.map(c => c.id));
+        agentCalls.forEach(c => { if (!allCallIds.has(c.id)) calls.push(c); });
+
+        const exportData = {
+            exportDate: new Date().toISOString(),
+            user,
+            summary: {
+                totalAgents: agents.length,
+                totalCalls: calls.length,
+                totalCampaigns: campaigns.length,
+                totalApiKeys: queryToArray(apiKeysSnap).length,
+                totalDocs: queryToArray(docsSnap).length,
+                totalWebhooks: queryToArray(webhooksSnap).length,
+                totalRules: queryToArray(rulesSnap).length,
+                totalFollowUps: queryToArray(followupsSnap).length,
+            },
+            agents: agents.map(a => {
+                const { userId, ...rest } = a;
+                return rest;
+            }),
+            calls: calls.map(c => ({
+                id: c.id,
+                phoneNumber: c.phoneNumber,
+                direction: c.direction || 'inbound',
+                status: c.status,
+                duration: c.duration,
+                sentiment: c.sentiment,
+                startedAt: c.startedAt,
+                endedAt: c.endedAt,
+                summary: c.summary,
+                transcript: c.transcript,
+                recordingUrl: c.recordingUrl,
+                agentId: c.agentId,
+                campaignId: c.campaignId,
+            })),
+            campaigns: queryToArray(campaignsSnap).map(c => {
+                const { userId, ...rest } = c;
+                return rest;
+            }),
+            apiKeys: queryToArray(apiKeysSnap).map(k => ({
+                id: k.id, name: k.name, prefix: k.prefix, env: k.env, 
+                active: k.active, createdAt: k.createdAt, lastUsed: k.lastUsed,
+            })),
+            knowledgeDocs: queryToArray(docsSnap),
+            webhooks: queryToArray(webhooksSnap),
+            routingRules: queryToArray(rulesSnap),
+            followUps: queryToArray(followupsSnap),
+        };
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="user_${user.email}_export.json"`);
+        res.json(exportData);
+    } catch (e) {
+        console.error('[ADMIN] User export error:', e);
+        res.status(500).json({ error: 'Failed to export user data' });
+    }
+});
+
+// GET /api/admin/users/:userId/calls — Get call logs for a specific user
+router.get('/users/:userId/calls', async (req, res) => {
+    try {
+        const agentsSnap = await db.collection('agents').where('userId', '==', req.params.userId).get();
+        const agentIds = agentsSnap.docs.map(d => d.id);
+        
+        let calls = [];
+        // Get calls by userId
+        const directSnap = await db.collection('calls').where('userId', '==', req.params.userId).orderBy('startedAt', 'desc').get();
+        calls = queryToArray(directSnap);
+        
+        // Also get calls by agentId
+        const callIds = new Set(calls.map(c => c.id));
+        if (agentIds.length > 0) {
+            for (let i = 0; i < agentIds.length; i += 30) {
+                const chunk = agentIds.slice(i, i + 30);
+                const snap = await db.collection('calls').where('agentId', 'in', chunk).get();
+                snap.docs.forEach(d => {
+                    if (!callIds.has(d.id)) {
+                        calls.push({ id: d.id, ...d.data() });
+                        callIds.add(d.id);
+                    }
+                });
+            }
+        }
+
+        // Enrich with agent names
+        for (const call of calls) {
+            if (call.agentId) {
+                const agentDoc = await db.collection('agents').doc(call.agentId).get();
+                call.agentName = agentDoc.exists ? agentDoc.data().name : 'Unknown';
+            }
+        }
+
+        // Sort by date descending
+        calls.sort((a, b) => {
+            const da = a.startedAt?.toDate ? a.startedAt.toDate() : new Date(a.startedAt || 0);
+            const db2 = b.startedAt?.toDate ? b.startedAt.toDate() : new Date(b.startedAt || 0);
+            return db2 - da;
+        });
+
+        res.json(calls);
+    } catch (e) {
+        console.error('[ADMIN] User calls error:', e);
+        res.status(500).json({ error: 'Failed to fetch user calls' });
     }
 });
 

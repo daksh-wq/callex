@@ -62,21 +62,41 @@ export default function Layout() {
     const { showToast } = useStore();
     const location = useLocation();
 
-    const activeSections = (userRole === 'admin' || userRole === 'superadmin') ? NAV_SECTIONS : NAV_SECTIONS.map(s => {
+    // ═══ SUPERADMIN: monitoring-only sidebar ═══
+    const activeSections = userRole === 'superadmin' ? [
+        {
+            title: 'Platform',
+            items: [
+                { to: '/dashboard', icon: LayoutDashboard, label: 'Command Center' },
+                { to: '/supervisor', icon: Headphones, label: 'Live Supervisor' },
+            ]
+        },
+        {
+            title: 'Analytics',
+            items: [
+                { to: '/analytics', icon: FileAudio, label: 'Logs & Recordings' },
+                { to: '/reports', icon: Download, label: 'Reports & Exports' },
+            ]
+        },
+        {
+            title: 'Agents',
+            items: [
+                { to: '/agents', icon: Bot, label: 'Agent Studio' },
+            ]
+        },
+        {
+            title: 'Admin',
+            items: [
+                { to: '/admin/users', icon: Crown, label: 'Users Management' },
+                { to: '/settings', icon: Settings, label: 'Settings' },
+                { to: '/billing', icon: CreditCard, label: 'Billing & Usage' },
+            ]
+        },
+    ] : userRole === 'admin' ? NAV_SECTIONS : NAV_SECTIONS.map(s => {
         const allowed = ['/dashboard', '/agents', '/billing', '/analytics', '/followups', '/routing', '/integrations', '/settings', '/dialer'];
         const items = s.items.filter(i => allowed.includes(i.to));
         return items.length > 0 ? { ...s, items } : null;
     }).filter(Boolean);
-
-    // Add Super Admin section for superadmin only
-    if (userRole === 'superadmin') {
-        activeSections.push({
-            title: 'Super Admin',
-            items: [
-                { to: '/admin/users', icon: Crown, label: 'Users Management' },
-            ]
-        });
-    }
 
     const activeRoutes = activeSections.flatMap(s => s.items);
 

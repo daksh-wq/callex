@@ -1,35 +1,41 @@
 import { Router } from 'express';
-import { prisma } from '../index.js';
+import { db, docToObj, queryToArray } from '../firebase.js';
 
 const router = Router();
 
 // GET /api/routing/rules
 router.get('/rules', async (req, res) => {
-    res.json(await prisma.routingRule.findMany({ where: { userId: req.userId }, orderBy: { priority: 'asc' } }));
+    const snap = await db.collection('routingRules').where('userId', '==', req.userId).orderBy('priority', 'asc').get();
+    res.json(queryToArray(snap));
 });
 
 // POST /api/routing/rules
 router.post('/rules', async (req, res) => {
-    const rule = await prisma.routingRule.create({ data: { ...req.body, userId: req.userId } });
-    res.json(rule);
+    const data = { ...req.body, userId: req.userId, createdAt: new Date() };
+    const ref = await db.collection('routingRules').add(data);
+    res.json({ id: ref.id, ...data });
 });
 
 // PATCH /api/routing/rules/:id
 router.patch('/rules/:id', async (req, res) => {
-    const rule = await prisma.routingRule.update({ where: { id: req.params.id }, data: req.body });
-    res.json(rule);
+    const data = { ...req.body };
+    delete data.id;
+    await db.collection('routingRules').doc(req.params.id).update(data);
+    const doc = await db.collection('routingRules').doc(req.params.id).get();
+    res.json(docToObj(doc));
 });
 
 // DELETE /api/routing/rules/:id
 router.delete('/rules/:id', async (req, res) => {
-    await prisma.routingRule.delete({ where: { id: req.params.id } });
+    await db.collection('routingRules').doc(req.params.id).delete();
     res.json({ success: true });
 });
 
-// POST /api/routing/evaluate - evaluate routing for a given intent
+// POST /api/routing/evaluate
 router.post('/evaluate', async (req, res) => {
-    const { intentTag, sentiment } = req.body;
-    const rules = await prisma.routingRule.findMany({ where: { active: true }, orderBy: { priority: 'asc' } });
+    const { intentTag } = req.body;
+    const snap = await db.collection('routingRules').where('active', '==', true).orderBy('priority', 'asc').get();
+    const rules = queryToArray(snap);
     const matched = rules.find(r => r.intentTag.toLowerCase() === intentTag?.toLowerCase());
     res.json({ matched: matched || null, action: matched?.destination || 'agent' });
 });

@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { useStore } from '../store/index.js';
-import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive, X, Send, Loader2 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext.jsx';
+import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive, X, Send, Loader2, AlertTriangle, Clock, Users } from 'lucide-react';
 
 // Callex AI Models
 const CALLEX_MODELS = [
@@ -17,6 +18,287 @@ const TAB_LABELS = [
 ];
 
 export default function AgentStudio() {
+    const { userRole } = useAuth();
+    if (userRole === 'superadmin') return <AdminAgentStudio />;
+    return <UserAgentStudio />;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ADMIN AGENT STUDIO — Simplified tuning + maintenance mode
+// ═══════════════════════════════════════════════════════════
+function AdminAgentStudio() {
+    const [userGroups, setUserGroups] = useState([]);
+    const [agents, setAgents] = useState([]);
+    const [selected, setSelected] = useState(null);
+    const [form, setForm] = useState({});
+    const [saving, setSaving] = useState(false);
+    const [maintenanceModal, setMaintenanceModal] = useState(false);
+    const [maintenanceDuration, setMaintenanceDuration] = useState(60);
+    const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+    const [expandedUser, setExpandedUser] = useState(null);
+    const [sidebarMode, setSidebarMode] = useState('by-user'); // 'by-user' or 'all'
+    const { showToast } = useStore();
+
+    useEffect(() => { loadData(); }, []);
+
+    async function loadData() {
+        try {
+            const [grouped, allAgents] = await Promise.all([
+                api.get('/admin/agents-by-user'),
+                api.get('/admin/agents'),
+            ]);
+            setUserGroups(grouped);
+            setAgents(allAgents);
+            // Auto-expand first user with agents
+            const first = grouped.find(g => g.agents.length > 0);
+            if (first && !expandedUser) setExpandedUser(first.user.id);
+        } catch (e) { showToast(e.message, 'error'); }
+    }
+
+    function selectAgent(a) {
+        setSelected(a);
+        setForm({ prosodyRate: a.prosodyRate ?? 1.0, llmModel: a.llmModel || 'callex-1.2', patienceMs: a.patienceMs ?? 800, bargeInMode: a.bargeInMode || 'balanced' });
+    }
+
+    async function saveAgent() {
+        if (!selected) return;
+        setSaving(true);
+        try {
+            await api.patch(`/admin/agents/${selected.id}`, form);
+            showToast('Agent updated', 'success');
+            loadData();
+        } catch (e) { showToast(e.message, 'error'); }
+        finally { setSaving(false); }
+    }
+
+    async function activateMaintenance() {
+        setMaintenanceLoading(true);
+        try {
+            await api.post('/admin/maintenance', { durationMinutes: maintenanceDuration });
+            showToast(`Maintenance mode activated for ${maintenanceDuration} minutes`, 'success');
+            setMaintenanceModal(false);
+            loadData();
+        } catch (e) { showToast(e.message, 'error'); }
+        finally { setMaintenanceLoading(false); }
+    }
+
+    const totalAgents = userGroups.reduce((sum, g) => sum + g.totalAgents, 0);
+    const usersWithAgents = userGroups.filter(g => g.totalAgents > 0).length;
+
+    return (
+        <div className="space-y-6 pb-20">
+            <div className="page-header">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Admin Agent Studio</h1>
+                    <p className="text-sm text-gray-400">{totalAgents} agents across {usersWithAgents} users</p>
+                </div>
+                <div className="flex gap-2">
+                    <button className="btn-secondary flex items-center gap-2 text-sm" onClick={() => setSidebarMode(m => m === 'by-user' ? 'all' : 'by-user')}>
+                        <Users size={14} /> {sidebarMode === 'by-user' ? 'Show All' : 'Group by User'}
+                    </button>
+                    <button className="btn-primary flex items-center gap-2 bg-amber-500 hover:bg-amber-600" onClick={() => setMaintenanceModal(true)}>
+                        <AlertTriangle size={15} /> Maintenance Mode
+                    </button>
+                </div>
+            </div>
+
+            <div className="flex gap-6 h-[calc(100vh-160px)]">
+                {/* Agent List Sidebar — User-wise */}
+                <div className="w-80 shrink-0 overflow-y-auto pr-2 custom-scroll space-y-1">
+                    {sidebarMode === 'by-user' ? (
+                        userGroups.map(group => (
+                            <div key={group.user.id} className="mb-1">
+                                <button
+                                    onClick={() => setExpandedUser(expandedUser === group.user.id ? null : group.user.id)}
+                                    className={`w-full text-left p-3 rounded-xl border transition-all ${expandedUser === group.user.id ? 'border-orange-200 bg-orange-50/50' : 'border-gray-100 bg-white hover:border-orange-100'}`}
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white text-[10px] font-bold">
+                                                {group.user.name?.[0]?.toUpperCase() || group.user.email[0].toUpperCase()}
+                                            </div>
+                                            <div>
+                                                <div className="text-xs font-bold text-gray-800 truncate max-w-[160px]">{group.user.name || group.user.email}</div>
+                                                <div className="text-[10px] text-gray-400">{group.user.email}</div>
+                                            </div>
+                                        </div>
+                                        <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{group.totalAgents}</span>
+                                    </div>
+                                </button>
+                                {expandedUser === group.user.id && (
+                                    <div className="ml-4 mt-1 space-y-1 border-l-2 border-orange-200/50 pl-3">
+                                        {group.agents.length === 0 ? (
+                                            <p className="text-[10px] text-gray-400 py-2 pl-2">No agents created</p>
+                                        ) : (
+                                            group.agents.map(a => (
+                                                <button key={a.id} onClick={() => selectAgent(a)} className={`w-full text-left p-2.5 rounded-lg border transition-all ${selected?.id === a.id ? 'border-orange-300 bg-orange-50' : 'border-gray-50 bg-white hover:border-orange-100'}`}>
+                                                    <div className="flex items-center gap-2">
+                                                        <Bot size={12} className="text-orange-500" />
+                                                        <span className="font-semibold text-xs text-gray-800 truncate">{a.name}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 mt-0.5">
+                                                        <span className={a.status === 'active' ? 'badge-green' : a.status === 'paused' ? 'badge-orange' : 'badge-gray'} style={{ fontSize: '9px' }}>{a.status}</span>
+                                                        <span className="text-[9px] text-gray-400">{a.llmModel}</span>
+                                                    </div>
+                                                </button>
+                                            ))
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    ) : (
+                        agents.map(a => (
+                            <button key={a.id} onClick={() => selectAgent(a)} className={`w-full text-left p-3.5 rounded-xl border transition-all ${selected?.id === a.id ? 'border-orange-200 bg-orange-50' : 'border-gray-100 bg-white hover:border-orange-100'}`}>
+                                <div className="flex items-center gap-2">
+                                    <Bot size={14} className="text-orange-500" />
+                                    <span className="font-semibold text-sm text-gray-800 truncate">{a.name}</span>
+                                </div>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <span className={a.status === 'active' ? 'badge-green' : a.status === 'paused' ? 'badge-orange' : 'badge-gray'} style={{ fontSize: '10px' }}>{a.status}</span>
+                                    <span className="text-[10px] text-gray-400">{a.llmModel}</span>
+                                </div>
+                                {a.user && <div className="text-[10px] text-gray-400 mt-1 flex items-center gap-1"><Users size={10} />{a.user.name || a.user.email}</div>}
+                            </button>
+                        ))
+                    )}
+                    {userGroups.length === 0 && <p className="text-xs text-gray-400 text-center py-6">No agents found across any accounts.</p>}
+                </div>
+
+                {/* Admin Edit Panel */}
+                {selected ? (
+                    <div className="flex-1 bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+                        <div className="p-5 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                                <Bot size={22} className="text-orange-500" />
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900">{selected.name}</h2>
+                                    <p className="text-xs text-gray-400">Owner: {selected.user?.name || selected.user?.email || 'Unknown'} · Status: {selected.status}</p>
+                                </div>
+                            </div>
+                            <button className="btn-primary py-2 text-sm" onClick={saveAgent} disabled={saving}>
+                                {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}{saving ? ' Saving...' : ' Save Changes'}
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-8">
+                            <div className="max-w-2xl mx-auto space-y-8">
+                                <div className="text-center mb-6">
+                                    <h3 className="text-lg font-bold text-gray-800 mb-1">Agent Tuning Parameters</h3>
+                                    <p className="text-sm text-gray-400">Adjust core performance settings for this agent</p>
+                                </div>
+
+                                {/* Prosody Speed */}
+                                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-3">
+                                        <div className="flex items-center gap-2">
+                                            <Volume2 size={18} className="text-blue-500" />
+                                            <span className="font-bold text-gray-800">Prosody Speed</span>
+                                        </div>
+                                        <span className="text-lg font-black text-orange-600">{(form.prosodyRate ?? 1.0).toFixed(1)}x</span>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mb-3">Controls how fast the agent speaks. Lower = slower, higher = faster.</p>
+                                    <input type="range" min="0.5" max="2.0" step="0.1" value={form.prosodyRate ?? 1.0} onChange={e => setForm(f => ({ ...f, prosodyRate: parseFloat(e.target.value) }))} className="w-full accent-orange-500" />
+                                    <div className="flex justify-between text-[10px] text-gray-400 mt-1"><span>0.5x (Slow)</span><span>1.0x (Normal)</span><span>2.0x (Fast)</span></div>
+                                </div>
+
+                                {/* LLM Model */}
+                                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Cpu size={18} className="text-purple-500" />
+                                        <span className="font-bold text-gray-800">LLM Model</span>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mb-3">Select the AI model that powers this agent's responses.</p>
+                                    <div className="space-y-2">
+                                        {CALLEX_MODELS.map(m => (
+                                            <label key={m.value} className={`flex items-center gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${form.llmModel === m.value ? 'border-orange-300 bg-orange-50' : 'border-gray-100 hover:border-gray-200'}`}>
+                                                <input type="radio" name="model" value={m.value} checked={form.llmModel === m.value} onChange={() => setForm(f => ({ ...f, llmModel: m.value }))} className="accent-orange-500" />
+                                                <div>
+                                                    <div className="text-sm font-semibold text-gray-800">{m.label}</div>
+                                                    <div className="text-[10px] text-gray-400">{m.desc}</div>
+                                                </div>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* End-of-Turn Patience */}
+                                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-3">
+                                        <div className="flex items-center gap-2">
+                                            <Clock size={18} className="text-emerald-500" />
+                                            <span className="font-bold text-gray-800">End-of-Turn Patience</span>
+                                        </div>
+                                        <span className="text-lg font-black text-orange-600">{form.patienceMs ?? 800} ms</span>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mb-3">How long to wait for silence before assuming the user has finished speaking.</p>
+                                    <input type="range" min="200" max="3000" step="100" value={form.patienceMs ?? 800} onChange={e => setForm(f => ({ ...f, patienceMs: parseInt(e.target.value) }))} className="w-full accent-orange-500" />
+                                    <div className="flex justify-between text-[10px] text-gray-400 mt-1"><span>200ms (Aggressive)</span><span>800ms (Default)</span><span>3000ms (Patient)</span></div>
+                                </div>
+
+                                {/* Barge-in Mode */}
+                                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Mic size={18} className="text-red-500" />
+                                        <span className="font-bold text-gray-800">Barge-in / Interruption Mode</span>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mb-3">Controls how the agent handles user interruptions while speaking.</p>
+                                    <select className="input-field text-sm" value={form.bargeInMode || 'balanced'} onChange={e => setForm(f => ({ ...f, bargeInMode: e.target.value }))}>
+                                        <option value="disabled">Disabled — Do not interrupt bot</option>
+                                        <option value="polite">Polite — Only interrupt on full sentences</option>
+                                        <option value="balanced">Balanced — Interrupt on 3+ words</option>
+                                        <option value="aggressive">Aggressive — Interrupt instantly on noise</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 bg-gray-50/30 rounded-2xl border border-gray-100 border-dashed">
+                        <div className="text-center"><Bot size={48} className="mx-auto mb-3 opacity-20 text-orange-500" /><p className="text-sm font-semibold text-gray-400">Select an agent to view and tune its parameters</p></div>
+                    </div>
+                )}
+            </div>
+
+            {/* Maintenance Mode Modal */}
+            {maintenanceModal && (
+                <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2"><AlertTriangle size={20} className="text-amber-500" /> Maintenance Mode</h3>
+                            <button onClick={() => setMaintenanceModal(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={18} /></button>
+                        </div>
+                        <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl">
+                            <p className="text-sm text-amber-800"><strong>Warning:</strong> This will pause ALL active agents across the entire platform and send a notification to all users.</p>
+                        </div>
+                        <div>
+                            <label className="text-xs font-semibold text-gray-600 mb-2 block">Maintenance Duration</label>
+                            <div className="flex gap-2">
+                                {[30, 60, 120].map(mins => (
+                                    <button key={mins} onClick={() => setMaintenanceDuration(mins)} className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${maintenanceDuration === mins ? 'bg-amber-500 text-white shadow-lg' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                                        {mins} min
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button onClick={() => setMaintenanceModal(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+                            <button onClick={activateMaintenance} disabled={maintenanceLoading} className="btn-primary bg-amber-500 hover:bg-amber-600 flex items-center gap-2">
+                                {maintenanceLoading ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+                                {maintenanceLoading ? 'Activating...' : 'Activate Maintenance'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// USER AGENT STUDIO — Full-featured agent creation & editing
+// ═══════════════════════════════════════════════════════════
+function UserAgentStudio() {
     const [agents, setAgents] = useState([]);
     const [selected, setSelected] = useState(null);
     const [form, setForm] = useState({});

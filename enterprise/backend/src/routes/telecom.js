@@ -1,72 +1,59 @@
-import express from 'express';
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-const router = express.Router();
+import { Router } from 'express';
+import { db, docToObj, queryToArray } from '../firebase.js';
+
+const router = Router();
 
 // === Phone Numbers ===
-
 router.get('/numbers', async (req, res) => {
     try {
-        const numbers = await prisma.phoneNumber.findMany({
-            include: { routingRule: true }
-        });
+        const snap = await db.collection('phoneNumbers').get();
+        const numbers = [];
+        for (const doc of snap.docs) {
+            const num = { id: doc.id, ...doc.data() };
+            if (num.routingRuleId) {
+                const rr = await db.collection('routingRules').doc(num.routingRuleId).get();
+                num.routingRule = rr.exists ? docToObj(rr) : null;
+            }
+            numbers.push(num);
+        }
         res.json(numbers);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/numbers', async (req, res) => {
     try {
         const { number, friendlyName, provider } = req.body;
-        const result = await prisma.phoneNumber.create({
-            data: { number, friendlyName, provider }
-        });
-        res.json(result);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        const data = { number, friendlyName, provider: provider || 'twilio', status: 'active', createdAt: new Date() };
+        const ref = await db.collection('phoneNumbers').add(data);
+        res.json({ id: ref.id, ...data });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.delete('/numbers/:id', async (req, res) => {
-    try {
-        await prisma.phoneNumber.delete({ where: { id: req.params.id } });
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    try { await db.collection('phoneNumbers').doc(req.params.id).delete(); res.json({ success: true }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// === DNC (Do Not Call) List ===
-
+// === DNC List ===
 router.get('/dnc', async (req, res) => {
     try {
-        const dnc = await prisma.dNCList.findMany({ orderBy: { createdAt: 'desc' } });
-        res.json(dnc);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        const snap = await db.collection('dncList').orderBy('createdAt', 'desc').get();
+        res.json(queryToArray(snap));
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/dnc', async (req, res) => {
     try {
         const { number, reason, addedBy } = req.body;
-        const dnc = await prisma.dNCList.create({
-            data: { number, reason, addedBy }
-        });
-        res.json(dnc);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        const data = { number, reason, addedBy, createdAt: new Date() };
+        const ref = await db.collection('dncList').add(data);
+        res.json({ id: ref.id, ...data });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.delete('/dnc/:id', async (req, res) => {
-    try {
-        await prisma.dNCList.delete({ where: { id: req.params.id } });
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    try { await db.collection('dncList').doc(req.params.id).delete(); res.json({ success: true }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 export default router;

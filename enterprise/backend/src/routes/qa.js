@@ -1,54 +1,60 @@
-import express from 'express';
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-const router = express.Router();
+import { Router } from 'express';
+import { db, docToObj, queryToArray } from '../firebase.js';
 
-// GET /api/qa/dispositions - Get all dispositions
+const router = Router();
+
+// GET /api/qa/dispositions
 router.get('/dispositions', async (req, res) => {
     try {
-        const dispositions = await prisma.disposition.findMany({ orderBy: { name: 'asc' } });
-        res.json(dispositions);
+        const snap = await db.collection('dispositions').orderBy('name', 'asc').get();
+        res.json(queryToArray(snap));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST /api/qa/dispositions - Create a disposition
+// POST /api/qa/dispositions
 router.post('/dispositions', async (req, res) => {
     try {
         const { name, category, requiresNote } = req.body;
-        const disposition = await prisma.disposition.create({
-            data: { name, category, requiresNote, active: true },
-        });
-        res.json(disposition);
+        const data = { name, category, requiresNote: requiresNote || false, active: true, createdAt: new Date() };
+        const ref = await db.collection('dispositions').add(data);
+        res.json({ id: ref.id, ...data });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// GET /api/qa/scores/:callId - Get score for a call
+// GET /api/qa/scores/:callId
 router.get('/scores/:callId', async (req, res) => {
     try {
-        const score = await prisma.qAScore.findUnique({
-            where: { callId: req.params.callId },
-            include: { user: { select: { name: true, email: true } } }
-        });
-        res.json(score || null);
+        const snap = await db.collection('qaScores').where('callId', '==', req.params.callId).limit(1).get();
+        if (snap.empty) return res.json(null);
+        const score = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        if (score.scoredByUserId) {
+            const userDoc = await db.collection('users').doc(score.scoredByUserId).get();
+            score.user = userDoc.exists ? { name: userDoc.data().name, email: userDoc.data().email } : null;
+        }
+        res.json(score);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST /api/qa/scores - Submit a QA Score for a call
+// POST /api/qa/scores
 router.post('/scores', async (req, res) => {
     try {
         const { callId, scoredByUserId, score, feedback, rubric } = req.body;
-        const result = await prisma.qAScore.upsert({
-            where: { callId },
-            update: { score, feedback, rubric: JSON.stringify(rubric), scoredByUserId },
-            create: { callId, score, feedback, rubric: JSON.stringify(rubric), scoredByUserId },
-        });
-        res.json(result);
+        const snap = await db.collection('qaScores').where('callId', '==', callId).limit(1).get();
+        const data = { callId, score, feedback, rubric: JSON.stringify(rubric), scoredByUserId, createdAt: new Date() };
+
+        if (!snap.empty) {
+            await db.collection('qaScores').doc(snap.docs[0].id).update(data);
+            res.json({ id: snap.docs[0].id, ...data });
+        } else {
+            const ref = await db.collection('qaScores').add(data);
+            res.json({ id: ref.id, ...data });
+        }
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

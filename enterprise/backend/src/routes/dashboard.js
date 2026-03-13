@@ -1,56 +1,66 @@
 import { Router } from 'express';
-import { prisma } from '../index.js';
-import { v4 as uuidv4 } from 'uuid';
+import { db, docToObj, queryToArray } from '../firebase.js';
 
 const router = Router();
 
-// GET /api/dashboard/kpis - live KPI data
+// GET /api/dashboard/kpis
 router.get('/kpis', async (req, res) => {
-    // Get user's agent IDs for scoping
-    const userAgents = await prisma.agent.findMany({ where: { userId: req.userId }, select: { id: true } });
-    const agentIds = userAgents.map(a => a.id);
+    const agentsSnap = await db.collection('agents').where('userId', '==', req.userId).get();
+    const agentIds = agentsSnap.docs.map(d => d.id);
 
-    const activeCalls = await prisma.call.count({ where: { status: 'active', agentId: { in: agentIds } } });
-    const completedToday = await prisma.call.count({
-        where: { status: 'completed', agentId: { in: agentIds }, startedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
-    });
-    const allCalls = await prisma.call.findMany({ where: { agentId: { in: agentIds } }, select: { mosScore: true, duration: true, sentiment: true } });
+    let activeCalls = 0, completedToday = 0, allCalls = [], queueDepth = 0;
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+
+    if (agentIds.length > 0) {
+        // Firestore 'in' supports max 30 values — chunk if needed
+        const chunks = [];
+        for (let i = 0; i < agentIds.length; i += 30) chunks.push(agentIds.slice(i, i + 30));
+
+        for (const chunk of chunks) {
+            const callsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
+            callsSnap.forEach(d => {
+                const c = d.data();
+                allCalls.push(c);
+                if (c.status === 'active') activeCalls++;
+                if (c.status === 'completed' && c.startedAt && new Date(c.startedAt.toDate ? c.startedAt.toDate() : c.startedAt) >= todayStart) completedToday++;
+            });
+        }
+    }
+
+    // Queue depth (calls without agent)
+    const queueSnap = await db.collection('calls').where('status', '==', 'active').where('userId', '==', req.userId).get();
+    queueSnap.forEach(d => { if (!d.data().agentId) queueDepth++; });
+
     const avgMOS = allCalls.filter(c => c.mosScore).reduce((a, b, _, arr) => a + b.mosScore / arr.length, 0) || 4.2;
     const angryCount = allCalls.filter(c => c.sentiment === 'angry').length;
     const slaRate = allCalls.length > 0 ? Math.round((1 - angryCount / allCalls.length) * 100) : 100;
 
-    // Genuine queue depth = active calls not yet assigned an agent
-    const queueDepth = await prisma.call.count({ where: { status: 'active', agentId: null, userId: req.userId } });
-
-    // Count active agents vs human staff fallback
-    const aiAgentsAvailable = agentIds.length;
-    const errorEvents = await prisma.systemEvent.count({ where: { severity: 'error' } });
-    const totalEvents = await prisma.systemEvent.count();
-    const fallbackRate = totalEvents > 0 ? (errorEvents / totalEvents) * 100 : 0;
+    const errorSnap = await db.collection('systemEvents').where('severity', '==', 'error').get();
+    const totalEventsSnap = await db.collection('systemEvents').get();
+    const fallbackRate = totalEventsSnap.size > 0 ? (errorSnap.size / totalEventsSnap.size) * 100 : 0;
 
     res.json({
-        activeCalls,
-        completedToday,
+        activeCalls, completedToday,
         avgMOS: Math.round(avgMOS * 100) / 100,
         slaPercent: slaRate,
         apiFallbackRate: Math.round(fallbackRate * 10) / 10,
-        aiAgentsAvailable,
-        humanAgentsAvailable: 2, // Hardcoded human floor for UI
+        aiAgentsAvailable: agentIds.length,
+        humanAgentsAvailable: 2,
         queueDepth,
     });
 });
 
-// GET /api/dashboard/ab-test - A/B test comparison
+// GET /api/dashboard/ab-test
 router.get('/ab-test', async (req, res) => {
-    const calls = await prisma.call.findMany({
-        where: { status: 'completed', agentId: { not: null } },
-        include: { agent: { select: { llmModel: true } } }
-    });
+    const callsSnap = await db.collection('calls').where('status', '==', 'completed').get();
+    const calls = queryToArray(callsSnap);
 
     const stats = {};
     for (const c of calls) {
-        if (!c.agent) continue;
-        const model = c.agent.llmModel;
+        if (!c.agentId) continue;
+        const agentDoc = await db.collection('agents').doc(c.agentId).get();
+        if (!agentDoc.exists) continue;
+        const model = agentDoc.data().llmModel;
         if (!stats[model]) stats[model] = { calls: 0, durationSum: 0, mosSum: 0, conversions: 0 };
         stats[model].calls++;
         stats[model].durationSum += c.duration || 0;
@@ -60,7 +70,6 @@ router.get('/ab-test', async (req, res) => {
 
     const models = Object.keys(stats).sort((a, b) => stats[b].calls - stats[a].calls);
     if (models.length < 2) {
-        // Not enough real data for A/B, return zeroes
         return res.json({
             champion: { model: 'Callex-1.3', csat: 0, avgDuration: 0, conversions: 0, calls: 0 },
             challenger: { model: 'Callex-1.2', csat: 0, avgDuration: 0, conversions: 0, calls: 0 },
@@ -68,7 +77,7 @@ router.get('/ab-test', async (req, res) => {
         });
     }
 
-    const m1 = models[0]; const m2 = models[1];
+    const m1 = models[0], m2 = models[1];
     const calc = (m) => ({
         model: m,
         csat: stats[m].calls > 0 ? (stats[m].mosSum / stats[m].calls).toFixed(1) : 0,
@@ -76,30 +85,22 @@ router.get('/ab-test', async (req, res) => {
         conversions: stats[m].conversions,
         calls: stats[m].calls
     });
-
-    const champ = calc(m1);
-    const chal = calc(m2);
-    const winner = parseFloat(champ.csat) >= parseFloat(chal.csat) ? 'champion' : 'challenger';
-
-    res.json({
-        champion: champ,
-        challenger: chal,
-        winner,
-        confidence: Math.min(99, 50 + (stats[m1].calls + stats[m2].calls)),
-    });
+    const champ = calc(m1), chal = calc(m2);
+    res.json({ champion: champ, challenger: chal, winner: parseFloat(champ.csat) >= parseFloat(chal.csat) ? 'champion' : 'challenger', confidence: Math.min(99, 50 + (stats[m1].calls + stats[m2].calls)) });
 });
 
-// GET /api/dashboard/events - recent system events
+// GET /api/dashboard/events
 router.get('/events', async (req, res) => {
-    const events = await prisma.systemEvent.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
-    res.json(events);
+    const snap = await db.collection('systemEvents').orderBy('createdAt', 'desc').limit(50).get();
+    res.json(queryToArray(snap));
 });
 
-// POST /api/dashboard/events - create event (internal use)
+// POST /api/dashboard/events
 router.post('/events', async (req, res) => {
     const { type, message, severity, meta } = req.body;
-    const event = await prisma.systemEvent.create({ data: { type, message, severity: severity || 'info', meta: JSON.stringify(meta || {}) } });
-    res.json(event);
+    const data = { type, message, severity: severity || 'info', meta: JSON.stringify(meta || {}), createdAt: new Date() };
+    const ref = await db.collection('systemEvents').add(data);
+    res.json({ id: ref.id, ...data });
 });
 
 export default router;

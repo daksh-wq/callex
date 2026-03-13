@@ -1,61 +1,44 @@
-import express from 'express';
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-const router = express.Router();
+import { Router } from 'express';
+import { db, docToObj, queryToArray } from '../firebase.js';
 
-// GET /api/wfm/states - Get current state of all users
+const router = Router();
+
+// GET /api/wfm/states
 router.get('/states', async (req, res) => {
     try {
-        // In reality, this would group by user and get their most recent state
-        // For SQLite, we pull recent states and reduce in JS
-        const states = await prisma.wfmState.findMany({
-            orderBy: { timestamp: 'desc' },
-            include: { user: { select: { id: true, name: true, role: true } } },
-            take: 100 // simplistic approach
-        });
-
-        // Return latest state per user
-        const latestPerUser = [];
+        const snap = await db.collection('wfmStates').orderBy('timestamp', 'desc').limit(100).get();
+        const states = [];
         const seen = new Set();
-        for (const s of states) {
+        for (const doc of snap.docs) {
+            const s = { id: doc.id, ...doc.data() };
             if (!seen.has(s.userId)) {
                 seen.add(s.userId);
-                latestPerUser.push(s);
+                if (s.userId) {
+                    const userDoc = await db.collection('users').doc(s.userId).get();
+                    s.user = userDoc.exists ? { id: userDoc.id, name: userDoc.data().name, role: userDoc.data().role } : null;
+                }
+                states.push(s);
             }
         }
-        res.json(latestPerUser);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.json(states);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/wfm/states - Set user state (Available, Break, etc)
+// POST /api/wfm/states
 router.post('/states', async (req, res) => {
     try {
         const { userId, state } = req.body;
-
-        // Find previous state to calculate duration
-        const lastState = await prisma.wfmState.findFirst({
-            where: { userId },
-            orderBy: { timestamp: 'desc' }
-        });
-
-        if (lastState) {
-            const duration = Math.floor((new Date() - new Date(lastState.timestamp)) / 1000);
-            await prisma.wfmState.update({
-                where: { id: lastState.id },
-                data: { duration }
-            });
+        const lastSnap = await db.collection('wfmStates').where('userId', '==', userId).orderBy('timestamp', 'desc').limit(1).get();
+        if (!lastSnap.empty) {
+            const last = lastSnap.docs[0];
+            const ts = last.data().timestamp?.toDate ? last.data().timestamp.toDate() : new Date(last.data().timestamp);
+            const duration = Math.floor((new Date() - ts) / 1000);
+            await db.collection('wfmStates').doc(last.id).update({ duration });
         }
-
-        const newState = await prisma.wfmState.create({
-            data: { userId, state }
-        });
-
-        res.json(newState);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        const data = { userId, state, timestamp: new Date(), duration: null };
+        const ref = await db.collection('wfmStates').add(data);
+        res.json({ id: ref.id, ...data });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 export default router;

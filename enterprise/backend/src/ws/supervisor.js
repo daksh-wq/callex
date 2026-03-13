@@ -1,4 +1,4 @@
-import { prisma } from '../index.js';
+import { db, docToObj } from '../firebase.js';
 
 // Simulated transcript lines for active calls
 const TRANSCRIPT_LINES = [
@@ -16,22 +16,20 @@ export function setupSupervisorWS(ws, callId) {
     let lineIndex = 0;
     let transcriptInterval = null;
 
-    // Stream transcript lines every 3 seconds (simulate live STT)
     transcriptInterval = setInterval(async () => {
         if (ws.readyState !== 1) { clearInterval(transcriptInterval); return; }
         const line = TRANSCRIPT_LINES[lineIndex % TRANSCRIPT_LINES.length];
         lineIndex++;
         ws.send(JSON.stringify({ type: 'transcript_line', callId, line, ts: Date.now() }));
-        // Update transcript in DB
         try {
-            const call = await prisma.call.findUnique({ where: { id: callId } });
-            if (call) {
-                await prisma.call.update({ where: { id: callId }, data: { transcript: (call.transcript || '') + '\n' + line } });
+            const doc = await db.collection('calls').doc(callId).get();
+            if (doc.exists) {
+                const call = doc.data();
+                await db.collection('calls').doc(callId).update({ transcript: (call.transcript || '') + '\n' + line });
             }
         } catch { }
     }, 3000);
 
-    // Handle incoming messages (whisper, barge)
     ws.on('message', (msg) => {
         try {
             const parsed = JSON.parse(msg);
@@ -43,7 +41,5 @@ export function setupSupervisorWS(ws, callId) {
         } catch { }
     });
 
-    ws.on('close', () => {
-        clearInterval(transcriptInterval);
-    });
+    ws.on('close', () => { clearInterval(transcriptInterval); });
 }

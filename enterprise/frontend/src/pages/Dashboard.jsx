@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { useStore } from '../store/index.js';
+import { useAuth } from '../contexts/AuthContext.jsx';
 import {
     TrendingUp, Phone, Zap, Shield, Users, Activity, RadioTower,
-    Clock, Coffee, ShieldAlert, PhoneCall, Loader2, PhoneOff, PhoneForwarded
+    Clock, Coffee, ShieldAlert, PhoneCall, Loader2, PhoneOff, PhoneForwarded,
+    Crown, Bot, DollarSign, Eye, Trash2, Plus, X, Search, Key, FileText, AlertCircle
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -46,6 +48,455 @@ const formatDuration = (dateStr) => {
 };
 
 export default function Dashboard() {
+    const { userRole } = useAuth();
+    if (userRole === 'superadmin') return <AdminDashboard />;
+    return <UserDashboard />;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ADMIN DASHBOARD — Platform-wide stats + user management
+// ═══════════════════════════════════════════════════════════
+function AdminDashboard() {
+    const [stats, setStats] = useState(null);
+    const [users, setUsers] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState('');
+    const [selectedUser, setSelectedUser] = useState(null);
+    const [userDetail, setUserDetail] = useState(null);
+    const [userCalls, setUserCalls] = useState([]);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detailTab, setDetailTab] = useState('overview');
+    const [showCreate, setShowCreate] = useState(false);
+    const [createForm, setCreateForm] = useState({ email: '', name: '', password: '', role: 'user' });
+    const [error, setError] = useState('');
+    const [exporting, setExporting] = useState(null);
+    const { showToast } = useStore ? useStore() : { showToast: () => {} };
+
+    useEffect(() => { loadData(); }, []);
+
+    async function loadData() {
+        setLoading(true);
+        try {
+            const [statsData, usersData] = await Promise.all([
+                api.get('/admin/stats'),
+                api.get('/admin/users'),
+            ]);
+            setStats(statsData);
+            setUsers(usersData);
+        } catch (e) { setError(e.message); }
+        finally { setLoading(false); }
+    }
+
+    async function viewUser(userId) {
+        setSelectedUser(userId);
+        setDetailLoading(true);
+        setDetailTab('overview');
+        setUserCalls([]);
+        try {
+            const [detail, calls] = await Promise.all([
+                api.get(`/admin/users/${userId}`),
+                api.get(`/admin/users/${userId}/calls`).catch(() => []),
+            ]);
+            setUserDetail(detail);
+            setUserCalls(calls);
+        } catch (e) { setError(e.message); }
+        finally { setDetailLoading(false); }
+    }
+
+    async function exportUserData(userId, email) {
+        setExporting(userId);
+        try {
+            const data = await api.get(`/admin/users/${userId}/export`);
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `user_${email}_export.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            if (typeof showToast === 'function') showToast(`Exported data for ${email}`, 'success');
+        } catch (e) {
+            if (typeof showToast === 'function') showToast(e.message, 'error');
+        }
+        finally { setExporting(null); }
+    }
+
+    async function createUser() {
+        try {
+            await api.post('/admin/users', createForm);
+            setShowCreate(false);
+            setCreateForm({ email: '', name: '', password: '', role: 'user' });
+            loadData();
+        } catch (e) { setError(e.message); }
+    }
+
+    async function deleteUser(id, email) {
+        if (!confirm(`Delete user ${email} and ALL their data? This cannot be undone.`)) return;
+        try {
+            await api.delete(`/admin/users/${id}`);
+            setSelectedUser(null);
+            setUserDetail(null);
+            loadData();
+        } catch (e) { setError(e.message); }
+    }
+
+    const filtered = users.filter(u =>
+        u.email.toLowerCase().includes(search.toLowerCase()) ||
+        u.name.toLowerCase().includes(search.toLowerCase())
+    );
+
+    if (loading) return (
+        <div className="flex items-center justify-center h-64">
+            <Loader2 size={32} className="animate-spin text-orange-500" />
+        </div>
+    );
+
+    return (
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="page-header">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                        <Crown size={24} className="text-orange-500" />
+                        Admin Command Center
+                    </h1>
+                    <p className="text-sm text-gray-400 mt-0.5">Platform-wide monitoring & user management</p>
+                </div>
+                <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-2">
+                    <Plus size={16} /> Create User
+                </button>
+            </div>
+
+            {error && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+                    <AlertCircle size={15} />{error}
+                    <button onClick={() => setError('')} className="ml-auto"><X size={14} /></button>
+                </div>
+            )}
+
+            {/* ═══ Platform-wide KPIs ═══ */}
+            {stats && (
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <KPICard icon={Users} label="Total Users" value={stats.totalUsers} color="orange" sub="registered accounts" />
+                    <KPICard icon={Bot} label="Total Agents" value={stats.totalAgents} color="blue" sub="across all users" />
+                    <KPICard icon={DollarSign} label="Total Revenue" value="$0.00" color="green" sub="coming soon" />
+                    <KPICard icon={Phone} label="Total Calls" value={stats.totalCalls} color="purple" sub="all time" />
+                </div>
+            )}
+
+            {/* Secondary stats */}
+            {stats && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                        { label: 'Campaigns', value: stats.totalCampaigns, icon: PhoneForwarded, color: 'amber' },
+                        { label: 'Active API Keys', value: stats.totalApiKeys, icon: Key, color: 'purple' },
+                        { label: 'Active Calls', value: stats.activeCalls, icon: PhoneCall, color: 'green' },
+                        { label: 'Documents', value: stats.totalDocs, icon: FileText, color: 'blue' },
+                    ].map(s => (
+                        <div key={s.label} className="glass-panel p-4 rounded-2xl flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-xl bg-${s.color}-50 flex items-center justify-center`}>
+                                <s.icon size={18} className={`text-${s.color}-500`} />
+                            </div>
+                            <div>
+                                <div className="text-xl font-bold text-gray-900">{s.value}</div>
+                                <div className="text-xs text-gray-500">{s.label}</div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* ═══ User Management Table ═══ */}
+            <div className="space-y-3">
+                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <Users size={20} className="text-orange-500" /> All Users
+                </h2>
+                <div className="relative">
+                    <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                        value={search} onChange={e => setSearch(e.target.value)}
+                        placeholder="Search users by email or name..."
+                        className="w-full pl-10 pr-4 py-3 glass-panel rounded-xl text-sm border-none outline-none bg-white/60"
+                    />
+                </div>
+                <div className="glass-panel rounded-2xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full">
+                            <thead>
+                                <tr className="border-b border-gray-100 bg-gray-50/50">
+                                    <th className="text-left px-5 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">User</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Role</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Agents</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Campaigns</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Calls</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">API Keys</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Docs</th>
+                                    <th className="text-left px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Created</th>
+                                    <th className="text-center px-3 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filtered.map(u => (
+                                    <tr key={u.id} className="border-b border-gray-50 hover:bg-orange-50/30 transition-colors">
+                                        <td className="px-5 py-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white text-xs font-bold">
+                                                    {u.name?.[0]?.toUpperCase() || u.email[0].toUpperCase()}
+                                                </div>
+                                                <div>
+                                                    <div className="text-sm font-semibold text-gray-900">{u.name}</div>
+                                                    <div className="text-xs text-gray-500">{u.email}</div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-3 py-3 text-center">
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${u.role === 'superadmin' ? 'bg-orange-100 text-orange-700' : u.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{u.role}</span>
+                                        </td>
+                                        <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.agents}</td>
+                                        <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.campaigns}</td>
+                                        <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.calls}</td>
+                                        <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.apiKeys}</td>
+                                        <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.knowledgeDocs || 0}</td>
+                                        <td className="px-3 py-3 text-xs text-gray-500">{new Date(u.createdAt).toLocaleDateString()}</td>
+                                        <td className="px-3 py-3 text-center">
+                                            <div className="flex items-center justify-center gap-1">
+                                                <button onClick={() => viewUser(u.id)} className="p-1.5 hover:bg-blue-50 rounded-lg text-gray-400 hover:text-blue-500 transition-colors" title="View Details">
+                                                    <Eye size={14} />
+                                                </button>
+                                                <button onClick={() => exportUserData(u.id, u.email)} disabled={exporting === u.id} className="p-1.5 hover:bg-green-50 rounded-lg text-gray-400 hover:text-green-500 transition-colors" title="Export All Data">
+                                                    {exporting === u.id ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                                                </button>
+                                                {u.role !== 'superadmin' && (
+                                                    <button onClick={() => deleteUser(u.id, u.email)} className="p-1.5 hover:bg-red-50 rounded-lg text-gray-400 hover:text-red-500 transition-colors" title="Delete User">
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {filtered.length === 0 && (
+                                    <tr><td colSpan={9} className="text-center py-12 text-gray-400 text-sm">No users found</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            {/* Create User Modal */}
+            {showCreate && (
+                <div className="fixed inset-0 z-50 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-lg font-bold text-gray-900">Create New User</h3>
+                            <button onClick={() => setShowCreate(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={18} /></button>
+                        </div>
+                        <div className="space-y-3">
+                            <div><label className="text-xs font-semibold text-gray-600 mb-1 block">Email</label><input value={createForm.email} onChange={e => setCreateForm(f => ({ ...f, email: e.target.value }))} className="input-field" placeholder="user@company.com" /></div>
+                            <div><label className="text-xs font-semibold text-gray-600 mb-1 block">Full Name</label><input value={createForm.name} onChange={e => setCreateForm(f => ({ ...f, name: e.target.value }))} className="input-field" placeholder="John Smith" /></div>
+                            <div><label className="text-xs font-semibold text-gray-600 mb-1 block">Password</label><input type="password" value={createForm.password} onChange={e => setCreateForm(f => ({ ...f, password: e.target.value }))} className="input-field" placeholder="••••••••" /></div>
+                            <div><label className="text-xs font-semibold text-gray-600 mb-1 block">Role</label>
+                                <select value={createForm.role} onChange={e => setCreateForm(f => ({ ...f, role: e.target.value }))} className="input-field">
+                                    <option value="user">User</option><option value="admin">Admin</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button onClick={() => setShowCreate(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+                            <button onClick={createUser} className="btn-primary">Create User</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ Enhanced User Detail Modal ═══ */}
+            {selectedUser && (
+                <div className="fixed inset-0 z-50 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                        {/* Modal Header */}
+                        <div className="p-5 border-b border-gray-100 flex items-center justify-between shrink-0">
+                            <h3 className="text-lg font-bold text-gray-900">User Details</h3>
+                            <div className="flex items-center gap-2">
+                                {userDetail && (
+                                    <button onClick={() => exportUserData(selectedUser, userDetail.user.email)} disabled={exporting === selectedUser} className="btn-secondary flex items-center gap-2 text-sm py-1.5">
+                                        {exporting === selectedUser ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                                        Export All Data
+                                    </button>
+                                )}
+                                <button onClick={() => { setSelectedUser(null); setUserDetail(null); setUserCalls([]); }} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={18} /></button>
+                            </div>
+                        </div>
+
+                        {detailLoading ? (
+                            <div className="flex justify-center py-16"><Loader2 size={24} className="animate-spin text-orange-500" /></div>
+                        ) : userDetail ? (
+                            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                                {/* User Info Header */}
+                                <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl">
+                                    <div className="w-14 h-14 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white text-xl font-bold shadow-lg">
+                                        {userDetail.user.name?.[0]?.toUpperCase() || 'U'}
+                                    </div>
+                                    <div className="flex-1">
+                                        <div className="font-bold text-gray-900 text-lg">{userDetail.user.name}</div>
+                                        <div className="text-sm text-gray-500">{userDetail.user.email}</div>
+                                        <div className="text-xs text-gray-400 mt-0.5">Joined: {new Date(userDetail.user.createdAt).toLocaleDateString()} · ID: {userDetail.user.id?.slice(0,8)}...</div>
+                                    </div>
+                                    <span className={`px-3 py-1.5 rounded-full text-xs font-bold ${userDetail.user.role === 'superadmin' ? 'bg-orange-100 text-orange-700' : userDetail.user.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{userDetail.user.role}</span>
+                                </div>
+
+                                {/* Usage Stats Summary */}
+                                <div className="grid grid-cols-4 gap-3">
+                                    {[
+                                        { label: 'Agents', value: userDetail.agents?.length || 0, icon: Bot, color: 'blue' },
+                                        { label: 'Calls', value: userCalls.length, icon: Phone, color: 'green' },
+                                        { label: 'API Keys', value: userDetail.apiKeys || 0, icon: Key, color: 'purple' },
+                                        { label: 'Documents', value: userDetail.knowledgeDocs || 0, icon: FileText, color: 'amber' },
+                                    ].map(s => (
+                                        <div key={s.label} className="bg-white p-3 rounded-xl border border-gray-100 text-center">
+                                            <s.icon size={18} className={`text-${s.color}-500 mx-auto mb-1`} />
+                                            <div className="text-lg font-bold text-gray-900">{s.value}</div>
+                                            <div className="text-[10px] text-gray-500">{s.label}</div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Detail Tabs */}
+                                <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
+                                    {[
+                                        { id: 'overview', label: 'Overview' },
+                                        { id: 'calls', label: `Call Logs (${userCalls.length})` },
+                                        { id: 'agents', label: `Agents (${userDetail.agents?.length || 0})` },
+                                    ].map(tab => (
+                                        <button key={tab.id} onClick={() => setDetailTab(tab.id)} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${detailTab === tab.id ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+                                            {tab.label}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* Tab: Overview */}
+                                {detailTab === 'overview' && (
+                                    <div className="space-y-4">
+                                        {userDetail.agents?.length > 0 && (
+                                            <div>
+                                                <div className="flex items-center gap-2 mb-2"><Bot size={16} className="text-orange-500" /><span className="text-sm font-bold text-gray-700">Agents</span></div>
+                                                <div className="space-y-1 bg-gray-50 p-3 rounded-xl">{userDetail.agents.map(a => (
+                                                    <div key={a.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-gray-100">
+                                                        <div>
+                                                            <span className="text-sm font-medium text-gray-800">{a.name}</span>
+                                                            <span className="text-[10px] text-gray-400 ml-2">{a.llmModel || 'callex-1.3'}</span>
+                                                        </div>
+                                                        <span className={`px-2 py-0.5 rounded-full text-xs ${a.status === 'active' ? 'bg-green-100 text-green-700' : a.status === 'paused' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-500'}`}>{a.status}</span>
+                                                    </div>
+                                                ))}</div>
+                                            </div>
+                                        )}
+                                        {userCalls.length > 0 && (
+                                            <div>
+                                                <div className="flex items-center gap-2 mb-2"><Phone size={16} className="text-orange-500" /><span className="text-sm font-bold text-gray-700">Recent Calls</span></div>
+                                                <div className="space-y-1 bg-gray-50 p-3 rounded-xl">{userCalls.slice(0, 5).map(c => (
+                                                    <div key={c.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-gray-100">
+                                                        <div>
+                                                            <span className="text-sm font-medium text-gray-800">{c.phoneNumber || 'N/A'}</span>
+                                                            <span className="text-xs text-gray-400 ml-2">{c.agentName || ''}</span>
+                                                            <span className="text-xs text-gray-400 ml-2">{c.duration ? `${c.duration}s` : '-'}</span>
+                                                        </div>
+                                                        <span className={`px-2 py-0.5 rounded-full text-xs ${c.sentiment === 'positive' ? 'bg-green-100 text-green-700' : c.sentiment === 'negative' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500'}`}>{c.sentiment || c.status}</span>
+                                                    </div>
+                                                ))}</div>
+                                                {userCalls.length > 5 && <button onClick={() => setDetailTab('calls')} className="text-xs text-orange-500 font-semibold mt-2 hover:underline">View all {userCalls.length} calls →</button>}
+                                            </div>
+                                        )}
+                                        {userDetail.agents?.length === 0 && userCalls.length === 0 && (
+                                            <div className="text-center py-8 text-gray-400 text-sm">This user has no activity yet.</div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Tab: Call Logs */}
+                                {detailTab === 'calls' && (
+                                    <div>
+                                        {userCalls.length === 0 ? (
+                                            <div className="text-center py-8 text-gray-400 text-sm">No call logs found for this user.</div>
+                                        ) : (
+                                            <div className="glass-panel rounded-xl overflow-hidden">
+                                                <table className="w-full">
+                                                    <thead>
+                                                        <tr className="border-b border-gray-100 bg-gray-50/50">
+                                                            <th className="text-left px-4 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Phone</th>
+                                                            <th className="text-left px-3 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Agent</th>
+                                                            <th className="text-center px-3 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Duration</th>
+                                                            <th className="text-center px-3 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Sentiment</th>
+                                                            <th className="text-center px-3 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Status</th>
+                                                            <th className="text-left px-3 py-2.5 text-[10px] font-bold text-gray-500 uppercase">Date</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {userCalls.map(c => (
+                                                            <tr key={c.id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                                                                <td className="px-4 py-2.5 text-sm text-gray-800 font-medium">{c.phoneNumber || 'N/A'}</td>
+                                                                <td className="px-3 py-2.5 text-xs text-gray-600">{c.agentName || '-'}</td>
+                                                                <td className="px-3 py-2.5 text-center text-xs text-gray-600">{c.duration ? `${c.duration}s` : '-'}</td>
+                                                                <td className="px-3 py-2.5 text-center">
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${c.sentiment === 'positive' ? 'bg-green-100 text-green-700' : c.sentiment === 'negative' ? 'bg-red-100 text-red-700' : c.sentiment === 'angry' ? 'bg-red-200 text-red-800' : 'bg-gray-100 text-gray-500'}`}>{c.sentiment || '-'}</span>
+                                                                </td>
+                                                                <td className="px-3 py-2.5 text-center">
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${c.status === 'completed' ? 'bg-green-100 text-green-700' : c.status === 'active' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>{c.status}</span>
+                                                                </td>
+                                                                <td className="px-3 py-2.5 text-xs text-gray-500">{c.startedAt ? new Date(c.startedAt._seconds ? c.startedAt._seconds * 1000 : c.startedAt).toLocaleString() : '-'}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Tab: Agents Detail */}
+                                {detailTab === 'agents' && (
+                                    <div>
+                                        {(!userDetail.agents || userDetail.agents.length === 0) ? (
+                                            <div className="text-center py-8 text-gray-400 text-sm">No agents created by this user.</div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {userDetail.agents.map(a => (
+                                                    <div key={a.id} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <div className="flex items-center gap-2">
+                                                                <Bot size={16} className="text-orange-500" />
+                                                                <span className="font-bold text-gray-900">{a.name}</span>
+                                                            </div>
+                                                            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${a.status === 'active' ? 'bg-green-100 text-green-700' : a.status === 'paused' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-500'}`}>{a.status}</span>
+                                                        </div>
+                                                        <div className="grid grid-cols-4 gap-3 text-xs">
+                                                            <div><span className="text-gray-400">Model:</span><span className="ml-1 font-semibold text-gray-700">{a.llmModel || 'callex-1.3'}</span></div>
+                                                            <div><span className="text-gray-400">Language:</span><span className="ml-1 font-semibold text-gray-700">{a.language || 'en-US'}</span></div>
+                                                            <div><span className="text-gray-400">Speed:</span><span className="ml-1 font-semibold text-gray-700">{a.prosodyRate || 1.0}x</span></div>
+                                                            <div><span className="text-gray-400">Patience:</span><span className="ml-1 font-semibold text-gray-700">{a.patienceMs || 800}ms</span></div>
+                                                        </div>
+                                                        {a.description && <p className="text-xs text-gray-400 mt-2 line-clamp-2">{a.description}</p>}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// USER DASHBOARD — Original call center command center view
+// ═══════════════════════════════════════════════════════════
+function UserDashboard() {
     const [kpis, setKPIs] = useState(null);
     const [abTest, setABTest] = useState(null);
     const [events, setEvents] = useState([]);
@@ -201,43 +652,20 @@ export default function Dashboard() {
                 {/* Workforce KPI pills */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div className="card p-4 border-l-4 border-l-emerald-500 flex items-center gap-3 bg-white/50">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-                            <PhoneCall size={20} />
-                        </div>
-                        <div>
-                            <div className="text-xl font-black text-gray-900">{availableCount}</div>
-                            <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Available</div>
-                        </div>
+                        <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600"><PhoneCall size={20} /></div>
+                        <div><div className="text-xl font-black text-gray-900">{availableCount}</div><div className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Available</div></div>
                     </div>
-
                     <div className="card p-4 border-l-4 border-l-blue-500 flex items-center gap-3 bg-white/50">
-                        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
-                            <Clock size={20} />
-                        </div>
-                        <div>
-                            <div className="text-xl font-black text-gray-900">{acwCount}</div>
-                            <div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Wrap-up</div>
-                        </div>
+                        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600"><Clock size={20} /></div>
+                        <div><div className="text-xl font-black text-gray-900">{acwCount}</div><div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Wrap-up</div></div>
                     </div>
-
                     <div className="card p-4 border-l-4 border-l-purple-500 flex items-center gap-3 bg-white/50">
-                        <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600">
-                            <PhoneForwarded size={20} />
-                        </div>
-                        <div>
-                            <div className="text-xl font-black text-gray-900">{dialingCount}</div>
-                            <div className="text-[10px] font-bold text-purple-600 uppercase tracking-widest">Dialing</div>
-                        </div>
+                        <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600"><PhoneForwarded size={20} /></div>
+                        <div><div className="text-xl font-black text-gray-900">{dialingCount}</div><div className="text-[10px] font-bold text-purple-600 uppercase tracking-widest">Dialing</div></div>
                     </div>
-
                     <div className="card p-4 border-l-4 border-l-gray-400 flex items-center gap-3 bg-white/50">
-                        <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-600">
-                            <Users size={20} />
-                        </div>
-                        <div>
-                            <div className="text-xl font-black text-gray-900">{wfmStates.length}</div>
-                            <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Total Staff</div>
-                        </div>
+                        <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-600"><Users size={20} /></div>
+                        <div><div className="text-xl font-black text-gray-900">{wfmStates.length}</div><div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Total Staff</div></div>
                     </div>
                 </div>
 

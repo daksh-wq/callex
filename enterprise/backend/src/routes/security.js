@@ -1,38 +1,39 @@
 import { Router } from 'express';
-import { prisma } from '../index.js';
+import { db, docToObj, queryToArray } from '../firebase.js';
 import crypto from 'crypto';
 
 const router = Router();
 
 // GET /api/security/voice-signatures
 router.get('/voice-signatures', async (req, res) => {
-    res.json(await prisma.voiceSignature.findMany({ orderBy: { createdAt: 'desc' } }));
+    const snap = await db.collection('voiceSignatures').orderBy('createdAt', 'desc').get();
+    res.json(queryToArray(snap));
 });
 
 // POST /api/security/voice-signatures
 router.post('/voice-signatures', async (req, res) => {
     const { phrase, description } = req.body;
-    // Mock SHA-256 hash of audio segment
     const hashExample = crypto.createHash('sha256').update(phrase + Date.now()).digest('hex');
-    const sig = await prisma.voiceSignature.create({ data: { phrase, description, hashExample } });
-    res.json(sig);
+    const data = { phrase, description, hashExample, active: true, createdAt: new Date() };
+    const ref = await db.collection('voiceSignatures').add(data);
+    res.json({ id: ref.id, ...data });
 });
 
 // DELETE /api/security/voice-signatures/:id
 router.delete('/voice-signatures/:id', async (req, res) => {
-    await prisma.voiceSignature.delete({ where: { id: req.params.id } });
+    await db.collection('voiceSignatures').doc(req.params.id).delete();
     res.json({ success: true });
 });
 
-// POST /api/security/pci - toggle PCI recording pause
+// POST /api/security/pci
 router.post('/pci', async (req, res) => {
     const { callId, paused } = req.body;
-    await prisma.call.update({ where: { id: callId }, data: { recordingPaused: paused } });
-    await prisma.systemEvent.create({ data: { type: 'pci.recording', message: `Recording ${paused ? 'paused' : 'resumed'} for call ${callId}`, severity: 'warning' } });
+    await db.collection('calls').doc(callId).update({ recordingPaused: paused });
+    await db.collection('systemEvents').add({ type: 'pci.recording', message: `Recording ${paused ? 'paused' : 'resumed'} for call ${callId}`, severity: 'warning', meta: '{}', createdAt: new Date() });
     res.json({ success: true, paused });
 });
 
-// POST /api/security/hash-audio - hash audio chunk for legal verification
+// POST /api/security/hash-audio
 router.post('/hash-audio', async (req, res) => {
     const { audioChunk, callId } = req.body;
     const hash = crypto.createHash('sha256').update(audioChunk || '').digest('hex');

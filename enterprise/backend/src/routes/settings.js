@@ -1,69 +1,70 @@
 import { Router } from 'express';
-import { prisma } from '../index.js';
+import { db, docToObj, queryToArray } from '../firebase.js';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import fetch from 'node:http';
 
 const router = Router();
 
 // GET /api/settings/api-keys
 router.get('/api-keys', async (req, res) => {
-    const keys = await prisma.apiKey.findMany({
-        where: { active: true, userId: req.userId },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, name: true, prefix: true, env: true, lastUsed: true, createdAt: true, active: true }
-    });
+    const snap = await db.collection('apiKeys').where('active', '==', true).where('userId', '==', req.userId).orderBy('createdAt', 'desc').get();
+    const keys = queryToArray(snap).map(k => ({ id: k.id, name: k.name, prefix: k.prefix, env: k.env, lastUsed: k.lastUsed, createdAt: k.createdAt, active: k.active }));
     res.json(keys);
 });
 
-// POST /api/settings/api-keys - generate new key
+// POST /api/settings/api-keys
 router.post('/api-keys', async (req, res) => {
     const { name, env } = req.body;
     const rawKey = uuidv4().replace(/-/g, '');
     const prefix = env === 'live' ? `ck_live_${rawKey.slice(0, 8)}` : `ck_test_${rawKey.slice(0, 8)}`;
     const fullKey = `${prefix}_${rawKey.slice(8)}`;
     const keyHash = crypto.createHash('sha256').update(fullKey).digest('hex');
-    const key = await prisma.apiKey.create({ data: { userId: req.userId, name, keyHash, prefix, env: env || 'test' } });
-    res.json({ ...key, fullKey }); // Only time we return the full key
+    const data = { userId: req.userId, name, keyHash, prefix, env: env || 'test', active: true, lastUsed: null, createdAt: new Date() };
+    const ref = await db.collection('apiKeys').add(data);
+    res.json({ id: ref.id, ...data, fullKey });
 });
 
 // DELETE /api/settings/api-keys/:id
 router.delete('/api-keys/:id', async (req, res) => {
-    await prisma.apiKey.update({ where: { id: req.params.id }, data: { active: false } });
+    await db.collection('apiKeys').doc(req.params.id).update({ active: false });
     res.json({ success: true });
 });
 
 // GET /api/settings/webhooks
 router.get('/webhooks', async (req, res) => {
-    res.json(await prisma.webhook.findMany({ where: { userId: req.userId }, orderBy: { createdAt: 'desc' } }));
+    const snap = await db.collection('webhooks').where('userId', '==', req.userId).orderBy('createdAt', 'desc').get();
+    res.json(queryToArray(snap));
 });
 
 // POST /api/settings/webhooks
 router.post('/webhooks', async (req, res) => {
     const { url, events, secret } = req.body;
-    const webhook = await prisma.webhook.create({ data: { userId: req.userId, url, events: JSON.stringify(events || []), secret } });
-    res.json(webhook);
+    const data = { userId: req.userId, url, events: JSON.stringify(events || []), secret, active: true, createdAt: new Date() };
+    const ref = await db.collection('webhooks').add(data);
+    res.json({ id: ref.id, ...data });
 });
 
 // PATCH /api/settings/webhooks/:id
 router.patch('/webhooks/:id', async (req, res) => {
     const data = { ...req.body };
     if (data.events && Array.isArray(data.events)) data.events = JSON.stringify(data.events);
-    const webhook = await prisma.webhook.update({ where: { id: req.params.id }, data });
-    res.json(webhook);
+    delete data.id;
+    await db.collection('webhooks').doc(req.params.id).update(data);
+    const doc = await db.collection('webhooks').doc(req.params.id).get();
+    res.json(docToObj(doc));
 });
 
 // DELETE /api/settings/webhooks/:id
 router.delete('/webhooks/:id', async (req, res) => {
-    await prisma.webhook.delete({ where: { id: req.params.id } });
+    await db.collection('webhooks').doc(req.params.id).delete();
     res.json({ success: true });
 });
 
-// POST /api/settings/webhooks/:id/test - send test event
+// POST /api/settings/webhooks/:id/test
 router.post('/webhooks/:id/test', async (req, res) => {
-    const webhook = await prisma.webhook.findUnique({ where: { id: req.params.id } });
-    if (!webhook) return res.status(404).json({ error: 'Webhook not found' });
-    // Fire test POST (simplified, no actual HTTP lib beyond built-in)
+    const doc = await db.collection('webhooks').doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Webhook not found' });
+    const webhook = docToObj(doc);
     res.json({ success: true, message: `Test event dispatched to ${webhook.url}` });
 });
 

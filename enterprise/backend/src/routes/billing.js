@@ -1,52 +1,48 @@
-import express from 'express';
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-const router = express.Router();
+import { Router } from 'express';
+import { db, docToObj, queryToArray } from '../firebase.js';
 
-// GET /api/billing/stats - Get current month billing
+const router = Router();
+
+// GET /api/billing/stats
 router.get('/stats', async (req, res) => {
     try {
-        // e.g. "2026-02"
         const currentMonth = new Date().toISOString().substring(0, 7);
-
-        let stat = await prisma.billingStat.findUnique({
-            where: { month: currentMonth }
-        });
-
-        if (!stat) {
-            stat = await prisma.billingStat.create({
-                data: { month: currentMonth }
-            });
+        const doc = await db.collection('billingStats').doc(currentMonth).get();
+        if (!doc.exists) {
+            const data = { month: currentMonth, telecomMins: 0, llmTokens: 0, sttMinutes: 0, totalCostUsd: 0.0, updatedAt: new Date() };
+            await db.collection('billingStats').doc(currentMonth).set(data);
+            return res.json({ id: currentMonth, ...data });
         }
-        res.json(stat);
+        res.json(docToObj(doc));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST /api/billing/increment - Internal route to add usage (mock)
+// POST /api/billing/increment
 router.post('/increment', async (req, res) => {
     try {
         const { telecomMins, llmTokens, sttMinutes, costIncrement } = req.body;
         const currentMonth = new Date().toISOString().substring(0, 7);
+        const doc = await db.collection('billingStats').doc(currentMonth).get();
 
-        const stat = await prisma.billingStat.upsert({
-            where: { month: currentMonth },
-            update: {
-                telecomMins: { increment: telecomMins || 0 },
-                llmTokens: { increment: llmTokens || 0 },
-                sttMinutes: { increment: sttMinutes || 0 },
-                totalCostUsd: { increment: costIncrement || 0.0 }
-            },
-            create: {
-                month: currentMonth,
-                telecomMins: telecomMins || 0,
-                llmTokens: llmTokens || 0,
-                sttMinutes: sttMinutes || 0,
-                totalCostUsd: costIncrement || 0.0
-            }
-        });
-        res.json(stat);
+        if (doc.exists) {
+            const existing = doc.data();
+            await db.collection('billingStats').doc(currentMonth).update({
+                telecomMins: (existing.telecomMins || 0) + (telecomMins || 0),
+                llmTokens: (existing.llmTokens || 0) + (llmTokens || 0),
+                sttMinutes: (existing.sttMinutes || 0) + (sttMinutes || 0),
+                totalCostUsd: (existing.totalCostUsd || 0) + (costIncrement || 0),
+                updatedAt: new Date(),
+            });
+        } else {
+            await db.collection('billingStats').doc(currentMonth).set({
+                month: currentMonth, telecomMins: telecomMins || 0, llmTokens: llmTokens || 0,
+                sttMinutes: sttMinutes || 0, totalCostUsd: costIncrement || 0, updatedAt: new Date(),
+            });
+        }
+        const updated = await db.collection('billingStats').doc(currentMonth).get();
+        res.json(docToObj(updated));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

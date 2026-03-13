@@ -2,13 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
-import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import dns from 'dns';
 
-// Fix for Node.js 18+ native fetch ENOTFOUND errors on macOS when resolving certain domains like api.elevenlabs.io over IPv6
+// Fix for Node.js 18+ native fetch ENOTFOUND errors on macOS
 dns.setDefaultResultOrder('ipv4first');
+
+// Firebase
+import { db } from './firebase.js';
 
 // Routes
 import dashboardRouter from './routes/dashboard.js';
@@ -35,15 +37,13 @@ import { setupSupervisorWS } from './ws/supervisor.js';
 import { setupDashboardWS } from './ws/dashboard.js';
 
 dotenv.config();
-export const prisma = new PrismaClient();
 
 const app = express();
 const httpServer = createServer(app);
 export const wss = new WebSocketServer({ server: httpServer });
 
 // Middleware
-// Middleware
-app.use(cors({ origin: true, credentials: true })); // allow all for deep integration test
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
@@ -51,10 +51,9 @@ app.use('/uploads', express.static('uploads'));
 // Routes
 app.use('/api/auth', authRouter);
 
-// Apply JWT auth middleware to all other /api routes (except /api/auth above and /api/v1 below)
+// Apply JWT auth middleware to all other /api routes
 import { requireAuth } from './middleware/auth.js';
 app.use('/api', (req, res, next) => {
-    // Skip external API (has its own API key auth)
     if (req.path.startsWith('/v1')) return next();
     requireAuth(req, res, next);
 });
@@ -81,12 +80,12 @@ app.use('/api/followups', followupsRouter);
 import adminRouter from './routes/admin.js';
 app.use('/api/admin', adminRouter);
 
-// Set up public authenticated developer APIs
+// External developer APIs
 import externalRouter from './routes/external.js';
 app.use('/api/v1', externalRouter);
 
 // WebSocket routing
-export const wsClients = new Map(); // callId -> Set<ws>
+export const wsClients = new Map();
 export const dashboardClients = new Set();
 
 wss.on('connection', (ws, req) => {
@@ -102,18 +101,15 @@ wss.on('connection', (ws, req) => {
         if (!wsClients.has(callId)) wsClients.set(callId, new Set());
         wsClients.get(callId).add(ws);
         setupSupervisorWS(ws, callId);
-        ws.on('close', () => {
-            wsClients.get(callId)?.delete(ws);
-        });
+        ws.on('close', () => { wsClients.get(callId)?.delete(ws); });
     } else if (type === 'softphone') {
         ws.on('message', (msg) => {
-            // Echo for softphone test
             ws.send(JSON.stringify({ type: 'transcript', text: '[STT simulation active]', ts: Date.now() }));
         });
     }
 });
 
-// Broadcast helper
+// Broadcast helpers
 export function broadcastToDashboard(data) {
     const msg = JSON.stringify(data);
     dashboardClients.forEach(c => { if (c.readyState === 1) c.send(msg); });
@@ -124,20 +120,19 @@ export function broadcastToCall(callId, data) {
     wsClients.get(callId)?.forEach(c => { if (c.readyState === 1) c.send(msg); });
 }
 
-// Serve the Enterprise Dashboard frontend (built Vite dist)
+// Serve the Enterprise Dashboard frontend
 import path from 'path';
 import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DASHBOARD_DIST = path.resolve(__dirname, '../../frontend/dist');
 
-// Serve static assets (JS, CSS, images, etc.)
 app.use(express.static(DASHBOARD_DIST));
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', ts: new Date() }));
 
-// SPA catch-all: any non-API route serves index.html (React Router handles the rest)
+// SPA catch-all
 app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
     res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
@@ -151,37 +146,46 @@ httpServer.listen(PORT, () => {
 
 async function seedInitialData() {
     try {
-        const count = await prisma.integration.count();
-        if (count === 0) {
+        // Seed integrations if empty
+        const intSnap = await db.collection('integrations').limit(1).get();
+        if (intSnap.empty) {
             const integrations = [
-                { name: 'Salesforce', slug: 'salesforce' },
-                { name: 'Stripe', slug: 'stripe' },
-                { name: 'Zapier', slug: 'zapier' },
-                { name: 'HubSpot', slug: 'hubspot' },
-                { name: 'Salesforce', slug: 'salesforce', connected: true },
-                { name: 'Twilio', slug: 'twilio', connected: true },
-                { name: 'Zendesk', slug: 'zendesk' },
-                { name: 'Slack', slug: 'slack' },
-                { name: 'Segment', slug: 'segment' },
-                { name: 'Intercom', slug: 'intercom' },
+                { name: 'Salesforce', slug: 'salesforce', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Stripe', slug: 'stripe', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Zapier', slug: 'zapier', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'HubSpot', slug: 'hubspot', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Twilio', slug: 'twilio', connected: true, config: '{}', createdAt: new Date() },
+                { name: 'Zendesk', slug: 'zendesk', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Slack', slug: 'slack', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Segment', slug: 'segment', connected: false, config: '{}', createdAt: new Date() },
+                { name: 'Intercom', slug: 'intercom', connected: false, config: '{}', createdAt: new Date() },
             ];
-            await prisma.integration.createMany({ data: integrations });
-            console.log('[SEED] Integrations seeded');
+            const batch = db.batch();
+            integrations.forEach(i => batch.set(db.collection('integrations').doc(), i));
+            await batch.commit();
+            console.log('[SEED] Integrations seeded to Firestore');
         }
-        const agentCount = await prisma.agent.count();
-        if (agentCount === 0) {
-            await prisma.agent.create({
-                data: {
-                    name: 'Recharge Assistant',
-                    description: 'Primary inbound voice agent for DishTV recharge',
-                    status: 'active',
-                    systemPrompt: 'You are a helpful DishTV customer service agent. Help customers with their recharge queries.',
-                    openingLine: 'Hello! This is DishTV support. How can I help you today?',
-                    voice: 'nova',
-                    language: 'en-IN',
-                }
+
+        // Seed default agent if empty
+        const agentSnap = await db.collection('agents').limit(1).get();
+        if (agentSnap.empty) {
+            await db.collection('agents').add({
+                name: 'Recharge Assistant',
+                description: 'Primary inbound voice agent for DishTV recharge',
+                status: 'active',
+                systemPrompt: 'You are a helpful DishTV customer service agent. Help customers with their recharge queries.',
+                openingLine: 'Hello! This is DishTV support. How can I help you today?',
+                voice: 'nova',
+                language: 'en-IN',
+                llmModel: 'callex-1.3',
+                prosodyRate: 1.0,
+                prosodyPitch: 1.0,
+                patienceMs: 800,
+                bargeInMode: 'balanced',
+                createdAt: new Date(),
+                updatedAt: new Date(),
             });
-            console.log('[SEED] Default agent seeded');
+            console.log('[SEED] Default agent seeded to Firestore');
         }
     } catch (e) {
         console.error('[SEED] Error:', e.message);

@@ -1,11 +1,9 @@
 import { broadcastToDashboard } from '../index.js';
-import { prisma } from '../index.js';
+import { db, queryToArray } from '../firebase.js';
 
-// Push live KPI updates every 5 seconds to connected dashboard clients
 let dashboardInterval = null;
 
 export function setupDashboardWS(ws) {
-    // Send initial data immediately
     sendDashboardUpdate(ws);
 
     if (!dashboardInterval) {
@@ -25,31 +23,33 @@ export function setupDashboardWS(ws) {
 }
 
 async function buildKPIPayload() {
-    const activeCalls = await prisma.call.count({ where: { status: 'active' } });
-    const events = await prisma.systemEvent.findMany({ orderBy: { createdAt: 'desc' }, take: 5 });
+    const activeCallsSnap = await db.collection('calls').where('status', '==', 'active').get();
+    const eventsSnap = await db.collection('systemEvents').orderBy('createdAt', 'desc').limit(5).get();
+    const allCallsSnap = await db.collection('calls').get();
 
-    // Live metrics from DB
-    const allCalls = await prisma.call.findMany({ select: { mosScore: true, sentiment: true } });
+    const allCalls = queryToArray(allCallsSnap);
     const avgMOS = allCalls.filter(c => c.mosScore).reduce((a, b, _, arr) => a + b.mosScore / arr.length, 0) || 4.2;
     const angryCount = allCalls.filter(c => c.sentiment === 'angry').length;
     const slaPercent = allCalls.length > 0 ? Math.round((1 - angryCount / allCalls.length) * 100) : 100;
 
-    const agents = await prisma.agent.count({ where: { status: 'active' } });
-    const queueDepth = await prisma.call.count({ where: { status: 'active', agentId: null } });
+    const agentsSnap = await db.collection('agents').where('status', '==', 'active').get();
 
-    const errorEvents = await prisma.systemEvent.count({ where: { severity: 'error' } });
-    const totalEvents = await prisma.systemEvent.count();
-    const fallbackRate = totalEvents > 0 ? (errorEvents / totalEvents) * 100 : 0;
+    let queueDepth = 0;
+    activeCallsSnap.forEach(d => { if (!d.data().agentId) queueDepth++; });
+
+    const errorSnap = await db.collection('systemEvents').where('severity', '==', 'error').get();
+    const totalEventsSnap = await db.collection('systemEvents').get();
+    const fallbackRate = totalEventsSnap.size > 0 ? (errorSnap.size / totalEventsSnap.size) * 100 : 0;
 
     return {
-        activeCalls,
+        activeCalls: activeCallsSnap.size,
         avgMOS: avgMOS.toFixed(2),
         slaPercent,
         apiFallbackRate: fallbackRate.toFixed(1),
-        aiAgentsAvailable: agents || 0,
-        humanAgentsAvailable: 2, // Hardcoded floor
+        aiAgentsAvailable: agentsSnap.size || 0,
+        humanAgentsAvailable: 2,
         queueDepth,
-        events,
+        events: queryToArray(eventsSnap),
     };
 }
 
