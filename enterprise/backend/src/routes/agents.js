@@ -116,11 +116,27 @@ router.patch('/:id', async (req, res) => {
 
 // DELETE /api/agents/:id
 router.delete('/:id', async (req, res) => {
-    const doc = await db.collection('agents').doc(req.params.id).get();
-    const existing = docToObj(doc);
-    if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
-    await db.collection('agents').doc(req.params.id).delete();
-    res.json({ success: true });
+    try {
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
+
+        // Delete related records to prevent orphaned data
+        const pvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+        const fuSnap = await db.collection('followUps').where('agentId', '==', req.params.id).get();
+        
+        const batch = db.batch();
+        pvSnap.forEach(d => batch.delete(d.ref));
+        fuSnap.forEach(d => batch.delete(d.ref));
+        batch.delete(db.collection('agents').doc(req.params.id));
+        
+        await batch.commit();
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('[AGENTS] Delete error:', e);
+        res.status(500).json({ error: 'Failed to delete agent' });
+    }
 });
 
 // POST /api/agents/:id/prompt-version
