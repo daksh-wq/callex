@@ -33,7 +33,7 @@
 
 Everything you can do via the API can also be done through the **Callex Admin Panel**.
 
-🔗 **Admin Panel URL:** [http://62.171.170.48:4000](http://62.171.170.48:4000)
+🔗 **Admin Panel URL:** [http://62.171.170.48:5173](http://62.171.170.48:5173)
 
 | Feature | Where to Find |
 |---------|---------------|
@@ -54,7 +54,7 @@ Everything you can do via the API can also be done through the **Callex Admin Pa
 
 ## Getting Your API Key
 
-1. Open the **Admin Panel** → [http://62.171.170.48:4000](http://62.171.170.48:4000) and **log in**.
+1. Open the **Admin Panel** → [http://62.171.170.48:5173](http://62.171.170.48:5173) and **log in**.
 2. Click **Settings** in the left sidebar.
 3. Enter a **Key Name** (e.g., "Production App").
 4. Select the **Environment**: **Test** (`ck_test_`) or **Live** (`ck_live_`).
@@ -291,7 +291,7 @@ curl -X GET "http://62.171.170.48:4000/api/v1/calls?page=1&limit=10&status=compl
       "sentiment": "positive",
       "hasTranscript": true,
       "hasRecording": true,
-      "recordingUrl": "https://storage.googleapis.com/...",
+      "recordingUrl": "https://storage.callex.ai/...",
       "startedAt": "2026-03-13T12:30:00.000Z",
       "endedAt": "2026-03-13T12:32:25.000Z"
     }
@@ -332,7 +332,7 @@ curl -X GET http://62.171.170.48:4000/api/v1/calls/d9e4ff50-eeba-465d-a68a-fca35
     { "role": "customer", "text": "हाँ बोलिए...", "timestamp": 1710340205 },
     { "role": "ai", "text": "आपका कनेक्शन बंद होने वाला है...", "timestamp": 1710340210 }
   ],
-  "recordingUrl": "https://storage.googleapis.com/...",
+  "recordingUrl": "https://storage.callex.ai/...",
   "summary": "Customer agreed to recharge within 24 hours.",
   "outcome": { "result": "agreed", "followUpRequired": false },
   "startedAt": "2026-03-13T12:30:00.000Z",
@@ -557,6 +557,6 @@ Complete list of configurable fields (all optional except `name` on create).
 
 ---
 
-> 📌 **Remember:** Everything available via API is also available in the **[Admin Panel](http://62.171.170.48:4000)** with a full visual interface.
+> 📌 **Remember:** Everything available via API is also available in the **[Admin Panel](http://62.171.170.48:5173)** with a full visual interface.
 
 *For support, contact the Callex engineering team.*
