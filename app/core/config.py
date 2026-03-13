@@ -35,11 +35,6 @@ DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
 # ─── Firebase Storage Configuration ───
-# Set these via environment variables or .env file
 FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase_credentials.json")
 FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET", "lakhuteleservices-1f9e0.appspot.com")
-
-print(f"[CONFIG] Database: {DATABASE_URL}")
-print(f"[CONFIG] Recordings: {RECORDINGS_DIR}")
-print(f"[CONFIG] Firebase Bucket: {FIREBASE_STORAGE_BUCKET}")
 

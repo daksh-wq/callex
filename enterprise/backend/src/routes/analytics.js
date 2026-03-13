@@ -10,9 +10,14 @@ router.get('/', async (req, res) => {
         const pageNum = parseInt(page, 10);
         const limitNum = parseInt(limit, 10);
 
-        let query = db.collection('calls').where('userId', '==', req.userId).orderBy('startedAt', 'desc');
+        let query = db.collection('calls').where('userId', '==', req.userId);
         const snap = await query.get();
         let calls = queryToArray(snap);
+        calls.sort((a, b) => {
+            const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
+            const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
+            return db2 - da;
+        });
 
         // Apply filters in JS (Firestore doesn't support complex compound queries easily)
         if (sentiment) calls = calls.filter(c => c.sentiment === sentiment);

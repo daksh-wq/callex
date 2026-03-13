@@ -77,19 +77,24 @@ router.get('/users/:id', async (req, res) => {
         if (!user) return res.status(404).json({ error: 'User not found' });
 
         const [agents, campaigns, apiKeys, calls, docs, webhooks, followups] = await Promise.all([
-            db.collection('agents').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
-            db.collection('campaigns').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
-            db.collection('apiKeys').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
-            db.collection('calls').where('userId', '==', user.id).orderBy('startedAt', 'desc').limit(50).get(),
-            db.collection('knowledgeDocs').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
-            db.collection('webhooks').where('userId', '==', user.id).orderBy('createdAt', 'desc').get(),
-            db.collection('followUps').where('userId', '==', user.id).orderBy('scheduledFor', 'desc').get(),
+            db.collection('agents').where('userId', '==', user.id).get(),
+            db.collection('campaigns').where('userId', '==', user.id).get(),
+            db.collection('apiKeys').where('userId', '==', user.id).get(),
+            db.collection('calls').where('userId', '==', user.id).get(),
+            db.collection('knowledgeDocs').where('userId', '==', user.id).get(),
+            db.collection('webhooks').where('userId', '==', user.id).get(),
+            db.collection('followUps').where('userId', '==', user.id).get(),
         ]);
 
         res.json({
             user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt },
             agents: queryToArray(agents), campaigns: queryToArray(campaigns),
-            apiKeys: queryToArray(apiKeys), recentCalls: queryToArray(calls),
+            apiKeys: queryToArray(apiKeys), 
+            recentCalls: queryToArray(calls).sort((a,b) => {
+                const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
+                const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
+                return db2 - da;
+            }).slice(0, 50),
             knowledgeDocs: queryToArray(docs), webhooks: queryToArray(webhooks), followups: queryToArray(followups),
         });
     } catch (e) {
@@ -245,8 +250,9 @@ router.get('/agents-by-user', async (req, res) => {
 
         for (const userDoc of usersSnap.docs) {
             const u = { id: userDoc.id, ...userDoc.data() };
-            const agentsSnap = await db.collection('agents').where('userId', '==', u.id).orderBy('createdAt', 'desc').get();
+            const agentsSnap = await db.collection('agents').where('userId', '==', u.id).get();
             const agents = queryToArray(agentsSnap);
+            agents.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
             result.push({
                 user: { id: u.id, email: u.email, name: u.name, role: u.role },
                 agents,
@@ -360,7 +366,7 @@ router.get('/users/:userId/calls', async (req, res) => {
         
         let calls = [];
         // Get calls by userId
-        const directSnap = await db.collection('calls').where('userId', '==', req.params.userId).orderBy('startedAt', 'desc').get();
+        const directSnap = await db.collection('calls').where('userId', '==', req.params.userId).get();
         calls = queryToArray(directSnap);
         
         // Also get calls by agentId

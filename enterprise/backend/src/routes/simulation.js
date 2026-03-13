@@ -107,19 +107,19 @@ router.post('/agent-chat', async (req, res) => {
 
         let ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${resolvedVoiceId}/stream`, {
             method: 'POST',
-            headers: { 'Accept': 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
+            headers: { 'Accept': 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
             body: JSON.stringify({ text: aiText, model_id: "eleven_multilingual_v2", voice_settings: { stability, similarity_boost: similarity } })
         });
 
         if (!ttsRes.ok && ttsRes.status === 404) {
             ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${defaultVoiceId}/stream`, {
                 method: 'POST',
-                headers: { 'Accept': 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
+                headers: { 'Accept': 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
                 body: JSON.stringify({ text: aiText, model_id: "eleven_multilingual_v2", voice_settings: { stability, similarity_boost: similarity } })
             });
         }
 
-        if (!ttsRes.ok) { const errText = await ttsRes.text(); throw new Error(`TTS Error: ${ttsRes.status} ${errText}`); }
+        if (!ttsRes.ok) { const errText = await ttsRes.text(); throw new Error(`Voice Engine Error: ${ttsRes.status} ${errText}`); }
 
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Transfer-Encoding', 'chunked');

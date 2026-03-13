@@ -699,11 +699,32 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
 
 # ───────── TTS (Text-to-Speech) Streaming ─────────
 
-async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None) -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio from ElevenLabs. Uses agent-specific voice_id if provided."""
+async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False) -> AsyncGenerator[bytes, None]:
+    """Stream TTS audio. Automatically falls back to default voice on error."""
     resolved_voice_id = voice_id or GENARTML_VOICE_ID
-    print(f"[TTS] Starting stream for: '{text[:50]}...' (voice={resolved_voice_id[:8]}...)")
+    
+    # Auto-translate legacy/OpenAI voice names to Callex Voice IDs
+    CALLEX_VOICE_MAP = {
+        'alloy': 'MF4J4IDTRo0AxOO4dpFR',    # Devi (Clear Hindi)
+        'echo': '1qEiC6qsybMkmnNdVMbK',      # Monika (Modulated, Professional)
+        'fable': 'qDuRKMlYmrm8trt5QyBn',     # Taksh (Powerful & Commanding)
+        'onyx': 'LQ2auZHpAQ9h4azztqMT',      # Parveen (Confident Male)
+        'nova': 's6cZdgI3j07hf4frz4Q8',      # Arvi (Desi Conversational)
+        'shimmer': 'MF4J4IDTRo0AxOO4dpFR',   # Devi (Clear Hindi)
+    }
+    if resolved_voice_id and resolved_voice_id.lower() in CALLEX_VOICE_MAP:
+        mapped_id = CALLEX_VOICE_MAP[resolved_voice_id.lower()]
+        print(f"[Callex Voice Engine] Auto-mapped voice '{resolved_voice_id}' -> Callex Voice ID '{mapped_id[:8]}...'")
+        resolved_voice_id = mapped_id
+    
+    if is_fallback:
+        print(f"[Callex Voice Engine] ⚠️ Initiating Fallback Stream for: '{text[:50]}...'")
+        resolved_voice_id = GENARTML_VOICE_ID  # Force default voice
+    else:
+        print(f"[Callex Voice Engine] Starting stream for: '{text[:50]}...' (voice={resolved_voice_id[:8]}...)")
+        
     start_time = time.time()
+    
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
     headers = {
         "xi-api-key": GENARTML_SECRET_KEY,
@@ -717,22 +738,35 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": 1.2  # Maximum allowed by ElevenLabs is 1.2
+            "speed": 1.2
         }
     }
+
     try:
         async with client.stream("POST", url, json=payload, headers=headers, timeout=15.0) as response:
             if response.status_code != 200:
                 error_text = await response.aread()
-                print(f"[TTS Error] HTTP {response.status_code}: {error_text[:200]}")
-                return
+                print(f"[Callex Voice Engine Error] HTTP {response.status_code}: {error_text[:200]}")
+                
+                # Production Fallback Logic
+                if not is_fallback and GENARTML_VOICE_ID:
+                    print(f"[Callex Voice Engine] 🔄 Auto-recovering using default Callex Voice...")
+                    # Recursively call with the fallback flag to guarantee audio is generated
+                    async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                        yield fallback_chunk
+                    return
+                else:
+                    print("[Callex Voice Engine Error] Fallback also failed. Returning silence.")
+                    return
+            
             first_chunk = True
             buffer = b""
             # Stream exactly 0.5s chunks (16000 bytes = 8000 samples @ 16bit) for smooth, uninterrupted WebSocket delivery
             CHUNK_SIZE = 16000
+            
             async for chunk in response.aiter_bytes():
                 if first_chunk:
-                    print(f"[TTS First Byte]: {time.time() - start_time:.2f}s")
+                    print(f"[Callex Voice Engine First Byte]: {time.time() - start_time:.2f}s")
                     first_chunk = False
                 if chunk:
                     buffer += chunk
@@ -742,10 +776,18 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             if buffer and len(buffer) > 0:
                 yield buffer
     except asyncio.TimeoutError:
-        print("[TTS] Stream timeout")
+        print("[Callex Voice Engine] Stream timeout")
+        if not is_fallback:
+            async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                yield fallback_chunk
     except Exception as e:
-        print(f"[TTS Error]: {e}")
-    print(f"[TTS] Stream complete ({time.time() - start_time:.2f}s)")
+        import traceback
+        traceback.print_exc()
+        print(f"[Callex Voice Engine Error]: {e}")
+        if not is_fallback:
+            async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                yield fallback_chunk
+    print(f"[Callex Voice Engine] Stream complete ({time.time() - start_time:.2f}s)")
 
 
 # ───────── WEBSOCKET HANDLER ─────────
@@ -1200,6 +1242,70 @@ async def ws(ws: WebSocket):
                     print(f"[DB] ✅ Call record closed")
                 except Exception as db_error:
                     print(f"[DB ERROR] Failed to end call: {db_error}")
+
+                # ── Save Transcript to Firestore ──
+                if history:
+                    try:
+                        from firebase_admin import firestore as fs
+                        firestore_db = fs.client()
+                        
+                        # Build readable transcript string
+                        transcript_lines = []
+                        transcript_messages = []
+                        for msg in history:
+                            role = "AI" if msg.get("role") == "model" else "Customer"
+                            text = msg.get("parts", [{}])[0].get("text", "")
+                            if text and text != "SYSTEM_INITIATE_CALL" and not text.startswith("[System:"):
+                                transcript_lines.append(f"{role}: {text}")
+                                transcript_messages.append({
+                                    "role": role.lower(),
+                                    "text": text,
+                                    "timestamp": time.time()
+                                })
+                        
+                        transcript_text = "\n".join(transcript_lines)
+                        
+                        # Find the call document by UUID and update it
+                        calls_ref = firestore_db.collection('calls')
+                        query = calls_ref.where('id', '==', call_uuid).limit(1).stream()
+                        call_doc = None
+                        for doc in query:
+                            call_doc = doc
+                            break
+                        
+                        if not call_doc:
+                            # Try matching by document ID directly
+                            doc_ref = calls_ref.document(call_uuid)
+                            doc_snap = doc_ref.get()
+                            if doc_snap.exists:
+                                call_doc = doc_snap
+                        
+                        if call_doc:
+                            calls_ref.document(call_doc.id).update({
+                                'transcript': transcript_text,
+                                'transcriptMessages': transcript_messages,
+                                'recordingUrl': final_path or '',
+                            })
+                            print(f"[TRANSCRIPT] ✅ Saved {len(transcript_messages)} messages to Firestore")
+                        else:
+                            # Create a new call document if none exists
+                            calls_ref.document(call_uuid).set({
+                                'id': call_uuid,
+                                'transcript': transcript_text,
+                                'transcriptMessages': transcript_messages,
+                                'recordingUrl': final_path or '',
+                                'status': 'completed',
+                                'phoneNumber': phone_number or '',
+                                'agentId': agent_config.get('id', ''),
+                                'agentName': agent_config.get('name', ''),
+                                'startedAt': time.time(),
+                                'endedAt': time.time(),
+                            })
+                            print(f"[TRANSCRIPT] ✅ Created new call doc with {len(transcript_messages)} messages")
+                    except Exception as transcript_err:
+                        import traceback
+                        print(f"[TRANSCRIPT ERROR] Failed to save transcript: {transcript_err}")
+                        traceback.print_exc()
 
             print("\n" + "=" * 50)
             print("[CALL] 📴 CALL ENDED")

@@ -18,10 +18,10 @@ class VADSettings(BaseModel):
 
 
 class APICredentials(BaseModel):
-    """ElevenLabs API credentials"""
-    server_key: str = Field(..., min_length=10, description="Google Gemini API key")
-    secret_key: str = Field(..., min_length=10, description="ElevenLabs secret key")
-    voice_id: str = Field(..., min_length=10, description="ElevenLabs voice ID")
+    """Callex Voice Engine API credentials"""
+    server_key: str = Field(..., min_length=10, description="LLM API key")
+    secret_key: str = Field(..., min_length=10, description="Callex Voice Engine secret key")
+    voice_id: str = Field(..., min_length=10, description="Callex Voice ID")
 
 
 class VoiceSettings(BaseModel):
@@ -98,7 +98,7 @@ class ConfigManager:
             vad=VADSettings(),
             api_credentials=APICredentials(
                 server_key=os.getenv("GENARTML_SERVER_KEY", "set-your-gemini-key"),
-                secret_key=os.getenv("GENARTML_SECRET_KEY", "set-your-elevenlabs-key"),
+                secret_key=os.getenv("GENARTML_SECRET_KEY", "set-your-callex-voice-key"),
                 voice_id=os.getenv("GENARTML_VOICE_ID", "set-your-voice-id")
             ),
             voice=VoiceSettings()

@@ -6,7 +6,7 @@ const router = Router();
 
 // GET /api/supervisor/calls
 router.get('/calls', async (req, res) => {
-    const snap = await db.collection('calls').where('status', '==', 'active').orderBy('startedAt', 'desc').get();
+    const snap = await db.collection('calls').where('status', '==', 'active').get();
     const calls = [];
     for (const doc of snap.docs) {
         const call = { id: doc.id, ...doc.data() };
@@ -16,6 +16,11 @@ router.get('/calls', async (req, res) => {
         }
         calls.push(call);
     }
+    calls.sort((a, b) => {
+        const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
+        const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
+        return db2 - da;
+    });
     res.json(calls);
 });
 

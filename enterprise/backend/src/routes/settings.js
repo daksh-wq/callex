@@ -7,8 +7,10 @@ const router = Router();
 
 // GET /api/settings/api-keys
 router.get('/api-keys', async (req, res) => {
-    const snap = await db.collection('apiKeys').where('active', '==', true).where('userId', '==', req.userId).orderBy('createdAt', 'desc').get();
-    const keys = queryToArray(snap).map(k => ({ id: k.id, name: k.name, prefix: k.prefix, env: k.env, lastUsed: k.lastUsed, createdAt: k.createdAt, active: k.active }));
+    const snap = await db.collection('apiKeys').where('active', '==', true).where('userId', '==', req.userId).get();
+    let keys = queryToArray(snap);
+    keys.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+    keys = keys.map(k => ({ id: k.id, name: k.name, prefix: k.prefix, env: k.env, lastUsed: k.lastUsed, createdAt: k.createdAt, active: k.active }));
     res.json(keys);
 });
 
@@ -32,8 +34,10 @@ router.delete('/api-keys/:id', async (req, res) => {
 
 // GET /api/settings/webhooks
 router.get('/webhooks', async (req, res) => {
-    const snap = await db.collection('webhooks').where('userId', '==', req.userId).orderBy('createdAt', 'desc').get();
-    res.json(queryToArray(snap));
+    const snap = await db.collection('webhooks').where('userId', '==', req.userId).get();
+    const hooks = queryToArray(snap);
+    hooks.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+    res.json(hooks);
 });
 
 // POST /api/settings/webhooks

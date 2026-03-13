@@ -173,21 +173,36 @@ router.post('/tts-preview', async (req, res) => {
             'nova': 's6cZdgI3j07hf4frz4Q8', 'shimmer': 'MF4J4IDTRo0AxOO4dpFR'
         };
         const resolvedVoiceId = legacyVoiceMap[voiceId] || voiceId;
+        const defaultVoiceId = 'MF4J4IDTRo0AxOO4dpFR';
+        const ttsPayload = {
+            text: "नमस्ते, मैं Callex हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability, similarity_boost: similarity }
+        };
 
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${resolvedVoiceId}/stream`, {
+        let response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${resolvedVoiceId}/stream`, {
             method: 'POST',
             headers: {
                 'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                'xi-api-key': process.env.ELEVENLABS_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a'
+                'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a'
             },
-            body: JSON.stringify({
-                text: "नमस्ते, मैं Callex हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
-                model_id: "eleven_multilingual_v2",
-                voice_settings: { stability, similarity_boost: similarity }
-            })
+            body: JSON.stringify(ttsPayload)
         });
 
-        if (!response.ok) { const errText = await response.text(); throw new Error(`ElevenLabs Error: ${response.status} ${errText}`); }
+        // Production fallback: if voice ID invalid, retry with default Callex voice
+        if (!response.ok) {
+            console.log(`[Callex Voice Engine] Voice ${resolvedVoiceId} failed (${response.status}), falling back to default...`);
+            response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${defaultVoiceId}/stream`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
+                    'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a'
+                },
+                body: JSON.stringify(ttsPayload)
+            });
+        }
+
+        if (!response.ok) { const errText = await response.text(); throw new Error(`Voice Engine Error: ${response.status} ${errText}`); }
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Transfer-Encoding', 'chunked');
         for await (const chunk of response.body) { res.write(chunk); }
@@ -210,10 +225,10 @@ router.post('/clone-voice', upload.single('audio'), async (req, res) => {
 
         const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
             method: 'POST',
-            headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
+            headers: { 'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'cd718a342035a5899d3716cfbfcb43cf7de2cad066d217aed8dbd768bd501d2a' },
             body: formData
         });
-        if (!response.ok) { const errText = await response.text(); throw new Error(`ElevenLabs Error: ${response.status} ${errText}`); }
+        if (!response.ok) { const errText = await response.text(); throw new Error(`Voice Engine Error: ${response.status} ${errText}`); }
         const data = await response.json();
         res.json({ voiceId: data.voice_id });
     } catch (e) {
