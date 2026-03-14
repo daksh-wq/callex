@@ -6,7 +6,10 @@ import jwt from 'jsonwebtoken';
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'callex-enterprise-secret-2025';
 
-// Super-admin credentials
+// ═══════════════════════════════════════════════
+// SUPER ADMIN — Only this email can access admin panel
+// ═══════════════════════════════════════════════
+const SUPER_ADMIN_EMAIL = 'dakshsuthar2008@gmail.com';
 const SUPER_ADMIN_USERNAME = 'callex2025';
 const SUPER_ADMIN_PASSWORD = 'callex2025';
 
@@ -15,23 +18,34 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Check for super-admin login
+        // ── Super-admin login (username: callex2025, password: callex2025) ──
         if (email === SUPER_ADMIN_USERNAME && password === SUPER_ADMIN_PASSWORD) {
-            // Ensure super-admin exists in Firestore
-            const snap = await db.collection('users').where('email', '==', 'superadmin@callex.ai').limit(1).get();
+            // Ensure super-admin exists in Firestore under the locked email
+            const snap = await db.collection('users').where('email', '==', SUPER_ADMIN_EMAIL).limit(1).get();
             let admin;
             if (snap.empty) {
                 const hashed = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
-                const ref = await db.collection('users').add({ email: 'superadmin@callex.ai', name: 'Super Admin', password: hashed, role: 'superadmin', createdAt: new Date() });
-                admin = { id: ref.id, email: 'superadmin@callex.ai', name: 'Super Admin', role: 'superadmin' };
+                const ref = await db.collection('users').add({
+                    email: SUPER_ADMIN_EMAIL,
+                    name: 'Super Admin',
+                    password: hashed,
+                    role: 'superadmin',
+                    createdAt: new Date()
+                });
+                admin = { id: ref.id, email: SUPER_ADMIN_EMAIL, name: 'Super Admin', role: 'superadmin' };
             } else {
                 admin = { id: snap.docs[0].id, ...snap.docs[0].data() };
+                // Ensure role is superadmin
+                if (admin.role !== 'superadmin') {
+                    await db.collection('users').doc(admin.id).update({ role: 'superadmin' });
+                    admin.role = 'superadmin';
+                }
             }
-            const token = jwt.sign({ userId: admin.id, email: admin.email, role: 'superadmin' }, JWT_SECRET, { expiresIn: '7d' });
-            return res.json({ token, user: { id: admin.id, email: admin.email, name: admin.name, role: 'superadmin' } });
+            const token = jwt.sign({ userId: admin.id, email: SUPER_ADMIN_EMAIL, role: 'superadmin' }, JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ token, user: { id: admin.id, email: SUPER_ADMIN_EMAIL, name: admin.name || 'Super Admin', role: 'superadmin' } });
         }
 
-        // Regular user login
+        // ── Regular user login ──
         const snap = await db.collection('users').where('email', '==', email).limit(1).get();
         if (snap.empty) return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -39,8 +53,11 @@ router.post('/login', async (req, res) => {
         const valid = await bcrypt.compare(password, user.password);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+        // Block non-superadmin users from getting superadmin role
+        const role = (user.email === SUPER_ADMIN_EMAIL) ? 'superadmin' : 'user';
+
+        const token = jwt.sign({ userId: user.id, email: user.email, role }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, user: { id: user.id, email: user.email, name: user.name, role } });
     } catch (e) {
         console.error('[AUTH] Login error:', e);
         res.status(500).json({ error: 'Login failed' });
@@ -58,8 +75,9 @@ router.post('/register', async (req, res) => {
             const existing = { id: snap.docs[0].id, ...snap.docs[0].data() };
             const valid = await bcrypt.compare(password, existing.password);
             if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-            const token = jwt.sign({ userId: existing.id, email: existing.email, role: existing.role }, JWT_SECRET, { expiresIn: '7d' });
-            return res.json({ token, user: { id: existing.id, email: existing.email, name: existing.name, role: existing.role } });
+            const role = (existing.email === SUPER_ADMIN_EMAIL) ? 'superadmin' : 'user';
+            const token = jwt.sign({ userId: existing.id, email: existing.email, role }, JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ token, user: { id: existing.id, email: existing.email, name: existing.name, role } });
         }
 
         const hashed = await bcrypt.hash(password, 10);
@@ -85,3 +103,4 @@ router.get('/me', (req, res) => {
 });
 
 export default router;
+
