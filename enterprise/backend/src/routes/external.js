@@ -87,8 +87,10 @@ router.get('/agents/:id', async (req, res) => {
         const doc = await db.collection('agents').doc(req.params.id).get();
         const agent = docToObj(doc);
         if (!agent || agent.userId !== req.apiUser.userId) return res.status(404).json({ error: 'Agent not found' });
-        const pvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).orderBy('version', 'desc').get();
-        agent.PromptVersion = queryToArray(pvSnap);
+        const pvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+        const versions = queryToArray(pvSnap);
+        versions.sort((a, b) => (b.version || 0) - (a.version || 0));
+        agent.PromptVersion = versions;
         res.json(agent);
     } catch (e) {
         console.error('[EXTERNAL API ERROR]', e);
