@@ -1,81 +1,98 @@
 """
-Agent Loader — SQLite Bridge for Dynamic Agent Configuration
+Agent Loader — Firestore Bridge for Dynamic Agent Configuration
 =============================================================
 
-Reads agent configuration from the same SQLite database that the
-Enterprise Dashboard / Agent Studio writes to (via Prisma).
+Reads agent configuration from Firestore — the same database that the
+Enterprise Dashboard / Agent Studio and External APIs write to.
 
 This module is the bridge between:
-  - Frontend (Agent Studio) → Prisma → SQLite (dev.db)
-  - Calling System (main.py) → agent_loader.py → SQLite (dev.db)
+  - Frontend (Agent Studio) → Express API → Firestore
+  - External API → Firestore
+  - Calling System (main.py) → agent_loader.py → Firestore
 
-Both systems share the same database, so changes in Agent Studio
-are immediately reflected in live calls.
+All systems share the same Firestore database, so changes in Agent Studio
+or API are immediately reflected in live calls.
 """
 
-import sqlite3
 import json
 import os
 from typing import Optional, Dict, Any
 
+# ─── Firebase / Firestore Setup ───
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# Find the Prisma SQLite database
-_POSSIBLE_DB_PATHS = [
-    # Local Mac dev path (up 3 levels)
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "enterprise", "backend", "prisma", "dev.db"),
-    # PM2 Production path (current working dir)
-    os.path.join(os.getcwd(), "enterprise", "backend", "prisma", "dev.db"),
-    # Same level sibling path
-    os.path.join(os.path.dirname(os.getcwd()), "enterprise", "backend", "prisma", "dev.db"),
-]
+def _get_firestore_client():
+    """Get a Firestore client, initialising Firebase if needed."""
+    try:
+        # Check if Firebase is already initialised (main.py often does this)
+        app = firebase_admin.get_app()
+    except ValueError:
+        # Not initialised yet — do it now
+        cred_path = os.environ.get(
+            "FIREBASE_CREDENTIALS_PATH",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                         "firebase-credentials.json")
+        )
+        if not os.path.exists(cred_path):
+            # Try production paths
+            for p in [
+                "/usr/src/sumit/elevenlabs/freeswitch-elevenlabs-bridge/firebase-credentials.json",
+                os.path.join(os.getcwd(), "firebase-credentials.json"),
+            ]:
+                if os.path.exists(p):
+                    cred_path = p
+                    break
 
-def _get_db_path() -> Optional[str]:
-    # Check for env override
-    if "PRISMA_DB_PATH" in os.environ and os.path.exists(os.environ["PRISMA_DB_PATH"]):
-        return os.environ["PRISMA_DB_PATH"]
-        
-    for path in _POSSIBLE_DB_PATHS:
-        if os.path.exists(path):
-            return path
-    return None
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
 
-def _get_connection() -> sqlite3.Connection:
-    """Get a read-only SQLite connection to the shared database."""
-    db_path = _get_db_path()
-    if not db_path:
-        raise FileNotFoundError("[AgentLoader] Database not found in any standard location. Set PRISMA_DB_PATH manually.")
-    
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return firestore.client()
+
+
+# Cached Firestore client
+_fs_client = None
+
+def _get_db():
+    """Return a cached Firestore client."""
+    global _fs_client
+    if _fs_client is None:
+        _fs_client = _get_firestore_client()
+    return _fs_client
 
 
 def load_agent(agent_id: str) -> Optional[Dict[str, Any]]:
     """
-    Load a single agent by ID from the shared database.
+    Load a single agent by ID from Firestore.
 
     Args:
-        agent_id: UUID string or numeric ID of the agent
+        agent_id: UUID string of the agent
 
     Returns:
         Agent config dict, or None if not found
     """
     try:
-        conn = _get_connection()
-        cursor = conn.execute("SELECT * FROM Agent WHERE id = ?", (str(agent_id),))
-        row = cursor.fetchone()
-        conn.close()
+        db = _get_db()
+        doc = db.collection('agents').document(str(agent_id)).get()
 
-        if not row:
-            print(f"[AgentLoader] ⚠️ Agent '{agent_id}' not found in database")
+        if not doc.exists:
+            print(f"[AgentLoader] ⚠️ Agent '{agent_id}' not found in Firestore")
             return None
 
-        agent = _row_to_dict(row)
+        agent = _doc_to_dict(doc)
+        
+        # Load active prompt version if one exists
+        active_prompt = get_active_prompt(agent_id)
+        if active_prompt:
+            agent['systemPrompt'] = active_prompt
+
         print(f"[AgentLoader] ✅ Loaded agent: {agent['name']} (id={agent['id']})")
         return agent
 
     except Exception as e:
         print(f"[AgentLoader] ❌ Error loading agent '{agent_id}': {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -85,47 +102,52 @@ def get_default_agent() -> Optional[Dict[str, Any]]:
     If no active agents, returns the most recently created agent.
     """
     try:
-        conn = _get_connection()
+        db = _get_db()
 
         # Try active agent first
-        cursor = conn.execute(
-            "SELECT * FROM Agent WHERE status = 'active' ORDER BY updatedAt DESC LIMIT 1"
-        )
-        row = cursor.fetchone()
+        query = db.collection('agents').where('status', '==', 'active').limit(1).stream()
+        for doc in query:
+            agent = _doc_to_dict(doc)
+            active_prompt = get_active_prompt(agent['id'])
+            if active_prompt:
+                agent['systemPrompt'] = active_prompt
+            print(f"[AgentLoader] ✅ Default agent: {agent['name']} (id={agent['id']})")
+            return agent
 
         # Fallback to any agent
-        if not row:
-            cursor = conn.execute("SELECT * FROM Agent ORDER BY createdAt DESC LIMIT 1")
-            row = cursor.fetchone()
+        query = db.collection('agents').limit(1).stream()
+        for doc in query:
+            agent = _doc_to_dict(doc)
+            active_prompt = get_active_prompt(agent['id'])
+            if active_prompt:
+                agent['systemPrompt'] = active_prompt
+            print(f"[AgentLoader] ✅ Default agent (fallback): {agent['name']} (id={agent['id']})")
+            return agent
 
-        conn.close()
-
-        if not row:
-            print("[AgentLoader] ⚠️ No agents found in database")
-            return None
-
-        agent = _row_to_dict(row)
-        print(f"[AgentLoader] ✅ Default agent: {agent['name']} (id={agent['id']})")
-        return agent
+        print("[AgentLoader] ⚠️ No agents found in Firestore")
+        return None
 
     except Exception as e:
         print(f"[AgentLoader] ❌ Error loading default agent: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def get_active_prompt(agent_id: str) -> Optional[str]:
     """Get the active prompt version for an agent (if using versioning)."""
     try:
-        conn = _get_connection()
-        cursor = conn.execute(
-            "SELECT prompt FROM PromptVersion WHERE agentId = ? AND isActive = 1 ORDER BY version DESC LIMIT 1",
-            (str(agent_id),)
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
-            return row["prompt"]
+        db = _get_db()
+        query = (db.collection('promptVersions')
+                 .where('agentId', '==', str(agent_id))
+                 .where('isActive', '==', True)
+                 .limit(1)
+                 .stream())
+        
+        for doc in query:
+            data = doc.to_dict()
+            return data.get('prompt')
+        
         return None
 
     except Exception as e:
@@ -133,13 +155,14 @@ def get_active_prompt(agent_id: str) -> Optional[str]:
         return None
 
 
-def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
-    """Convert a SQLite Row to a clean agent config dict."""
-    d = dict(row)
+def _doc_to_dict(doc) -> Dict[str, Any]:
+    """Convert a Firestore document to a clean agent config dict."""
+    d = doc.to_dict()
+    d['id'] = doc.id
 
-    # Parse JSON fields
+    # Parse JSON string fields
     for json_field in ['fillerPhrases', 'ipaLexicon', 'tools']:
-        if json_field in d and d[json_field]:
+        if json_field in d and isinstance(d[json_field], str):
             try:
                 d[json_field] = json.loads(d[json_field])
             except (json.JSONDecodeError, TypeError):
@@ -156,9 +179,10 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         'bargeInMode': 'balanced',
         'patienceMs': 800,
         'prosodyRate': 1.0,
-        'prosodyPitch': 1.0
+        'prosodyPitch': 1.0,
+        'name': 'Agent',
     }
-    
+
     for key, default_val in defaults.items():
         if d.get(key) is None:
             d[key] = default_val
@@ -166,7 +190,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     return d
 
 
-# ─── Fallback Agent (used when DB is unavailable) ───
+# ─── Fallback Agent (used when Firestore is unavailable) ───
 
 FALLBACK_AGENT = {
     "id": "fallback",
