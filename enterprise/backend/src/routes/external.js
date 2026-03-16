@@ -389,6 +389,7 @@ router.post('/supervisor/calls/:id/barge', async (req, res) => {
         const doc = await db.collection('calls').doc(req.params.id).get();
         const call = docToObj(doc);
         if (!call || call.userId !== req.apiUser.userId) return res.status(404).json({ error: 'Call not found' });
+        if (call.status !== 'active') return res.status(400).json({ error: 'Cannot barge into a call that is not active' });
 
         import('../index.js').then(({ broadcastToCall }) => {
             broadcastToCall(req.params.id, { type: 'barge', ts: Date.now() });

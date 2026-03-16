@@ -1225,6 +1225,22 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if call_uuid:
                                 update_call_outcome(db, call_uuid, disp)
                                 await ws.send_json({"type": "DISPOSITION_SAVED", "status": "success"})
+                        elif msg_type == "whisper":
+                            # A Supervisor sent a message to the AI
+                            whisper_msg = data.get("message", "")
+                            print(f"[WS] WHISPER received: {whisper_msg}")
+                            if whisper_msg:
+                                # Inject system instruction to steer the AI without interrupting caller
+                                history.append({"role": "model", "parts": [{"text": f"[System Whisper from Supervisor: {whisper_msg}. Incorporate this into your next responses naturally.]"}]})
+                        elif msg_type == "barge":
+                            # Supervisor barged in to take over the call
+                            print("[WS] BARGE received! Transferring call...")
+                            await cancel_current() # Stop AI talking
+                            # The FreeSWITCH dialplan handles the actual bridge/transfer. 
+                            # We just need to politely sign off and hang up the AI channel.
+                            history.append({"role": "user", "parts": [{"text": "[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]"}]})
+                            async with task_lock:
+                                current_task = asyncio.create_task(process_audio(np.zeros(0, dtype=np.float32))) # Trigger immediate generation
                     except Exception as e:
                         print(f"[WS JSON Error]: {e}")
 
