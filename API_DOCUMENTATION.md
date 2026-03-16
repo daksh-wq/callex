@@ -27,6 +27,12 @@
      - [Get Call Transcript](#8-get-call-transcript)
    - **Voices**
      - [List Available Voices](#9-list-available-voices)
+   - **Live Supervisor & Dashboard**
+     - [Get Active Calls](#10-get-active-calls)
+     - [Live Call Transcript via WebSocket](#11-live-call-transcript-via-websocket)
+     - [Whisper to AI](#12-whisper-to-ai)
+     - [Barge into Call](#13-barge-into-call)
+     - [Get Dashboard KPIs](#14-get-dashboard-kpis)
 5. [WebSocket Routing (Per-Agent Calls)](#websocket-routing-per-agent-calls)
 6. [Available Voices Reference](#available-voices-reference)
 7. [Agent Configuration Reference](#agent-configuration-reference)
@@ -480,6 +486,139 @@ curl -X GET http://62.171.170.48:4500/api/v1/voices \
 ```
 
 > 💡 Use the `id` from this response as the `voice` field when creating or editing agents.
+
+---
+
+### 10. Get Active Calls
+
+Retrieve a list of calls currently in progress.
+
+```
+GET /api/v1/supervisor/calls
+```
+
+```bash
+curl -X GET http://62.171.170.48:4500/api/v1/supervisor/calls \
+  -H "Authorization: Bearer ck_live_YOUR_KEY"
+```
+
+**Response — `200 OK`**
+
+```json
+[
+  {
+    "id": "ac544763-dda7-474e-87e2-926789874ff1",
+    "phoneNumber": "+1234567890",
+    "agentId": "Z7z52IQOsdUgG5ivAiB5",
+    "agentName": "Sales Agent - Premium",
+    "status": "active",
+    "sentiment": "neutral",
+    "startedAt": "2026-03-16T12:00:00.000Z"
+  }
+]
+```
+
+---
+
+### 11. Live Call Transcript via WebSocket
+
+Stream the real-time transcript of an active call as it happens.
+
+```
+ws://62.171.170.48:4500/?type=supervisor&callId={callId}
+```
+
+Connect to this WebSocket URL from your frontend. You do not need to send an Authorization header for the WebSocket connection if accessing exclusively via browser, but the `callId` must be valid and active.
+
+**Incoming Messages (from Server):**
+
+```json
+{
+  "type": "transcript_line",
+  "line": "Bot: Hello! How can I help you today?"
+}
+```
+
+---
+
+### 12. Whisper to AI
+
+Send a hidden message/instruction to the AI mid-call without the customer hearing it. The AI will immediately incorporate this into its context.
+
+```
+POST /api/v1/supervisor/calls/{callId}/whisper
+```
+
+```bash
+curl -X POST http://62.171.170.48:4500/api/v1/supervisor/calls/ac544763-dda7-474e-87e2-926789874ff1/whisper \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ck_live_YOUR_KEY" \
+  -d '{
+    "message": "Offer the customer a 10% discount to close the deal."
+  }'
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "success": true,
+  "message": "Offer the customer a 10% discount to close the deal."
+}
+```
+
+---
+
+### 13. Barge into Call
+
+Take over an active AI call. The AI will immediately stop speaking and the call status will change to `transferred`. Use this in conjunction with your SIP/telephony logic to bridge the human agent.
+
+```
+POST /api/v1/supervisor/calls/{callId}/barge
+```
+
+```bash
+curl -X POST http://62.171.170.48:4500/api/v1/supervisor/calls/ac544763-dda7-474e-87e2-926789874ff1/barge \
+  -H "Authorization: Bearer ck_live_YOUR_KEY"
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "success": true
+}
+```
+
+---
+
+### 14. Get Dashboard KPIs
+
+Retrieve real-time platform statistics including active calls, queue depth, and today's completed calls.
+
+```
+GET /api/v1/dashboard/kpis
+```
+
+```bash
+curl -X GET http://62.171.170.48:4500/api/v1/dashboard/kpis \
+  -H "Authorization: Bearer ck_live_YOUR_KEY"
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "activeCalls": 2,
+  "completedToday": 145,
+  "avgMOS": 4.12,
+  "slaPercent": 95,
+  "apiFallbackRate": 0.5,
+  "aiAgentsAvailable": 8,
+  "humanAgentsAvailable": 2,
+  "queueDepth": 0
+}
+```
 
 ---
 
