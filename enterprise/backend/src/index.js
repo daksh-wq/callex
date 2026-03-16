@@ -138,7 +138,7 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4500;
 httpServer.listen(PORT, () => {
     console.log(`[ENTERPRISE] Backend running on http://localhost:${PORT}`);
     seedInitialData();
