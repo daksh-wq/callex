@@ -791,10 +791,22 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
     print(f"[Callex Voice Engine] Stream complete ({time.time() - start_time:.2f}s)")
 
 
-# ───────── WEBSOCKET HANDLER ─────────
+# ───────── WEBSOCKET HANDLERS ─────────
 
 @app.websocket("/")
-async def ws(ws: WebSocket):
+async def ws_default(ws: WebSocket):
+    """Default WebSocket handler — uses default agent or header/query param agent_id."""
+    await _handle_call(ws, route_agent_id=None)
+
+
+@app.websocket("/agent/{agent_id}")
+async def ws_agent(ws: WebSocket, agent_id: str):
+    """Per-agent WebSocket handler — loads the specific agent by ID from the URL path."""
+    await _handle_call(ws, route_agent_id=agent_id)
+
+
+async def _handle_call(ws: WebSocket, route_agent_id: str = None):
+    """Core call handler shared by all WebSocket endpoints."""
     await ws.accept()
     print("\n" + "=" * 50)
     print("[CALL] 📞 NEW CALL STARTED")
@@ -809,10 +821,10 @@ async def ws(ws: WebSocket):
         or ws.query_params.get("call_id")
     )
 
-    # FreeSWITCH will pass agent_id in headers or query params
-    # e.g., {"agent_id": "abc-123"}
+    # Agent ID priority: URL path > headers > query params
     agent_id = (
-        ws.headers.get("x-agent-id")
+        route_agent_id
+        or ws.headers.get("x-agent-id")
         or ws.headers.get("agent-id")
         or ws.query_params.get("agent_id")
     )
@@ -1311,6 +1323,32 @@ async def ws(ws: WebSocket):
             print("\n" + "=" * 50)
             print("[CALL] 📴 CALL ENDED")
             print("=" * 50 + "\n")
+
+
+# ───────── AGENT LISTING ENDPOINT ─────────
+
+@app.get("/agents")
+async def list_agents():
+    """List all available agents with their per-agent WebSocket URLs."""
+    try:
+        from firebase_admin import firestore as fs
+        firestore_db = fs.client()
+        agents_ref = firestore_db.collection('agents').stream()
+        result = []
+        for doc in agents_ref:
+            data = doc.to_dict()
+            agent_id = doc.id
+            result.append({
+                "id": agent_id,
+                "name": data.get("name", "Unnamed"),
+                "status": data.get("status", "unknown"),
+                "voice": data.get("voice"),
+                "websocket_url": f"ws://{{host}}:8085/agent/{agent_id}",
+                "description": data.get("description", "")[:100],
+            })
+        return {"agents": result, "total": len(result)}
+    except Exception as e:
+        return {"error": str(e), "agents": []}
 
 
 # ───────── HEALTH CHECK ─────────

@@ -39,9 +39,12 @@ class FreeSWITCHService {
         return new Promise((resolve, reject) => {
             const gateway = process.env.FS_GATEWAY || 'sofia/gateway/my_provider';
             const dialString = `${gateway}/${destinationNumber}`;
+            const wsUrl = agent && agent.id 
+                ? `${WS_SERVER_URL}/agent/${agent.id}` 
+                : WS_SERVER_URL;
             const variables = [
                 `ignore_early_media=true`, `absolute_codec_string=PCMU,PCMA`,
-                `execute_on_answer='socket ${WS_SERVER_URL} async full'`,
+                `execute_on_answer='socket ${wsUrl} async full'`,
                 `x-campaign-id=${campaign.id}`, `x-agent-id=${agent.id}`, `x-phone-number=${destinationNumber}`
             ].join(',');
             const command = `originate {${variables}}${dialString} &park()`;
