@@ -208,7 +208,7 @@ router.post('/tts-preview', async (req, res) => {
             method: 'POST',
             headers: {
                 'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39'
+                'xi-api-key': 'ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39'
             },
             body: JSON.stringify(ttsPayload)
         });
@@ -220,7 +220,7 @@ router.post('/tts-preview', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                    'xi-api-key': process.env.CALLEX_VOICE_API_KEY || 'ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39'
+                    'xi-api-key': 'ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39'
                 },
                 body: JSON.stringify(ttsPayload)
             });
