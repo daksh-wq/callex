@@ -866,7 +866,27 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
     print(f"[DB] Creating call record for {call_uuid}")
     tracker.start_call(call_uuid, phone_number)
-    print(f"[DB] ✅ Call record created")
+    
+    # ── FireStore Live Call Creation ──
+    try:
+        from firebase_admin import firestore as fs
+        firestore_db = fs.client()
+        call_doc = {
+            'id': call_uuid,
+            'phoneNumber': phone_number,
+            'agentId': agent_id,
+            'agentName': agent_config.get('name', 'Unknown Agent'),
+            'status': 'active',
+            'startedAt': fs.SERVER_TIMESTAMP,
+            'sentiment': 'neutral'
+        }
+        # Use call_uuid as document ID for easier updates and lookups
+        firestore_db.collection('calls').document(call_uuid).set(call_doc)
+        print(f"[DB] ✅ Firebase live call record created")
+    except Exception as e:
+        print(f"[DB ERROR] Failed to create Firebase live call: {e}")
+
+    print(f"[DB] ✅ Local call record created")
 
     db = get_db_session()
 
