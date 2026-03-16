@@ -1,6 +1,10 @@
 # Callex AI — Developer API Documentation
 
-> **Version:** 2.0 &nbsp;|&nbsp; **Base URL:** `http://62.171.170.48:4000` &nbsp;|&nbsp; **Last Updated:** March 13, 2026
+> **Version:** 2.0 &nbsp;|&nbsp; **API Base URL:** `http://62.171.170.48:4000` &nbsp;|&nbsp; **Last Updated:** March 16, 2026
+
+⚠️ **IMPORTANT NOTE ON URLS:**
+- Your Dashboard (GUI) is hosted at **Port 5173** (`http://62.171.170.48:5173`). This is for human users.
+- ALL API requests from external apps, webhooks, or Postman MUST go to **Port 4000** (`http://62.171.170.48:4000`).
 
 ---
 
@@ -8,8 +12,9 @@
 
 1. [Admin Panel](#admin-panel)
 2. [Getting Your API Key](#getting-your-api-key)
-3. [Authentication](#authentication)
-4. [API Endpoints](#api-endpoints)
+3. [Testing with Postman (Quick Start)](#testing-with-postman-quick-start)
+4. [Authentication](#authentication)
+5. [API Endpoints](#api-endpoints)
    - **Agents**
      - [List Agents](#1-list-all-agents)
      - [Create Agent](#2-create-a-new-agent)
@@ -58,9 +63,43 @@ Everything you can do via the API can also be done through the **Callex Admin Pa
 2. Click **Settings** in the left sidebar.
 3. Enter a **Key Name** (e.g., "Production App").
 4. Select the **Environment**: **Test** (`ck_test_`) or **Live** (`ck_live_`).
-5. Click **"Generate"**.
+5. Click **Generate** and **copy the API Key immediately** (it will only be shown once).
 
 > ⚠️ The full API key is shown **only once**. Copy it immediately.
+
+---
+
+## Testing with Postman (Quick Start)
+
+The easiest way to verify your API connection before writing code is to use Postman.
+
+1. **Get an API Key** from the Dashboard as described above.
+2. Open **Postman** (or [Hoppscotch](https://hoppscotch.io/)).
+3. Create a **New Request** and change the method to **POST**.
+4. Set the **URL** to: `http://62.171.170.48:4000/api/v1/agents`
+5. Go to the **Headers** tab and add:
+   - **Key:** `Authorization`
+   - **Value:** `Bearer ck_live_YOUR_KEY_HERE`
+6. Go to the **Body** tab, select **raw** -> **JSON**, and paste:
+```json
+{
+  "name": "Postman Test Agent",
+  "systemPrompt": "You are a test assistant.",
+  "openingLine": "Hello, how can I help?",
+  "voice": "MF4J4IDTRo0AxOO4dpFR"
+}
+```
+7. Click **Send**! You should receive a `200 OK` response with your new Agent ID, and it will instantly appear in your live Admin Dashboard.
+
+---
+
+## Authentication
+
+All API requests require your API key in the `Authorization` header:
+
+```
+Authorization: Bearer <YOUR_API_KEY>
+```
 
 | Environment | Prefix | Example |
 |-------------|--------|---------|
