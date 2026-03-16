@@ -27,10 +27,11 @@
      - [Get Call Transcript](#8-get-call-transcript)
    - **Voices**
      - [List Available Voices](#9-list-available-voices)
-5. [Available Voices Reference](#available-voices-reference)
-6. [Agent Configuration Reference](#agent-configuration-reference)
-7. [Error Reference](#error-reference)
-8. [Best Practices](#best-practices)
+5. [WebSocket Routing (Per-Agent Calls)](#websocket-routing-per-agent-calls)
+6. [Available Voices Reference](#available-voices-reference)
+7. [Agent Configuration Reference](#agent-configuration-reference)
+8. [Error Reference](#error-reference)
+9. [Best Practices](#best-practices)
 
 ---
 
@@ -76,7 +77,7 @@ The easiest way to verify your API connection before writing code is to use Post
 1. **Get an API Key** from the Dashboard as described above.
 2. Open **Postman** (or [Hoppscotch](https://hoppscotch.io/)).
 3. Create a **New Request** and change the method to **POST**.
-4. Set the **URL** to: `http://62.171.170.48:4000/api/v1/agents`
+4. Set the **URL** to: `http://62.171.170.48:4500/api/v1/agents`
 5. Go to the **Headers** tab and add:
    - **Key:** `Authorization`
    - **Value:** `Bearer ck_live_YOUR_KEY_HERE`
@@ -135,7 +136,7 @@ GET /api/v1/agents
 | `status` | string | — | Filter: `draft`, `active`, `paused` |
 
 ```bash
-curl -X GET "http://62.171.170.48:4000/api/v1/agents?page=1&limit=5&status=active" \
+curl -X GET "http://62.171.170.48:4500/api/v1/agents?page=1&limit=5&status=active" \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -182,7 +183,7 @@ Only `name` is required. Everything else has smart defaults.
 > 📘 See the full [Agent Configuration Reference](#agent-configuration-reference) for all 50+ fields.
 
 ```bash
-curl -X POST http://62.171.170.48:4000/api/v1/agents \
+curl -X POST http://62.171.170.48:4500/api/v1/agents \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ck_live_YOUR_KEY" \
   -d '{
@@ -221,7 +222,7 @@ GET /api/v1/agents/{agentId}
 ```
 
 ```bash
-curl -X GET http://62.171.170.48:4000/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
+curl -X GET http://62.171.170.48:4500/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -252,7 +253,7 @@ PUT /api/v1/agents/{agentId}
 ```
 
 ```bash
-curl -X PUT http://62.171.170.48:4000/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
+curl -X PUT http://62.171.170.48:4500/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ck_live_YOUR_KEY" \
   -d '{
@@ -283,7 +284,7 @@ DELETE /api/v1/agents/{agentId}
 ```
 
 ```bash
-curl -X DELETE http://62.171.170.48:4000/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
+curl -X DELETE http://62.171.170.48:4500/api/v1/agents/5fa23d1b-722a-4318-aecc-6e6ad9d1a8e1 \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -311,7 +312,7 @@ GET /api/v1/calls
 | `agentId` | string | — | Filter by specific agent ID |
 
 ```bash
-curl -X GET "http://62.171.170.48:4000/api/v1/calls?page=1&limit=10&status=completed" \
+curl -X GET "http://62.171.170.48:4500/api/v1/calls?page=1&limit=10&status=completed" \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -350,7 +351,7 @@ GET /api/v1/calls/{callId}
 ```
 
 ```bash
-curl -X GET http://62.171.170.48:4000/api/v1/calls/d9e4ff50-eeba-465d-a68a-fca353fafcf7 \
+curl -X GET http://62.171.170.48:4500/api/v1/calls/d9e4ff50-eeba-465d-a68a-fca353fafcf7 \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -390,7 +391,7 @@ GET /api/v1/calls/{callId}/transcript
 ```
 
 ```bash
-curl -X GET http://62.171.170.48:4000/api/v1/calls/d9e4ff50-eeba-465d-a68a-fca353fafcf7/transcript \
+curl -X GET http://62.171.170.48:4500/api/v1/calls/d9e4ff50-eeba-465d-a68a-fca353fafcf7/transcript \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -419,7 +420,7 @@ GET /api/v1/voices
 ```
 
 ```bash
-curl -X GET http://62.171.170.48:4000/api/v1/voices \
+curl -X GET http://62.171.170.48:4500/api/v1/voices \
   -H "Authorization: Bearer ck_live_YOUR_KEY"
 ```
 
@@ -479,6 +480,67 @@ curl -X GET http://62.171.170.48:4000/api/v1/voices \
 ```
 
 > 💡 Use the `id` from this response as the `voice` field when creating or editing agents.
+
+---
+
+## WebSocket Routing (Per-Agent Calls)
+
+Each agent gets a **unique WebSocket URL** that FreeSWITCH or any WebSocket client can connect to for live AI voice calls.
+
+### Agent-Specific WebSocket
+
+```
+ws://62.171.170.48:8085/agent/{agentId}
+```
+
+When you connect to this URL, the AI engine loads that specific agent's system prompt, voice, temperature, and all other settings from Firestore.
+
+### Default WebSocket (Fallback)
+
+```
+ws://62.171.170.48:8085/
+```
+
+If no agent ID is specified, the engine uses the first active agent as a fallback.
+
+### List All Agents with WebSocket URLs
+
+```
+GET http://62.171.170.48:8085/agents
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "agents": [
+    {
+      "id": "Z7z52IQOsdUgG5ivAiB5",
+      "name": "Recharge Assistant",
+      "status": "active",
+      "voice": "nova",
+      "websocket_url": "ws://{host}:8085/agent/Z7z52IQOsdUgG5ivAiB5"
+    }
+  ],
+  "total": 1
+}
+```
+
+### FreeSWITCH Integration
+
+In your FreeSWITCH originate command, point `execute_on_answer` to the agent-specific URL:
+
+```
+execute_on_answer='socket 127.0.0.1:8085/agent/Z7z52IQOsdUgG5ivAiB5 async full'
+```
+
+This lets you run **multiple agents on a single server** — each campaign or DID can point to a different agent.
+
+| URL Pattern | Behavior |
+|-------------|----------|
+| `ws://server:8085/agent/{id}` | Uses specific agent |
+| `ws://server:8085/?agent_id={id}` | Also works (query param) |
+| `ws://server:8085/` | Uses default agent |
 
 ---
 
