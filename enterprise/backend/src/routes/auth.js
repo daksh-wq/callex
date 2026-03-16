@@ -20,29 +20,10 @@ router.post('/login', async (req, res) => {
 
         // ── Super-admin login (supports both username and email) ──
         if ((email === SUPER_ADMIN_USERNAME || email === SUPER_ADMIN_EMAIL) && password === SUPER_ADMIN_PASSWORD) {
-            // Ensure super-admin exists in Firestore under the locked email
-            const snap = await db.collection('users').where('email', '==', SUPER_ADMIN_EMAIL).limit(1).get();
-            let admin;
-            if (snap.empty) {
-                const hashed = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
-                const ref = await db.collection('users').add({
-                    email: SUPER_ADMIN_EMAIL,
-                    name: 'Super Admin',
-                    password: hashed,
-                    role: 'superadmin',
-                    createdAt: new Date()
-                });
-                admin = { id: ref.id, email: SUPER_ADMIN_EMAIL, name: 'Super Admin', role: 'superadmin' };
-            } else {
-                admin = { id: snap.docs[0].id, ...snap.docs[0].data() };
-                // Ensure role is superadmin
-                if (admin.role !== 'superadmin') {
-                    await db.collection('users').doc(admin.id).update({ role: 'superadmin' });
-                    admin.role = 'superadmin';
-                }
-            }
-            const token = jwt.sign({ userId: admin.id, email: SUPER_ADMIN_EMAIL, role: 'superadmin' }, JWT_SECRET, { expiresIn: '7d' });
-            return res.json({ token, user: { id: admin.id, email: SUPER_ADMIN_EMAIL, name: admin.name || 'Super Admin', role: 'superadmin' } });
+            // Keep it blazing fast, purely hardcoded logic without hitting Firebase
+            const adminId = 'superadmin-hardcoded-id'; // Constant ID for admin resources
+            const token = jwt.sign({ userId: adminId, email: SUPER_ADMIN_EMAIL, role: 'superadmin' }, JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ token, user: { id: adminId, email: SUPER_ADMIN_EMAIL, name: 'Super Admin', role: 'superadmin' } });
         }
 
         // ── Regular user login ──
