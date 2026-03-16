@@ -876,6 +876,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             'phoneNumber': phone_number,
             'agentId': agent_id,
             'agentName': agent_config.get('name', 'Unknown Agent'),
+            'userId': agent_config.get('userId', ''),  # Important: Maps call to API owner
             'status': 'active',
             'startedAt': fs.SERVER_TIMESTAMP,
             'sentiment': 'neutral'
