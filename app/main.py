@@ -761,8 +761,8 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             
             first_chunk = True
             buffer = b""
-            # Stream exactly 0.5s chunks (16000 bytes = 8000 samples @ 16bit) for smooth, uninterrupted WebSocket delivery
-            CHUNK_SIZE = 16000
+            # Stream exactly 3.125s chunks (100000 bytes = 50000 samples @ 16bit) to prevent voice breaking for new agents
+            CHUNK_SIZE = 100000
             
             async for chunk in response.aiter_bytes():
                 if first_chunk:
