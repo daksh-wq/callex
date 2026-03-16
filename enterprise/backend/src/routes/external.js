@@ -12,10 +12,17 @@ router.get('/agents', async (req, res) => {
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const status = req.query.status;
 
-        let query = db.collection('agents').where('userId', '==', req.apiUser.userId).orderBy('createdAt', 'desc');
+        let query = db.collection('agents').where('userId', '==', req.apiUser.userId);
         const snap = await query.get();
         let agents = queryToArray(snap);
         if (status) agents = agents.filter(a => a.status === status);
+
+        // Sort by createdAt descending
+        agents.sort((a, b) => {
+            const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+            const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+            return tb - ta;
+        });
 
         const total = agents.length;
         const paginated = agents.slice((page - 1) * limit, page * limit);
