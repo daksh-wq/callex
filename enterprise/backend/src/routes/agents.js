@@ -7,8 +7,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/agents
 router.get('/', async (req, res) => {
-    const snap = await db.collection('agents').where('userId', '==', req.userId).orderBy('createdAt', 'desc').get();
-    res.json(queryToArray(snap));
+    const snap = await db.collection('agents').where('userId', '==', req.userId).get();
+    const agents = queryToArray(snap);
+    agents.sort((a, b) => {
+        const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+        const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+        return tb - ta;
+    });
+    res.json(agents);
 });
 
 // GET /api/agents/:id
