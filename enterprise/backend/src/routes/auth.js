@@ -18,8 +18,8 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // ── Super-admin login (username: callex2025, password: callex2025) ──
-        if (email === SUPER_ADMIN_USERNAME && password === SUPER_ADMIN_PASSWORD) {
+        // ── Super-admin login (supports both username and email) ──
+        if ((email === SUPER_ADMIN_USERNAME || email === SUPER_ADMIN_EMAIL) && password === SUPER_ADMIN_PASSWORD) {
             // Ensure super-admin exists in Firestore under the locked email
             const snap = await db.collection('users').where('email', '==', SUPER_ADMIN_EMAIL).limit(1).get();
             let admin;
