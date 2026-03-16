@@ -1,10 +1,10 @@
 # Callex AI — Developer API Documentation
 
-> **Version:** 2.0 &nbsp;|&nbsp; **API Base URL:** `http://62.171.170.48:4000` &nbsp;|&nbsp; **Last Updated:** March 16, 2026
+> **Version:** 2.0 &nbsp;|&nbsp; **API Base URL:** `http://62.171.170.48:4500` &nbsp;|&nbsp; **Last Updated:** March 16, 2026
 
 ⚠️ **IMPORTANT NOTE ON URLS:**
 - Your Dashboard (GUI) is hosted at **Port 5173** (`http://62.171.170.48:5173`). This is for human users.
-- ALL API requests from external apps, webhooks, or Postman MUST go to **Port 4000** (`http://62.171.170.48:4000`).
+- ALL API requests from external apps, webhooks, or Postman MUST go to **Port 4500** (`http://62.171.170.48:4500`).
 
 ---
 
