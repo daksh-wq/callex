@@ -26,7 +26,7 @@ export function requireAuth(req, res, next) {
 
 export async function requireApiKey(req, res, next) {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader || !/^bearer /i.test(authHeader)) {
         return res.status(401).json({ error: 'Missing or invalid Authorization header.' });
     }
     const token = authHeader.split(' ')[1];
