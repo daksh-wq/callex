@@ -161,17 +161,45 @@ router.get('/calls', async (req, res) => {
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
         const status = req.query.status;
         const agentId = req.query.agentId;
+        const apiUserId = req.apiUser.userId;
 
-        let query = db.collection('calls').where('userId', '==', req.apiUser.userId);
-        const snap = await query.get();
-        let calls = queryToArray(snap);
+        console.log(`[EXT-API] GET /v1/calls — apiUserId: ${apiUserId}, status: ${status || 'any'}, agentId: ${agentId || 'any'}`);
+
+        // 1. Get calls directly owned by this user
+        const directSnap = await db.collection('calls').where('userId', '==', apiUserId).get();
+        let calls = queryToArray(directSnap);
+        console.log(`[EXT-API] Direct userId match: ${calls.length} calls`);
+
+        // 2. Fallback: also get calls that belong to this user's agents but lack userId
+        const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
+        const userAgentIds = agentsSnap.docs.map(d => d.id);
+        console.log(`[EXT-API] User owns ${userAgentIds.length} agents: [${userAgentIds.join(', ')}]`);
+
+        if (userAgentIds.length > 0) {
+            const existingCallIds = new Set(calls.map(c => c.id));
+            // Query in chunks of 30 (Firestore 'in' limit)
+            for (let i = 0; i < userAgentIds.length; i += 30) {
+                const chunk = userAgentIds.slice(i, i + 30);
+                const agentCallsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
+                agentCallsSnap.forEach(doc => {
+                    if (!existingCallIds.has(doc.id)) {
+                        calls.push({ id: doc.id, ...doc.data() });
+                        existingCallIds.add(doc.id);
+                    }
+                });
+            }
+            console.log(`[EXT-API] After agent fallback: ${calls.length} total calls`);
+        }
+
+        // Also include any calls without userId AND without agentId (orphaned calls)
+        // These won't be caught by either query above
 
         // Filter by status
         if (status) calls = calls.filter(c => c.status === status);
         // Filter by agent
         if (agentId) calls = calls.filter(c => c.agentId === agentId);
 
-        // Sort by startedAt descending (in-memory to avoid Firestore index issues)
+        // Sort by startedAt descending
         calls.sort((a, b) => {
             const ta = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
             const tb = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
@@ -194,9 +222,10 @@ router.get('/calls', async (req, res) => {
             endedAt: c.endedAt || null,
         }));
 
+        console.log(`[EXT-API] Returning ${paginated.length} calls (page ${page}, total ${total})`);
         res.json({ calls: paginated, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     } catch (e) {
-        console.error('[EXTERNAL API ERROR]', e);
+        console.error('[EXT-API ERROR] GET /v1/calls failed:', e);
         res.status(500).json({ error: 'Failed to list calls' });
     }
 });
@@ -327,16 +356,33 @@ router.get('/voices', async (req, res) => {
 // GET /v1/supervisor/calls — List all active calls
 router.get('/supervisor/calls', async (req, res) => {
     try {
-        const snap = await db.collection('calls')
-            .where('userId', '==', req.apiUser.userId)
-            .where('status', '==', 'active')
-            .get();
+        const apiUserId = req.apiUser.userId;
+        console.log(`[EXT-API] GET /v1/supervisor/calls — apiUserId: ${apiUserId}`);
+
+        // Query active calls only (single field) to avoid composite index requirement
+        const activeSnap = await db.collection('calls').where('status', '==', 'active').get();
+        console.log(`[EXT-API] Total active calls in DB: ${activeSnap.size}`);
+
+        // Get this user's agent IDs for fallback matching
+        const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
+        const userAgentIds = new Set(agentsSnap.docs.map(d => d.id));
+        console.log(`[EXT-API] User owns ${userAgentIds.size} agents: [${[...userAgentIds].join(', ')}]`);
+
         const calls = [];
-        for (const doc of snap.docs) {
-            const call = { id: doc.id, ...doc.data() };
+        for (const doc of activeSnap.docs) {
+            const callData = doc.data();
+            // Include call if: userId matches OR call belongs to user's agent
+            const userIdMatch = callData.userId === apiUserId;
+            const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
+
+            if (!userIdMatch && !agentMatch) continue;
+
+            const call = { id: doc.id, ...callData };
             if (call.agentId && !call.agentName) {
-                const agentDoc = await db.collection('agents').doc(call.agentId).get();
-                if (agentDoc.exists) call.agentName = agentDoc.data().name;
+                try {
+                    const agentDoc = await db.collection('agents').doc(call.agentId).get();
+                    if (agentDoc.exists) call.agentName = agentDoc.data().name;
+                } catch (e) { /* ignore */ }
             }
             calls.push({
                 id: call.id,
@@ -353,9 +399,10 @@ router.get('/supervisor/calls', async (req, res) => {
             const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
             return db2 - da;
         });
+        console.log(`[EXT-API] Returning ${calls.length} active calls for user ${apiUserId}`);
         res.json(calls);
     } catch (e) {
-        console.error('[EXTERNAL API ERROR]', e);
+        console.error('[EXT-API ERROR] GET /v1/supervisor/calls failed:', e);
         res.status(500).json({ error: 'Failed to list active calls' });
     }
 });
@@ -452,6 +499,33 @@ router.get('/dashboard/kpis', async (req, res) => {
     } catch (e) {
         console.error('[EXTERNAL API ERROR]', e);
         res.status(500).json({ error: 'Failed to metrics' });
+    }
+});
+
+// ═══════════════════════════════════════════════
+// DEBUG API
+// ═══════════════════════════════════════════════
+
+// GET /v1/debug/my-identity — Shows which userId is linked to the API key
+router.get('/debug/my-identity', async (req, res) => {
+    try {
+        const apiUserId = req.apiUser.userId;
+        const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
+        const agentIds = agentsSnap.docs.map(d => d.id);
+        const callsSnap = await db.collection('calls').where('userId', '==', apiUserId).get();
+
+        res.json({
+            userId: apiUserId,
+            env: req.apiUser.env,
+            keyId: req.apiUser.keyId,
+            ownedAgents: agentIds.length,
+            agentIds,
+            callsWithUserId: callsSnap.size,
+            message: 'If ownedAgents is 0, your API key may be linked to the wrong user account.'
+        });
+    } catch (e) {
+        console.error('[EXT-API ERROR] GET /v1/debug/my-identity failed:', e);
+        res.status(500).json({ error: 'Failed to retrieve identity info' });
     }
 });
 
