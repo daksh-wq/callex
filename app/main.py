@@ -1298,7 +1298,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     try:
                         from firebase_admin import firestore as fs
                         firestore_db = fs.client()
-                        
+
                         # Build readable transcript string
                         transcript_lines = []
                         transcript_messages = []
@@ -1312,55 +1312,57 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                     "text": text,
                                     "timestamp": time.time()
                                 })
-                        
+
                         transcript_text = "\n".join(transcript_lines)
-                        
-                        # Find the call document by UUID and update it
-                        calls_ref = firestore_db.collection('calls')
-                        query = calls_ref.where('id', '==', call_uuid).limit(1).stream()
-                        call_doc = None
-                        for doc in query:
-                            call_doc = doc
-                            break
-                        
-                        if not call_doc:
-                            # Try matching by document ID directly
-                            doc_ref = calls_ref.document(call_uuid)
-                            doc_snap = doc_ref.get()
-                            if doc_snap.exists:
-                                call_doc = doc_snap
-                        
-                        if call_doc:
-                            calls_ref.document(call_doc.id).update({
-                                'transcript': transcript_text,
-                                'transcriptMessages': transcript_messages,
-                                'recordingUrl': final_path or '',
-                                'status': 'completed',
-                                'endedAt': fs.SERVER_TIMESTAMP,
-                                'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral'
-                            })
-                            print(f"[TRANSCRIPT] ✅ Saved {len(transcript_messages)} messages to Firestore")
+
+                        # Calculate duration (in seconds) from call start
+                        call_duration = 0
+                        try:
+                            existing_doc = firestore_db.collection('calls').document(call_uuid).get()
+                            if existing_doc.exists:
+                                started = existing_doc.to_dict().get('startedAt')
+                                if started:
+                                    import datetime
+                                    started_dt = started.astimezone(datetime.timezone.utc) if hasattr(started, 'astimezone') else None
+                                    if started_dt:
+                                        call_duration = max(0, int((datetime.datetime.now(datetime.timezone.utc) - started_dt).total_seconds()))
+                        except Exception:
+                            pass
+
+                        # Directly update by document ID (we already set call_uuid as doc ID on call start)
+                        doc_ref = firestore_db.collection('calls').document(call_uuid)
+                        doc_snap = doc_ref.get()
+
+                        update_data = {
+                            'transcript': transcript_text,
+                            'transcriptMessages': transcript_messages,
+                            'recordingUrl': final_path or '',
+                            'status': 'completed',
+                            'endedAt': fs.SERVER_TIMESTAMP,
+                            'duration': call_duration,
+                            'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral',
+                            'userId': agent_config.get('userId', ''),  # ensure userId is always set
+                        }
+
+                        if doc_snap.exists:
+                            doc_ref.update(update_data)
+                            print(f"[TRANSCRIPT] ✅ Updated call doc with {len(transcript_messages)} messages (duration: {call_duration}s)")
                         else:
-                            # Create a new call document if none exists
-                            calls_ref.document(call_uuid).set({
+                            # Doc missing — create it from scratch
+                            doc_ref.set({
                                 'id': call_uuid,
-                                'transcript': transcript_text,
-                                'transcriptMessages': transcript_messages,
-                                'recordingUrl': final_path or '',
-                                'status': 'completed',
                                 'phoneNumber': phone_number or '',
                                 'agentId': agent_config.get('id', ''),
                                 'agentName': agent_config.get('name', ''),
-                                'userId': agent_config.get('userId', ''),
-                                'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral',
                                 'startedAt': fs.SERVER_TIMESTAMP,
-                                'endedAt': fs.SERVER_TIMESTAMP,
+                                **update_data,
                             })
                             print(f"[TRANSCRIPT] ✅ Created new call doc with {len(transcript_messages)} messages")
                     except Exception as transcript_err:
                         import traceback
                         print(f"[TRANSCRIPT ERROR] Failed to save transcript: {transcript_err}")
                         traceback.print_exc()
+
 
             print("\n" + "=" * 50)
             print("[CALL] 📴 CALL ENDED")

@@ -46,16 +46,101 @@ router.get('/', async (req, res) => {
     }
 });
 
+// GET /api/analytics/calls — List ALL calls for current user (direct userId + agentId fallback)
+router.get('/calls', async (req, res) => {
+    try {
+        const { page = 1, limit = 50, sentiment, minDuration, disposition, status } = req.query;
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+        const userId = req.userId;
+
+        console.log(`[ANALYTICS] GET /calls — userId: ${userId}`);
+
+        // 1. Get calls by direct userId match
+        const directSnap = await db.collection('calls').where('userId', '==', userId).get();
+        const callsMap = new Map();
+        directSnap.docs.forEach(doc => callsMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        console.log(`[ANALYTICS] Direct userId match: ${callsMap.size} calls`);
+
+        // 2. Also get calls linked to this user's agents (handles older calls missing userId field)
+        const agentsSnap = await db.collection('agents').where('userId', '==', userId).get();
+        const userAgentIds = agentsSnap.docs.map(d => d.id);
+        console.log(`[ANALYTICS] User owns ${userAgentIds.length} agents`);
+
+        if (userAgentIds.length > 0) {
+            for (let i = 0; i < userAgentIds.length; i += 30) {
+                const chunk = userAgentIds.slice(i, i + 30);
+                const agentCallsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
+                agentCallsSnap.forEach(doc => {
+                    if (!callsMap.has(doc.id)) callsMap.set(doc.id, { id: doc.id, ...doc.data() });
+                });
+            }
+        }
+
+        let calls = Array.from(callsMap.values());
+        console.log(`[ANALYTICS] Total calls found: ${calls.length}`);
+
+        // Apply filters
+        if (status) calls = calls.filter(c => c.status === status);
+        if (sentiment) calls = calls.filter(c => c.sentiment === sentiment);
+        if (minDuration) calls = calls.filter(c => (c.duration || 0) >= parseInt(minDuration, 10));
+        if (disposition) calls = calls.filter(c => c.dispositionId === disposition);
+
+        // Sort by startedAt descending (newest first)
+        calls.sort((a, b) => {
+            const ta = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
+            const tb = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
+            return tb - ta;
+        });
+
+        const total = calls.length;
+        const paginated = calls.slice((pageNum - 1) * limitNum, pageNum * limitNum);
+
+        // Enrich with agent name
+        for (const call of paginated) {
+            if (call.agentId && !call.agentName) {
+                try {
+                    const agentDoc = await db.collection('agents').doc(call.agentId).get();
+                    call.agentName = agentDoc.exists ? agentDoc.data().name : 'Unknown';
+                } catch (e) { /* ignore */ }
+            }
+        }
+
+        res.json({ calls: paginated, total, pagination: { page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+    } catch (error) {
+        console.error("[ANALYTICS] Error fetching call logs:", error);
+        res.status(500).json({ error: "Failed to fetch call logs" });
+    }
+});
+
 // GET /api/analytics/calls/:id
 router.get('/calls/:id', async (req, res) => {
-    const doc = await db.collection('calls').doc(req.params.id).get();
-    const call = docToObj(doc);
-    if (!call || call.userId !== req.userId) return res.status(404).json({ error: 'Call not found' });
-    if (call.agentId) {
-        const agentDoc = await db.collection('agents').doc(call.agentId).get();
-        call.agent = agentDoc.exists ? { name: agentDoc.data().name } : null;
+    try {
+        const doc = await db.collection('calls').doc(req.params.id).get();
+        const call = docToObj(doc);
+        if (!call) return res.status(404).json({ error: 'Call not found' });
+
+        // Allow access if userId matches OR if the call belongs to this user's agent
+        if (call.userId && call.userId !== req.userId) {
+            if (call.agentId) {
+                const agentDoc = await db.collection('agents').doc(call.agentId).get();
+                if (!agentDoc.exists || agentDoc.data().userId !== req.userId) {
+                    return res.status(404).json({ error: 'Call not found' });
+                }
+            } else {
+                return res.status(404).json({ error: 'Call not found' });
+            }
+        }
+
+        if (call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            call.agent = agentDoc.exists ? { name: agentDoc.data().name } : null;
+        }
+        res.json(call);
+    } catch (e) {
+        console.error('[ANALYTICS] Call detail error:', e);
+        res.status(500).json({ error: 'Failed to retrieve call' });
     }
-    res.json(call);
 });
 
 // POST /api/analytics/calls/:id/acw
