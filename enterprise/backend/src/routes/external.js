@@ -411,15 +411,24 @@ router.post('/supervisor/calls/:id/whisper', async (req, res) => {
     try {
         const { message } = req.body;
         if (!message) return res.status(400).json({ error: 'message required' });
-        
+
         const doc = await db.collection('calls').doc(req.params.id).get();
         const call = docToObj(doc);
-        if (!call || call.userId !== req.apiUser.userId) return res.status(404).json({ error: 'Call not found' });
-        
+        if (!call) return res.status(404).json({ error: 'Call not found' });
+
+        // Ownership check: userId match OR agentId belongs to this user
+        const userId = req.apiUser.userId;
+        let owned = call.userId === userId;
+        if (!owned && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            owned = agentDoc.exists && agentDoc.data().userId === userId;
+        }
+        if (!owned) return res.status(404).json({ error: 'Call not found' });
+
         import('../index.js').then(({ broadcastToCall }) => {
             broadcastToCall(req.params.id, { type: 'whisper', message, ts: Date.now() });
         });
-        
+
         const newTranscript = (call.transcript || '') + `\n[SYSTEM WHISPER]: ${message}`;
         await db.collection('calls').doc(req.params.id).update({ transcript: newTranscript });
         res.json({ success: true, message });
@@ -434,8 +443,17 @@ router.post('/supervisor/calls/:id/barge', async (req, res) => {
     try {
         const doc = await db.collection('calls').doc(req.params.id).get();
         const call = docToObj(doc);
-        if (!call || call.userId !== req.apiUser.userId) return res.status(404).json({ error: 'Call not found' });
+        if (!call) return res.status(404).json({ error: 'Call not found' });
         if (call.status !== 'active') return res.status(400).json({ error: 'Cannot barge into a call that is not active' });
+
+        // Ownership check: userId match OR agentId belongs to this user
+        const userId = req.apiUser.userId;
+        let owned = call.userId === userId;
+        if (!owned && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            owned = agentDoc.exists && agentDoc.data().userId === userId;
+        }
+        if (!owned) return res.status(404).json({ error: 'Call not found' });
 
         import('../index.js').then(({ broadcastToCall }) => {
             broadcastToCall(req.params.id, { type: 'barge', ts: Date.now() });
