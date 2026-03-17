@@ -162,32 +162,39 @@ router.get('/calls', async (req, res) => {
         const status = req.query.status;
         const agentId = req.query.agentId;
         const apiUserId = req.apiUser.userId;
+        const isSuperAdmin = apiUserId === 'superadmin-hardcoded-id';
 
-        console.log(`[EXT-API] GET /v1/calls — apiUserId: ${apiUserId}, status: ${status || 'any'}, agentId: ${agentId || 'any'}`);
+        console.log(`[EXT-API] GET /v1/calls — apiUserId: ${apiUserId}, superAdmin: ${isSuperAdmin}, status: ${status || 'any'}, agentId: ${agentId || 'any'}`);
 
-        // 1. Get calls directly owned by this user
-        const directSnap = await db.collection('calls').where('userId', '==', apiUserId).get();
         let callsMap = new Map();
-        directSnap.docs.forEach(doc => {
-            callsMap.set(doc.id, { id: doc.id, ...doc.data() });
-        });
-        console.log(`[EXT-API] Direct userId match: ${callsMap.size} calls`);
 
-        // 2. Fallback: also get calls that belong to this user's agents but lack userId
-        const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
-        const userAgentIds = agentsSnap.docs.map(d => d.id);
-        console.log(`[EXT-API] User owns ${userAgentIds.length} agents`);
+        if (isSuperAdmin) {
+            const allSnap = await db.collection('calls').get();
+            allSnap.docs.forEach(doc => callsMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        } else {
+            // 1. Get calls directly owned by this user
+            const directSnap = await db.collection('calls').where('userId', '==', apiUserId).get();
+            directSnap.docs.forEach(doc => {
+                callsMap.set(doc.id, { id: doc.id, ...doc.data() });
+            });
+            console.log(`[EXT-API] Direct userId match: ${callsMap.size} calls`);
 
-        if (userAgentIds.length > 0) {
-            // Query in chunks of 30 (Firestore 'in' limit)
-            for (let i = 0; i < userAgentIds.length; i += 30) {
-                const chunk = userAgentIds.slice(i, i + 30);
-                const agentCallsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
-                agentCallsSnap.forEach(doc => {
-                    if (!callsMap.has(doc.id)) {
-                        callsMap.set(doc.id, { id: doc.id, ...doc.data() });
-                    }
-                });
+            // 2. Fallback: also get calls that belong to this user's agents but lack userId
+            const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
+            const userAgentIds = agentsSnap.docs.map(d => d.id);
+            console.log(`[EXT-API] User owns ${userAgentIds.length} agents`);
+
+            if (userAgentIds.length > 0) {
+                // Query in chunks of 30 (Firestore 'in' limit)
+                for (let i = 0; i < userAgentIds.length; i += 30) {
+                    const chunk = userAgentIds.slice(i, i + 30);
+                    const agentCallsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
+                    agentCallsSnap.forEach(doc => {
+                        if (!callsMap.has(doc.id)) {
+                            callsMap.set(doc.id, { id: doc.id, ...doc.data() });
+                        }
+                    });
+                }
             }
         }
 
@@ -235,6 +242,15 @@ router.get('/calls/:id', async (req, res) => {
         const doc = await db.collection('calls').doc(req.params.id).get();
         const call = docToObj(doc);
         if (!call) return res.status(404).json({ error: 'Call not found' });
+
+        const userId = req.apiUser.userId;
+        const isSuperAdmin = userId === 'superadmin-hardcoded-id';
+        let owned = isSuperAdmin || call.userId === userId;
+        if (!owned && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            owned = agentDoc.exists && agentDoc.data().userId === userId;
+        }
+        if (!owned) return res.status(404).json({ error: 'Call not found' });
 
         // Get agent name if available
         let agentName = call.agentName || '';
@@ -356,7 +372,8 @@ router.get('/voices', async (req, res) => {
 router.get('/supervisor/calls', async (req, res) => {
     try {
         const apiUserId = req.apiUser.userId;
-        console.log(`[EXT-API] GET /v1/supervisor/calls — apiUserId: ${apiUserId}`);
+        const isSuperAdmin = apiUserId === 'superadmin-hardcoded-id';
+        console.log(`[EXT-API] GET /v1/supervisor/calls — apiUserId: ${apiUserId}, isSuperAdmin: ${isSuperAdmin}`);
 
         // Query active calls only (single field) to avoid composite index requirement
         const activeSnap = await db.collection('calls').where('status', '==', 'active').get();
@@ -370,11 +387,11 @@ router.get('/supervisor/calls', async (req, res) => {
         const calls = [];
         for (const doc of activeSnap.docs) {
             const callData = doc.data();
-            // Include call if: userId matches OR call belongs to user's agent
+            // Include call if: userId matches OR call belongs to user's agent OR user is superadmin
             const userIdMatch = callData.userId === apiUserId;
             const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
 
-            if (!userIdMatch && !agentMatch) continue;
+            if (!isSuperAdmin && !userIdMatch && !agentMatch) continue;
 
             const call = { id: doc.id, ...callData };
             if (call.agentId && !call.agentName) {
@@ -416,9 +433,10 @@ router.post('/supervisor/calls/:id/whisper', async (req, res) => {
         const call = docToObj(doc);
         if (!call) return res.status(404).json({ error: 'Call not found' });
 
-        // Ownership check: userId match OR agentId belongs to this user
+        // Ownership check: userId match OR agentId belongs to this user OR user is superadmin
         const userId = req.apiUser.userId;
-        let owned = call.userId === userId;
+        const isSuperAdmin = userId === 'superadmin-hardcoded-id';
+        let owned = isSuperAdmin || call.userId === userId;
         if (!owned && call.agentId) {
             const agentDoc = await db.collection('agents').doc(call.agentId).get();
             owned = agentDoc.exists && agentDoc.data().userId === userId;
@@ -446,9 +464,10 @@ router.post('/supervisor/calls/:id/barge', async (req, res) => {
         if (!call) return res.status(404).json({ error: 'Call not found' });
         if (call.status !== 'active') return res.status(400).json({ error: 'Cannot barge into a call that is not active' });
 
-        // Ownership check: userId match OR agentId belongs to this user
+        // Ownership check: userId match OR agentId belongs to this user OR user is superadmin
         const userId = req.apiUser.userId;
-        let owned = call.userId === userId;
+        const isSuperAdmin = userId === 'superadmin-hardcoded-id';
+        let owned = isSuperAdmin || call.userId === userId;
         if (!owned && call.agentId) {
             const agentDoc = await db.collection('agents').doc(call.agentId).get();
             owned = agentDoc.exists && agentDoc.data().userId === userId;
