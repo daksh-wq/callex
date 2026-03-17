@@ -176,11 +176,10 @@ export default function AdminUsers() {
                                         </div>
                                     </td>
                                     <td className="px-3 py-3 text-center">
-                                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                            u.role === 'superadmin' ? 'bg-orange-100 text-orange-700' :
-                                            u.role === 'admin' ? 'bg-blue-100 text-blue-700' :
-                                            'bg-gray-100 text-gray-600'
-                                        }`}>{u.role}</span>
+                                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${u.role === 'superadmin' ? 'bg-orange-100 text-orange-700' :
+                                                u.role === 'admin' ? 'bg-blue-100 text-blue-700' :
+                                                    'bg-gray-100 text-gray-600'
+                                            }`}>{u.role}</span>
                                     </td>
                                     <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.agents}</td>
                                     <td className="px-3 py-3 text-center text-sm font-semibold text-gray-700">{u.campaigns}</td>
@@ -302,11 +301,10 @@ export default function AdminUsers() {
                                         <div className="text-sm text-gray-500">{userDetail.user.email}</div>
                                         <div className="text-xs text-gray-400 mt-0.5">Joined: {new Date(userDetail.user.createdAt).toLocaleDateString()}</div>
                                     </div>
-                                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                        userDetail.user.role === 'superadmin' ? 'bg-orange-100 text-orange-700' :
-                                        userDetail.user.role === 'admin' ? 'bg-blue-100 text-blue-700' :
-                                        'bg-gray-100 text-gray-600'
-                                    }`}>{userDetail.user.role}</span>
+                                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${userDetail.user.role === 'superadmin' ? 'bg-orange-100 text-orange-700' :
+                                            userDetail.user.role === 'admin' ? 'bg-blue-100 text-blue-700' :
+                                                'bg-gray-100 text-gray-600'
+                                        }`}>{userDetail.user.role}</span>
                                 </div>
 
                                 {/* Agents */}

@@ -89,8 +89,8 @@ router.get('/users/:id', async (req, res) => {
         res.json({
             user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt },
             agents: queryToArray(agents), campaigns: queryToArray(campaigns),
-            apiKeys: queryToArray(apiKeys), 
-            recentCalls: queryToArray(calls).sort((a,b) => {
+            apiKeys: queryToArray(apiKeys),
+            recentCalls: queryToArray(calls).sort((a, b) => {
                 const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
                 const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
                 return db2 - da;
@@ -252,7 +252,7 @@ router.get('/agents-by-user', async (req, res) => {
             const u = { id: userDoc.id, ...userDoc.data() };
             const agentsSnap = await db.collection('agents').where('userId', '==', u.id).get();
             const agents = queryToArray(agentsSnap);
-            agents.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+            agents.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
             result.push({
                 user: { id: u.id, email: u.email, name: u.name, role: u.role },
                 agents,
@@ -340,7 +340,7 @@ router.get('/users/:userId/export', async (req, res) => {
                 return rest;
             }),
             apiKeys: queryToArray(apiKeysSnap).map(k => ({
-                id: k.id, name: k.name, prefix: k.prefix, env: k.env, 
+                id: k.id, name: k.name, prefix: k.prefix, env: k.env,
                 active: k.active, createdAt: k.createdAt, lastUsed: k.lastUsed,
             })),
             knowledgeDocs: queryToArray(docsSnap),
@@ -363,12 +363,12 @@ router.get('/users/:userId/calls', async (req, res) => {
     try {
         const agentsSnap = await db.collection('agents').where('userId', '==', req.params.userId).get();
         const agentIds = agentsSnap.docs.map(d => d.id);
-        
+
         let calls = [];
         // Get calls by userId
         const directSnap = await db.collection('calls').where('userId', '==', req.params.userId).get();
         calls = queryToArray(directSnap);
-        
+
         // Also get calls by agentId
         const callIds = new Set(calls.map(c => c.id));
         if (agentIds.length > 0) {
