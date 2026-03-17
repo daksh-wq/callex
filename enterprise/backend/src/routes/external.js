@@ -167,36 +167,35 @@ router.get('/calls', async (req, res) => {
 
         // 1. Get calls directly owned by this user
         const directSnap = await db.collection('calls').where('userId', '==', apiUserId).get();
-        let calls = queryToArray(directSnap);
-        console.log(`[EXT-API] Direct userId match: ${calls.length} calls`);
+        let callsMap = new Map();
+        directSnap.docs.forEach(doc => {
+            callsMap.set(doc.id, { id: doc.id, ...doc.data() });
+        });
+        console.log(`[EXT-API] Direct userId match: ${callsMap.size} calls`);
 
         // 2. Fallback: also get calls that belong to this user's agents but lack userId
         const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
         const userAgentIds = agentsSnap.docs.map(d => d.id);
-        console.log(`[EXT-API] User owns ${userAgentIds.length} agents: [${userAgentIds.join(', ')}]`);
+        console.log(`[EXT-API] User owns ${userAgentIds.length} agents`);
 
         if (userAgentIds.length > 0) {
-            const existingCallIds = new Set(calls.map(c => c.id));
             // Query in chunks of 30 (Firestore 'in' limit)
             for (let i = 0; i < userAgentIds.length; i += 30) {
                 const chunk = userAgentIds.slice(i, i + 30);
                 const agentCallsSnap = await db.collection('calls').where('agentId', 'in', chunk).get();
                 agentCallsSnap.forEach(doc => {
-                    if (!existingCallIds.has(doc.id)) {
-                        calls.push({ id: doc.id, ...doc.data() });
-                        existingCallIds.add(doc.id);
+                    if (!callsMap.has(doc.id)) {
+                        callsMap.set(doc.id, { id: doc.id, ...doc.data() });
                     }
                 });
             }
-            console.log(`[EXT-API] After agent fallback: ${calls.length} total calls`);
         }
 
-        // Also include any calls without userId AND without agentId (orphaned calls)
-        // These won't be caught by either query above
+        let calls = Array.from(callsMap.values());
+        console.log(`[EXT-API] Total calls found (direct + fallback): ${calls.length}`);
 
-        // Filter by status
+        // 3. Filter by status/agentId if provided (filtered in memory to avoid complex indexes)
         if (status) calls = calls.filter(c => c.status === status);
-        // Filter by agent
         if (agentId) calls = calls.filter(c => c.agentId === agentId);
 
         // Sort by startedAt descending
@@ -366,7 +365,7 @@ router.get('/supervisor/calls', async (req, res) => {
         // Get this user's agent IDs for fallback matching
         const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
         const userAgentIds = new Set(agentsSnap.docs.map(d => d.id));
-        console.log(`[EXT-API] User owns ${userAgentIds.size} agents: [${[...userAgentIds].join(', ')}]`);
+        console.log(`[EXT-API] User owns ${userAgentIds.size} agents`);
 
         const calls = [];
         for (const doc of activeSnap.docs) {

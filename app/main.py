@@ -1335,6 +1335,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 'transcript': transcript_text,
                                 'transcriptMessages': transcript_messages,
                                 'recordingUrl': final_path or '',
+                                'status': 'completed',
+                                'endedAt': fs.SERVER_TIMESTAMP,
+                                'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral'
                             })
                             print(f"[TRANSCRIPT] ✅ Saved {len(transcript_messages)} messages to Firestore")
                         else:
@@ -1348,8 +1351,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 'phoneNumber': phone_number or '',
                                 'agentId': agent_config.get('id', ''),
                                 'agentName': agent_config.get('name', ''),
-                                'startedAt': time.time(),
-                                'endedAt': time.time(),
+                                'userId': agent_config.get('userId', ''),
+                                'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral',
+                                'startedAt': fs.SERVER_TIMESTAMP,
+                                'endedAt': fs.SERVER_TIMESTAMP,
                             })
                             print(f"[TRANSCRIPT] ✅ Created new call doc with {len(transcript_messages)} messages")
                     except Exception as transcript_err:
