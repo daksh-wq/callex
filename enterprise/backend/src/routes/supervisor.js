@@ -28,7 +28,16 @@ router.get('/calls', async (req, res) => {
 router.post('/calls', async (req, res) => {
     const { phoneNumber, agentId } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
-    const data = { phoneNumber, agentId: agentId || null, status: 'active', sentiment: 'neutral', transcript: '', mosScore: 4.5, startedAt: new Date() };
+    const data = { 
+        phoneNumber, 
+        agentId: agentId || null, 
+        userId: req.userId || null,
+        status: 'active', 
+        sentiment: 'neutral', 
+        transcript: '', 
+        mosScore: 4.5, 
+        startedAt: new Date() 
+    };
     const ref = await db.collection('calls').add(data);
     await db.collection('systemEvents').add({ type: 'call.started', message: `Call started from ${phoneNumber}`, severity: 'info', meta: '{}', createdAt: new Date() });
     import('../index.js').then(({ broadcastToDashboard }) => broadcastToDashboard({ type: 'refresh_kpi' }));
