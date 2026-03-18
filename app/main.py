@@ -47,7 +47,7 @@ bot_config = config_mgr.load_config()
 # API Keys (from config)
 GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
 # Hardcoding API key because PM2 server caching is preventing .env updates from taking effect
-GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
+GENARTML_SECRET_KEY = "70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
 # Deepgram ASR Configuration (Production)
