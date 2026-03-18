@@ -87,10 +87,12 @@ CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
 # Speaker Verification Configuration
-SPEAKER_SIMILARITY_THRESHOLD = 0.75
+SPEAKER_SIMILARITY_THRESHOLD = 0.72
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
 BARGE_IN_SILENCE_TIMEOUT = 1.0  # faster silence timeout after barge-in (customer wants quick reply)
+
+SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
 
 # Voice Settings (from config)
 VOICE_SPEED = bot_config.voice.speed
@@ -1212,6 +1214,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if speaking and now - last_voice > active_silence_timeout:
                         speaking = False
                         was_barge_in = False  # Reset barge-in flag
+                        speaker_verifier.clear_verify_buffer()  # Reset verify buffer for next utterance
                         duration = len(buffer) / SAMPLE_RATE
                         if duration >= MIN_SPEECH_DURATION:
                             print(f"[VAD] End of speech detected ({duration:.2f}s). Processing...")
@@ -1224,6 +1227,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             print(f"[VAD] Speech too short ({duration:.2f}s), ignoring")
                             buffer.clear()
                             vad_buffer.clear()
+                            speaker_verifier.clear_verify_buffer()
 
                     if not is_valid_speech:
                         barge_in_confirm_start = None  # Reset confirmation buffer on silence
@@ -1243,6 +1247,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if not speaker_verifier.is_enrolled:
                         speaker_verifier.enroll(filtered_chunk)
 
+                    # Feed every valid speech chunk to verification buffer (for reliable comparison)
+                    speaker_verifier.feed_verify_buffer(filtered_chunk)
+
                     buffer.extend(chunk)
                     vad_buffer.extend(filtered_chunk)
                     last_voice = now  # Keep silence timer fresh while customer speaks
@@ -1252,16 +1259,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if not first_line_complete:
                                 continue
 
-                            # Stage 3: Speaker Verification (skip during enrollment — allow barge-in immediately)
+                            # Stage 3: Speaker Verification
                             if speaker_verifier.is_enrolled:
                                 is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
                                 if not is_caller or speaker_similarity < 0.65:
                                     barge_in_confirm_start = None
                                     buffer.clear()
                                     vad_buffer.clear()
+                                    speaker_verifier.clear_verify_buffer()
                                     continue
                             else:
-                                speaker_similarity = 0.8  # Default during enrollment
+                                # During enrollment: use soft verification (energy + Silero only)
+                                # Still allow barge-in but with lower confidence score
+                                speaker_similarity = 0.70
 
                             # Stage 4: Confirmation Buffer
                             if barge_in_confirm_start is None:
