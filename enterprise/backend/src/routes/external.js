@@ -385,8 +385,16 @@ router.get('/supervisor/calls', async (req, res) => {
         console.log(`[EXT-API] User owns ${userAgentIds.size} agents`);
 
         const calls = [];
+        const now = Date.now();
+        const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
         for (const doc of activeSnap.docs) {
             const callData = doc.data();
+            
+            // Ghost call protection: If call is older than 2 hours, ignore it
+            const startedAt = callData.startedAt?.toDate ? callData.startedAt.toDate().getTime() : new Date(callData.startedAt || 0).getTime();
+            if (now - startedAt > MAX_AGE_MS) continue;
+
             // Include call if: userId matches OR call belongs to user's agent OR user is superadmin
             const userIdMatch = callData.userId === apiUserId;
             const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
