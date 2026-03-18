@@ -474,13 +474,16 @@ def trim_history(history: List[Dict]) -> List[Dict]:
 
 async def _deepgram_transcribe(client: httpx.AsyncClient, pcm16: bytes) -> Optional[str]:
     """Transcribe audio using Deepgram Nova-2 REST API (~250ms latency)."""
-    url = f"https://api.deepgram.com/v1/listen?model={DEEPGRAM_MODEL}&language={DEEPGRAM_LANGUAGE}&smart_format=true&punctuate=true"
+    url = (f"https://api.deepgram.com/v1/listen"
+           f"?model={DEEPGRAM_MODEL}&language={DEEPGRAM_LANGUAGE}"
+           f"&encoding=linear16&sample_rate={SAMPLE_RATE}&channels=1"
+           f"&smart_format=true&punctuate=true")
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/wav",
+        "Content-Type": "application/octet-stream",
     }
-    wav_data = wav_header(pcm16)
-    r = await client.post(url, content=wav_data, headers=headers, timeout=5.0)
+    # Send raw PCM bytes directly (Deepgram handles encoding params from URL)
+    r = await client.post(url, content=pcm16, headers=headers, timeout=5.0)
     if r.status_code != 200:
         print(f"[Deepgram] HTTP {r.status_code}: {r.text[:200]}")
         return None
@@ -772,7 +775,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
         
     start_time = time.time()
     
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000&optimize_streaming_latency=3"
     headers = {
         "xi-api-key": GENARTML_SECRET_KEY,
         "Content-Type": "application/json"
@@ -1275,8 +1278,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             history.append({"role": "user", "parts": [{"text": "[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]"}]})
                             async with task_lock:
                                 current_task = asyncio.create_task(process_audio(np.zeros(0, dtype=np.float32))) # Trigger immediate generation
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # Binary frames from FreeSWITCH — expected, ignore silently
                     except Exception as e:
-                        print(f"[WS JSON Error]: {e}")
+                        print(f"[WS Error]: {type(e).__name__}: {e}")
 
         except WebSocketDisconnect:
             print("[CALL] Client disconnected")
