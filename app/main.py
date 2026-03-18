@@ -89,7 +89,8 @@ SEMANTIC_MIN_LENGTH = 3
 # Speaker Verification Configuration
 SPEAKER_SIMILARITY_THRESHOLD = 0.75
 SPEAKER_ENROLLMENT_SECONDS = 3.0
-BARGE_IN_CONFIRM_MS = 300  # milliseconds of continuous speech required before barge-in
+BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
+BARGE_IN_SILENCE_TIMEOUT = 1.0  # faster silence timeout after barge-in (customer wants quick reply)
 
 # Voice Settings (from config)
 VOICE_SPEED = bot_config.voice.speed
@@ -1007,6 +1008,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     first_line_complete = False
     bot_speaking = False
     barge_in_confirm_start = None  # Timestamp when continuous caller speech started
+    was_barge_in = False  # Track if current speech started as a barge-in
 
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
@@ -1205,8 +1207,11 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     audio_db = 20 * np.log10(energy + 1e-9)
                     now = time.time()
 
-                    if speaking and now - last_voice > SILENCE_TIMEOUT:
+                    # Use shorter silence timeout after barge-in for faster reply
+                    active_silence_timeout = BARGE_IN_SILENCE_TIMEOUT if was_barge_in else SILENCE_TIMEOUT
+                    if speaking and now - last_voice > active_silence_timeout:
                         speaking = False
+                        was_barge_in = False  # Reset barge-in flag
                         duration = len(buffer) / SAMPLE_RATE
                         if duration >= MIN_SPEECH_DURATION:
                             print(f"[VAD] End of speech detected ({duration:.2f}s). Processing...")
@@ -1247,13 +1252,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if not first_line_complete:
                                 continue
 
-                            # Stage 3: Speaker Verification (Continuous verification of latest chunk)
-                            is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
-                            if not is_caller or speaker_similarity < 0.65: # Loose initial filter
-                                barge_in_confirm_start = None
-                                buffer.clear()
-                                vad_buffer.clear()
-                                continue
+                            # Stage 3: Speaker Verification (skip during enrollment — allow barge-in immediately)
+                            if speaker_verifier.is_enrolled:
+                                is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
+                                if not is_caller or speaker_similarity < 0.65:
+                                    barge_in_confirm_start = None
+                                    buffer.clear()
+                                    vad_buffer.clear()
+                                    continue
+                            else:
+                                speaker_similarity = 0.8  # Default during enrollment
 
                             # Stage 4: Confirmation Buffer
                             if barge_in_confirm_start is None:
@@ -1266,7 +1274,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             
                             confidence = (0.4 * speaker_similarity) + (0.3 * vad_confidence) + (0.2 * duration_factor) + (0.1 * 1.0)
                             
-                            if elapsed_ms < BARGE_IN_CONFIRM_MS or confidence < 0.82:
+                            if elapsed_ms < BARGE_IN_CONFIRM_MS or confidence < 0.70:
                                 # Still verifying the caller. Not enough confidence or duration yet!
                                 buffer.extend(chunk)
                                 vad_buffer.extend(filtered_chunk)
@@ -1276,7 +1284,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             # ✅ Interruption Pass confirmed!
                             barge_in_confirm_start = None
 
-                            if len(vad_buffer) > 4000 and classifier:
+                            # Skip YAMNet during barge-in for speed (Silero + energy is enough)
+                            if not bot_speaking and len(vad_buffer) > 4000 and classifier:
                                 recent_audio = np.array(vad_buffer)[-15000:]
                                 is_safe, label, conf = classifier.classify(recent_audio)
                                 if not is_safe and conf > 0.45:
@@ -1292,6 +1301,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                         speaking = True
+                        was_barge_in = True  # Mark as barge-in for faster silence timeout
                         last_voice = now
                         await cancel_current()
                     else:
