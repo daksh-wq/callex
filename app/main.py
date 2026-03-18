@@ -50,13 +50,19 @@ GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
 GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
+# Deepgram ASR Configuration (Production)
+DEEPGRAM_API_KEY = "701518abef2bbe87091e396f170481d5b5db0587"
+DEEPGRAM_MODEL = "nova-2"
+DEEPGRAM_LANGUAGE = "hi"  # Hindi
+USE_DEEPGRAM = True  # Set to False to revert to Gemini ASR
+
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16kHz (High Quality)
 MAX_BUFFER_SECONDS = 5
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.4, bot_config.vad.min_speech_duration)
-SILENCE_TIMEOUT = max(2.0, bot_config.vad.silence_timeout)
+SILENCE_TIMEOUT = max(1.5, bot_config.vad.silence_timeout)
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -86,6 +92,7 @@ VOICE_STYLE = bot_config.voice.style
 print(f"[CONFIG] Loaded from bot_config.json")
 print(f"[CONFIG] VAD: SILENCE_TIMEOUT={SILENCE_TIMEOUT}s, THRESHOLD={INTERRUPTION_THRESHOLD_DB}dB")
 print(f"[CONFIG] Voice: speed={VOICE_SPEED}x, stability={VOICE_STABILITY}")
+print(f"[CONFIG] ASR: {'Deepgram Nova-2' if USE_DEEPGRAM else 'Gemini Flash'} (lang={DEEPGRAM_LANGUAGE})")
 
 # History Management
 MAX_HISTORY_LENGTH = 12
@@ -465,18 +472,31 @@ def trim_history(history: List[Dict]) -> List[Dict]:
 
 # ───────── ASR (Speech-to-Text) ─────────
 
-async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None) -> Optional[str]:
-    print(f"[ASR] Sending {len(pcm16)} bytes…")
-    start_time = time.time()
-    trimmed_pcm = trim_audio(pcm16)
-    print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
-
-    # Skip if audio is too short (< 0.5 seconds = 16000 bytes at 16kHz 16-bit)
-    MIN_ASR_BYTES = SAMPLE_RATE * 1  # 0.5 seconds = 16000 bytes
-    if len(trimmed_pcm) < MIN_ASR_BYTES:
-        print(f"[ASR] Audio too short ({len(trimmed_pcm)} bytes < {MIN_ASR_BYTES}), skipping")
+async def _deepgram_transcribe(client: httpx.AsyncClient, pcm16: bytes) -> Optional[str]:
+    """Transcribe audio using Deepgram Nova-2 REST API (~250ms latency)."""
+    url = f"https://api.deepgram.com/v1/listen?model={DEEPGRAM_MODEL}&language={DEEPGRAM_LANGUAGE}&smart_format=true&punctuate=true"
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "audio/wav",
+    }
+    wav_data = wav_header(pcm16)
+    r = await client.post(url, content=wav_data, headers=headers, timeout=5.0)
+    if r.status_code != 200:
+        print(f"[Deepgram] HTTP {r.status_code}: {r.text[:200]}")
         return None
+    data = r.json()
+    alternatives = data.get("results", {}).get("channels", [{}])[0].get("alternatives", [])
+    if not alternatives:
+        print("[Deepgram] No alternatives in response")
+        return None
+    text = alternatives[0].get("transcript", "").strip()
+    confidence = alternatives[0].get("confidence", 0)
+    print(f"[Deepgram] Transcript: '{text}' (confidence: {confidence:.2f})")
+    return text if text else None
 
+
+async def _gemini_transcribe(client: httpx.AsyncClient, pcm16: bytes) -> Optional[str]:
+    """Fallback ASR using Gemini Flash (slower but reliable)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [{
@@ -485,7 +505,7 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
                 {"text": "Transcribe this audio to Hindi text. Output ONLY the transcribed words, nothing else. No explanations, no formatting, no commentary."},
                 {"inlineData": {
                     "mimeType": "audio/wav",
-                    "data": base64.b64encode(wav_header(trimmed_pcm)).decode()
+                    "data": base64.b64encode(wav_header(pcm16)).decode()
                 }}
             ]
         }],
@@ -493,58 +513,84 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
             "thinkingConfig": {"thinkingBudget": 0}
         }
     }
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            print(f"[ASR] Sending request (Attempt {attempt+1})...")
-            r = await client.post(url, json=payload, timeout=5.0)
-            if r.status_code != 200:
-                print(f"[ASR Error] HTTP {r.status_code}: {r.text[:200]}")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                return None
-            data = r.json()
-            if "candidates" in data and data["candidates"]:
-                candidate = data["candidates"][0]
-                content = candidate.get("content", {})
-                parts = content.get("parts", [])
-                if parts and "text" in parts[0]:
-                    text = parts[0]["text"].strip()
-                    # Clean any leaked model thinking (multi-line reasoning)
-                    if "\n" in text:
-                        lines = [l.strip() for l in text.split("\n") if l.strip()]
-                        # Take only the first line (actual transcription)
-                        text = lines[0] if lines else ""
-                    # Remove common thinking prefixes
-                    for prefix in ["think", "The user", "I will", "The output", "The audio"]:
-                        if text.startswith(prefix):
-                            text = ""
-                            break
-                else:
-                    print(f"[ASR] Empty response from model (blocked or no text)")
-                    if attempt < MAX_RETRIES:
-                        await asyncio.sleep(RETRY_DELAY)
-                        continue
+    r = await client.post(url, json=payload, timeout=5.0)
+    if r.status_code != 200:
+        print(f"[Gemini ASR] HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    data = r.json()
+    if "candidates" in data and data["candidates"]:
+        candidate = data["candidates"][0]
+        parts = candidate.get("content", {}).get("parts", [])
+        if parts and "text" in parts[0]:
+            text = parts[0]["text"].strip()
+            if "\n" in text:
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                text = lines[0] if lines else ""
+            for prefix in ["think", "The user", "I will", "The output", "The audio"]:
+                if text.startswith(prefix):
                     return None
-            else:
-                print(f"[ASR] No candidates in response")
+            return text if text else None
+    return None
+
+
+async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None) -> Optional[str]:
+    """Production ASR: Deepgram Nova-2 (primary) with Gemini Flash fallback."""
+    print(f"[ASR] Sending {len(pcm16)} bytes…")
+    start_time = time.time()
+    trimmed_pcm = trim_audio(pcm16)
+    print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
+
+    # Skip if audio is too short (< 0.5 seconds = 16000 bytes at 16kHz 16-bit)
+    MIN_ASR_BYTES = SAMPLE_RATE * 1
+    if len(trimmed_pcm) < MIN_ASR_BYTES:
+        print(f"[ASR] Audio too short ({len(trimmed_pcm)} bytes < {MIN_ASR_BYTES}), skipping")
+        return None
+
+    text = None
+
+    # ── Primary: Deepgram Nova-2 (~250ms) ──
+    if USE_DEEPGRAM:
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                text = await _deepgram_transcribe(client, trimmed_pcm)
+                if text:
+                    print(f"[ASR] ⚡ Deepgram succeeded on attempt {attempt + 1}")
+                    break
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_DELAY)
-                    continue
-                return None
-            break
-        except asyncio.TimeoutError:
-            print(f"[ASR] Timeout on attempt {attempt + 1}")
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-                continue
-            return None
-        except Exception as e:
-            print(f"[ASR Error]: {e}")
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-                continue
-            return None
+            except asyncio.TimeoutError:
+                print(f"[ASR] Deepgram timeout on attempt {attempt + 1}")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+            except Exception as e:
+                print(f"[ASR] Deepgram error: {e}")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+
+    # ── Fallback: Gemini Flash (if Deepgram failed or disabled) ──
+    if not text:
+        print(f"[ASR] {'Deepgram failed, falling' if USE_DEEPGRAM else 'Deepgram disabled, falling'} back to Gemini Flash...")
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                text = await _gemini_transcribe(client, trimmed_pcm)
+                if text:
+                    print(f"[ASR] Gemini fallback succeeded on attempt {attempt + 1}")
+                    break
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+            except asyncio.TimeoutError:
+                print(f"[ASR] Gemini timeout on attempt {attempt + 1}")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+            except Exception as e:
+                print(f"[ASR] Gemini error: {e}")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+
+    if not text:
+        print("[ASR] ❌ All ASR engines failed")
+        return None
+
     elapsed = time.time() - start_time
     if semantic_filter and not semantic_filter.is_meaningful(text):
         reason = semantic_filter.get_rejection_reason(text)
@@ -733,7 +779,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
     }
     payload = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",
+        "model_id": "eleven_flash_v2_5",
         "voice_settings": {
             "stability": VOICE_STABILITY,
             "similarity_boost": VOICE_SIMILARITY_BOOST,
