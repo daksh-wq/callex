@@ -87,7 +87,7 @@ CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
 # Speaker Verification Configuration
-SPEAKER_SIMILARITY_THRESHOLD = 0.72
+SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
 BARGE_IN_SILENCE_TIMEOUT = 1.0  # faster silence timeout after barge-in (customer wants quick reply)
@@ -1262,7 +1262,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             # Stage 3: Speaker Verification
                             if speaker_verifier.is_enrolled:
                                 is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
-                                if not is_caller or speaker_similarity < 0.65:
+                                if not is_caller:
                                     barge_in_confirm_start = None
                                     buffer.clear()
                                     vad_buffer.clear()
