@@ -50,14 +50,15 @@ GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
 GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
-# Deepgram ASR Configuration (⚡ ~250ms Hindi STT vs 1-3s Gemini)
+# Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
-if DEEPGRAM_API_KEY:
+if SARVAM_API_KEY:
+    print(f"[CONFIG] ⚡ Sarvam AI ASR enabled (Saaras v3, best Hindi accuracy)")
+elif DEEPGRAM_API_KEY:
     print(f"[CONFIG] ⚡ Deepgram ASR enabled (Nova-2, ~250ms latency)")
 else:
-    print(f"[CONFIG] ⚠️ DEEPGRAM_API_KEY not set, using Gemini Flash ASR (slower, 1-3s)")
-    print(f"[CONFIG]   → Set DEEPGRAM_API_KEY env var for 5x faster transcription")
-    print(f"[CONFIG]   → Get $200 free credits at https://deepgram.com")
+    print(f"[CONFIG] ⚠️ No STT API key set, using Gemini Flash ASR (slower, 1-3s)")
 
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16kHz (High Quality)
@@ -474,6 +475,43 @@ def trim_history(history: List[Dict]) -> List[Dict]:
 
 # ───────── ASR (Speech-to-Text) ─────────
 
+async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
+    """Transcribe audio using Sarvam AI Saaras v3 (best Hindi accuracy, ~250ms)."""
+    import io
+    url = "https://api.sarvam.ai/speech-to-text"
+    headers = {
+        "api-subscription-key": SARVAM_API_KEY,
+    }
+    try:
+        # Sarvam uses multipart form upload
+        files = {
+            "file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav"),
+        }
+        data = {
+            "model": "saaras:v3",
+            "language_code": "hi-IN",
+            "mode": "transcribe",
+        }
+        r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
+        if r.status_code != 200:
+            print(f"[SARVAM] HTTP {r.status_code}: {r.text[:300]}")
+            return None
+        result = r.json()
+        transcript = result.get("transcript", "").strip()
+        lang = result.get("language_code", "unknown")
+        if transcript:
+            print(f"[SARVAM] ✅ Transcript ({lang}): '{transcript[:80]}'")
+            return transcript
+        print(f"[SARVAM] Empty transcript returned")
+        return None
+    except asyncio.TimeoutError:
+        print("[SARVAM] Timeout")
+        return None
+    except Exception as e:
+        print(f"[SARVAM Error] {e}")
+        return None
+
+
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
     """Transcribe audio using Deepgram Nova-2 (~250ms for Hindi)."""
     url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true"
@@ -585,17 +623,23 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     wav_bytes = wav_header(trimmed_pcm)
     text = None
 
-    # Try Deepgram first (⚡ ~250ms), fall back to Gemini (1-3s)
-    if DEEPGRAM_API_KEY:
-        print(f"[ASR] Using Deepgram Nova-2...")
+    # Priority: Sarvam AI (best Hindi) → Deepgram (fast) → Gemini (fallback)
+    if SARVAM_API_KEY:
+        print(f"[ASR] Using Sarvam AI Saaras v3...")
+        text = await _sarvam_transcribe(client, wav_bytes)
+        if text:
+            elapsed = time.time() - start_time
+            print(f"[ASR] ⚡ Sarvam result in {elapsed:.2f}s")
+    
+    if not text and DEEPGRAM_API_KEY:
+        print(f"[ASR] Trying Deepgram Nova-2...")
         text = await _deepgram_transcribe(client, wav_bytes)
         if text:
             elapsed = time.time() - start_time
             print(f"[ASR] ⚡ Deepgram result in {elapsed:.2f}s")
-        else:
-            print(f"[ASR] Deepgram failed, falling back to Gemini...")
-            text = await _gemini_transcribe(client, trimmed_pcm)
-    else:
+    
+    if not text:
+        print(f"[ASR] Falling back to Gemini Flash...")
         text = await _gemini_transcribe(client, trimmed_pcm)
 
     if not text:
