@@ -50,9 +50,114 @@ GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
 GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
-# Callex Voice API Key (dedicated TTS key for ElevenLabs)
-CALLEX_VOICE_API_KEY = os.getenv("CALLEX_VOICE_API_KEY", "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c")
-print(f"[CONFIG] TTS: Using Callex Voice API key for ElevenLabs Flash v2.5")
+# ───────── Callex Voice Key Pool (Production Failover) ─────────
+class CallexVoiceKeyManager:
+    """Production-grade API key pool with automatic failover.
+    
+    Manages multiple Callex Voice API keys. If one key's credits are
+    exhausted (401/402) or rate-limited (429), the manager instantly
+    rotates to the next healthy key — zero downtime for the caller.
+    """
+    # HTTP codes that indicate a key is exhausted or rate-limited
+    EXHAUSTED_CODES = {401, 402, 403}
+    RATE_LIMITED_CODES = {429}
+    RATE_LIMIT_COOLDOWN = 60  # seconds before retrying a rate-limited key
+
+    def __init__(self, keys: list):
+        self._keys = [k for k in keys if k]  # filter out empty strings
+        self._healthy = set(range(len(self._keys)))  # indices of healthy keys
+        self._dead = set()  # indices of keys with exhausted credits (permanent until restart)
+        self._cooldown = {}  # index -> timestamp when key can be retried
+        self._current_idx = 0
+        self._lock = asyncio.Lock() if 'asyncio' in dir() else None
+        print(f"[CALLEX VOICE POOL] ✅ {len(self._keys)} keys loaded, all healthy")
+
+    def _rotate_index(self):
+        """Move to the next healthy key using round-robin."""
+        start = self._current_idx
+        for _ in range(len(self._keys)):
+            self._current_idx = (self._current_idx + 1) % len(self._keys)
+            # Check if rate-limited key has cooled down
+            if self._current_idx in self._cooldown:
+                if time.time() >= self._cooldown[self._current_idx]:
+                    del self._cooldown[self._current_idx]
+                    self._healthy.add(self._current_idx)
+                    print(f"[CALLEX VOICE POOL] 🔄 Key #{self._current_idx + 1} recovered from cooldown")
+            if self._current_idx in self._healthy:
+                return
+        # If we looped all the way around, no healthy keys left
+        self._current_idx = start
+
+    def get_key(self) -> str:
+        """Get the current healthy API key."""
+        # First, check if any cooled-down keys can be recovered
+        now = time.time()
+        for idx in list(self._cooldown.keys()):
+            if now >= self._cooldown[idx]:
+                del self._cooldown[idx]
+                self._healthy.add(idx)
+                print(f"[CALLEX VOICE POOL] 🔄 Key #{idx + 1} recovered from cooldown")
+
+        if not self._healthy:
+            # All keys are exhausted — last resort: try the first key anyway
+            print("[CALLEX VOICE POOL] ⚠️ ALL keys exhausted! Attempting first key as last resort...")
+            return self._keys[0] if self._keys else ""
+        
+        if self._current_idx not in self._healthy:
+            self._rotate_index()
+        return self._keys[self._current_idx]
+
+    def report_failure(self, failed_key: str, status_code: int):
+        """Report a key failure. Marks it as dead or rate-limited depending on the HTTP code."""
+        try:
+            idx = self._keys.index(failed_key)
+        except ValueError:
+            return  # Unknown key, ignore
+
+        if status_code in self.EXHAUSTED_CODES:
+            # Credits exhausted — mark as permanently dead until server restart
+            self._healthy.discard(idx)
+            self._dead.add(idx)
+            remaining = len(self._healthy)
+            print(f"[CALLEX VOICE POOL] ❌ Key #{idx + 1} EXHAUSTED (HTTP {status_code}). {remaining} keys remaining.")
+        elif status_code in self.RATE_LIMITED_CODES:
+            # Rate limited — put on cooldown
+            self._healthy.discard(idx)
+            self._cooldown[idx] = time.time() + self.RATE_LIMIT_COOLDOWN
+            remaining = len(self._healthy)
+            print(f"[CALLEX VOICE POOL] ⏳ Key #{idx + 1} rate-limited (HTTP 429). Cooldown {self.RATE_LIMIT_COOLDOWN}s. {remaining} keys remaining.")
+        
+        # Auto-rotate to next healthy key
+        if self._healthy:
+            self._rotate_index()
+            print(f"[CALLEX VOICE POOL] ➡️ Switched to Key #{self._current_idx + 1}")
+
+    def get_all_keys_for_retry(self, exclude_key: str = None) -> list:
+        """Get all remaining healthy keys for retry attempts (excluding the one that just failed)."""
+        keys = []
+        for idx in range(len(self._keys)):
+            if idx in self._healthy and self._keys[idx] != exclude_key:
+                keys.append(self._keys[idx])
+        return keys
+
+    @property
+    def pool_status(self) -> str:
+        h = len(self._healthy)
+        d = len(self._dead)
+        c = len(self._cooldown)
+        return f"healthy={h}, exhausted={d}, cooldown={c}, total={len(self._keys)}"
+
+
+# Load 5 Callex Voice API keys from environment
+_DEFAULT_KEY = "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c"
+_voice_keys = [
+    os.getenv("CALLEX_VOICE_KEY_1", _DEFAULT_KEY),
+    os.getenv("CALLEX_VOICE_KEY_2", ""),
+    os.getenv("CALLEX_VOICE_KEY_3", ""),
+    os.getenv("CALLEX_VOICE_KEY_4", ""),
+    os.getenv("CALLEX_VOICE_KEY_5", ""),
+]
+voice_key_manager = CallexVoiceKeyManager(_voice_keys)
 
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")
@@ -817,7 +922,12 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
 # ───────── TTS (Text-to-Speech) Streaming ─────────
 
 async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False) -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio. Automatically falls back to default voice on error."""
+    """Stream TTS audio with automatic key-pool failover.
+    
+    Uses voice_key_manager to cycle through healthy API keys.
+    If a key fails (credits exhausted, rate limited), it instantly
+    retries with the next healthy key — zero downtime for the caller.
+    """
     resolved_voice_id = voice_id or GENARTML_VOICE_ID
     
     # Auto-translate legacy/OpenAI voice names to Callex Voice IDs
@@ -843,10 +953,6 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
     start_time = time.time()
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
-    headers = {
-        "xi-api-key": CALLEX_VOICE_API_KEY,
-        "Content-Type": "application/json"
-    }
     payload = {
         "text": text,
         "model_id": "eleven_flash_v2_5",
@@ -859,52 +965,79 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
         }
     }
 
-    try:
-        async with client.stream("POST", url, json=payload, headers=headers, timeout=15.0) as response:
-            if response.status_code != 200:
-                error_text = await response.aread()
-                print(f"[Callex Voice Engine Error] HTTP {response.status_code}: {error_text[:200]}")
+    # Build the list of keys to try: current key first, then all other healthy keys
+    primary_key = voice_key_manager.get_key()
+    keys_to_try = [primary_key] + voice_key_manager.get_all_keys_for_retry(exclude_key=primary_key)
+    
+    for attempt, api_key in enumerate(keys_to_try):
+        headers = {
+            "xi-api-key": api_key,
+            "Content-Type": "application/json"
+        }
+        try:
+            async with client.stream("POST", url, json=payload, headers=headers, timeout=15.0) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    print(f"[Callex Voice Engine] ⚠️ Key #{attempt + 1} failed (HTTP {response.status_code}): {error_text[:200]}")
+                    
+                    # Report the failure to the key manager (marks dead or cooldown)
+                    voice_key_manager.report_failure(api_key, response.status_code)
+                    
+                    # If there are more keys to try, continue the loop silently
+                    if attempt < len(keys_to_try) - 1:
+                        print(f"[Callex Voice Engine] 🔄 Retrying with next key... (pool: {voice_key_manager.pool_status})")
+                        continue
+                    
+                    # All keys exhausted — try voice fallback as last resort
+                    if not is_fallback and GENARTML_VOICE_ID:
+                        print(f"[Callex Voice Engine] 🔄 All keys failed. Trying fallback voice...")
+                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                            yield fallback_chunk
+                        return
+                    else:
+                        print("[Callex Voice Engine] ❌ All keys and fallback exhausted. Returning silence.")
+                        return
                 
-                # Production Fallback Logic
-                if not is_fallback and GENARTML_VOICE_ID:
-                    print(f"[Callex Voice Engine] 🔄 Auto-recovering using default Callex Voice...")
-                    # Recursively call with the fallback flag to guarantee audio is generated
-                    async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
-                        yield fallback_chunk
-                    return
-                else:
-                    print("[Callex Voice Engine Error] Fallback also failed. Returning silence.")
-                    return
-            
-            first_chunk = True
-            buffer = b""
-            # Stream exactly 3.125s chunks (100000 bytes = 50000 samples @ 16bit) to prevent voice breaking for new agents
-            CHUNK_SIZE = 100000
-            
-            async for chunk in response.aiter_bytes():
-                if first_chunk:
-                    print(f"[Callex Voice Engine First Byte]: {time.time() - start_time:.2f}s")
-                    first_chunk = False
-                if chunk:
-                    buffer += chunk
-                    while len(buffer) >= CHUNK_SIZE:
-                        yield buffer[:CHUNK_SIZE]
-                        buffer = buffer[CHUNK_SIZE:]
-            if buffer and len(buffer) > 0:
-                yield buffer
-    except asyncio.TimeoutError:
-        print("[Callex Voice Engine] Stream timeout")
-        if not is_fallback:
-            async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
-                yield fallback_chunk
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"[Callex Voice Engine Error]: {e}")
-        if not is_fallback:
-            async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
-                yield fallback_chunk
-    print(f"[Callex Voice Engine] Stream complete ({time.time() - start_time:.2f}s)")
+                # ✅ Success — stream the audio
+                first_chunk = True
+                buffer = b""
+                CHUNK_SIZE = 100000  # 3.125s chunks (50000 samples @ 16bit)
+                
+                async for chunk in response.aiter_bytes():
+                    if first_chunk:
+                        print(f"[Callex Voice Engine] ⚡ First byte in {time.time() - start_time:.2f}s (key #{attempt + 1})")
+                        first_chunk = False
+                    if chunk:
+                        buffer += chunk
+                        while len(buffer) >= CHUNK_SIZE:
+                            yield buffer[:CHUNK_SIZE]
+                            buffer = buffer[CHUNK_SIZE:]
+                if buffer and len(buffer) > 0:
+                    yield buffer
+                
+                # Success — break out of the retry loop
+                print(f"[Callex Voice Engine] ✅ Stream complete ({time.time() - start_time:.2f}s)")
+                return
+                
+        except asyncio.TimeoutError:
+            print(f"[Callex Voice Engine] ⏱️ Timeout on key #{attempt + 1}")
+            voice_key_manager.report_failure(api_key, 429)  # Treat timeout like rate-limit
+            if attempt < len(keys_to_try) - 1:
+                continue
+            if not is_fallback:
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                    yield fallback_chunk
+                return
+        except Exception as e:
+            print(f"[Callex Voice Engine] ❌ Error on key #{attempt + 1}: {e}")
+            if attempt < len(keys_to_try) - 1:
+                continue
+            if not is_fallback:
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                    yield fallback_chunk
+                return
+    
+    print(f"[Callex Voice Engine] Stream ended ({time.time() - start_time:.2f}s)")
 
 
 # ───────── WEBSOCKET HANDLERS ─────────
