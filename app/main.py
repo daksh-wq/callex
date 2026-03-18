@@ -55,8 +55,8 @@ SAMPLE_RATE = 16000  # 16kHz (High Quality)
 MAX_BUFFER_SECONDS = 5
 
 # VAD Configuration (from config)
-MIN_SPEECH_DURATION = bot_config.vad.min_speech_duration
-SILENCE_TIMEOUT = bot_config.vad.silence_timeout
+MIN_SPEECH_DURATION = max(0.4, bot_config.vad.min_speech_duration)
+SILENCE_TIMEOUT = max(2.0, bot_config.vad.silence_timeout)
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -1136,19 +1136,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     buffer.extend(chunk)
                     vad_buffer.extend(filtered_chunk)
-
-                    if speaking and now - last_voice > SILENCE_TIMEOUT:
-                        speaking = False
-                        samples = np.array(buffer, dtype=np.float32) / 32767.0
-                        if len(samples) >= MIN_SPEECH_DURATION * SAMPLE_RATE:
-                            print(f"[VAD] 🎤 Speech ended ({len(samples)/SAMPLE_RATE:.2f}s total)")
-                            if current_task is None or current_task.done():
-                                current_task = asyncio.create_task(process_audio(samples))
-                        else:
-                            print(f"[VAD] Speech too short, ignored")
-                        buffer.clear()
-                        vad_buffer.clear()
-                        continue
+                    last_voice = now  # Keep silence timer fresh while customer speaks
 
                     if audio_db > INTERRUPTION_THRESHOLD_DB:
                         if not speaking:
