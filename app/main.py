@@ -51,7 +51,7 @@ GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d17
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
 # Callex Voice API Key (dedicated TTS key for ElevenLabs)
-CALLEX_VOICE_API_KEY = os.getenv("CALLEX_VOICE_API_KEY", "70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee")
+CALLEX_VOICE_API_KEY = os.getenv("CALLEX_VOICE_API_KEY", "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c")
 print(f"[CONFIG] TTS: Using Callex Voice API key for ElevenLabs Flash v2.5")
 
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)

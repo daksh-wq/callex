@@ -208,7 +208,7 @@ router.post('/tts-preview', async (req, res) => {
             method: 'POST',
             headers: {
                 'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee'
+                'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c'
             },
             body: JSON.stringify(ttsPayload)
         });
@@ -220,7 +220,7 @@ router.post('/tts-preview', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                    'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee'
+                    'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c'
                 },
                 body: JSON.stringify(ttsPayload)
             });
@@ -249,7 +249,7 @@ router.post('/clone-voice', upload.single('audio'), async (req, res) => {
 
         const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
             method: 'POST',
-            headers: { 'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee' },
+            headers: { 'xi-api-key': process.env.CALLEX_VOICE_API_KEY || '030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c' },
             body: formData
         });
         if (!response.ok) { const errText = await response.text(); throw new Error(`Voice Engine Error: ${response.status} ${errText}`); }
