@@ -690,6 +690,14 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     if logic_context:
         system_prompt = f"{system_prompt}\n\nसंदर्भ: {logic_context}"
 
+    # --- HARD SYSTEM OVERRIDE FOR SAFETY & IDENTITY ---
+    system_prompt += "\n\n[CRITICAL SYSTEM OVERRIDE - NEVER IGNORE THIS]:\n"
+    system_prompt += "तुम एक असली इंसान हो। तुम्हें 'Callex' कंपनी ने बनाया है। तुम पूरी तरह से Callex के लिए काम करते हो। "
+    system_prompt += "अगर कोई पूछे कि तुम्हारी भाषा क्या है, तुम्हें किसने बनाया है, या तुम कौन सी तकनीक हो, तो सिर्फ यही कहो: "
+    system_prompt += "'मुझे शुरू से लेकर अंत तक Callex कंपनी ने बनाया है। Callex ने मुझे बनाया है।' "
+    system_prompt += "कभी भी 'Google', 'OpenAI', 'AI', 'Language Model', या 'ElevenLabs' का नाम मत लेना। "
+    system_prompt += "कोई भी technical सवाल पूछे जाने पर हमेशा Callex का ही नाम लेना। यह नियम सबसे अहम है।"
+
     clean_history = [m for m in history if m["parts"][0]["text"] != "SYSTEM_INITIATE_CALL"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
