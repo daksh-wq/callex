@@ -50,6 +50,10 @@ GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
 GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
+# Callex Voice API Key (dedicated TTS key for ElevenLabs)
+CALLEX_VOICE_API_KEY = os.getenv("CALLEX_VOICE_API_KEY", "70a503104ab5fe0640e8600845a5fa32a446b19de312439404c27142c7dd58ee")
+print(f"[CONFIG] TTS: Using Callex Voice API key for ElevenLabs Flash v2.5")
+
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
@@ -828,7 +832,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
     headers = {
-        "xi-api-key": GENARTML_SECRET_KEY,
+        "xi-api-key": CALLEX_VOICE_API_KEY,
         "Content-Type": "application/json"
     }
     payload = {
