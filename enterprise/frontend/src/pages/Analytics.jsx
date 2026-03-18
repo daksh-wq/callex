@@ -214,17 +214,29 @@ export default function Analytics() {
                                                                 <MessageSquare size={14} /> Transcript
                                                             </h4>
                                                             <div className="h-48 overflow-y-auto text-sm text-gray-700 leading-relaxed pr-2 space-y-3">
-                                                                {call.transcript ? (
-                                                                    call.transcript.split('\\n').map((line, i) => {
-                                                                        const isBot = line.startsWith('Agent:');
+                                                                {call.transcriptMessages && call.transcriptMessages.length > 0 ? (
+                                                                    call.transcriptMessages.map((msg, i) => {
+                                                                        const isBot = msg.role === 'ai' || msg.role === 'model' || msg.role === 'bot' || msg.role === 'agent';
                                                                         return (
                                                                             <div key={i} className={`p-2 rounded-lg ${isBot ? 'bg-orange-50/50 border border-orange-100/30' : 'bg-gray-50'}`}>
                                                                                 <span className={`font-semibold text-xs mr-2 ${isBot ? 'text-orange-600' : 'text-blue-600'}`}>
-                                                                                    {isBot ? 'AI' : 'User'}
+                                                                                    {isBot ? 'AI' : 'Customer'}
                                                                                 </span>
-                                                                                {line.replace(/^(Agent|User): /, '')}
+                                                                                {msg.text}
                                                                             </div>
-                                                                        )
+                                                                        );
+                                                                    })
+                                                                ) : call.transcript ? (
+                                                                    call.transcript.split('\n').filter(l => l.trim()).map((line, i) => {
+                                                                        const isBot = line.startsWith('AI:') || line.startsWith('Agent:') || line.startsWith('Bot:');
+                                                                        return (
+                                                                            <div key={i} className={`p-2 rounded-lg ${isBot ? 'bg-orange-50/50 border border-orange-100/30' : 'bg-gray-50'}`}>
+                                                                                <span className={`font-semibold text-xs mr-2 ${isBot ? 'text-orange-600' : 'text-blue-600'}`}>
+                                                                                    {isBot ? 'AI' : 'Customer'}
+                                                                                </span>
+                                                                                {line.replace(/^(AI|Agent|Bot|Customer|User):\s*/, '')}
+                                                                            </div>
+                                                                        );
                                                                     })
                                                                 ) : <span className="text-gray-400 italic">No transcript available.</span>}
                                                             </div>

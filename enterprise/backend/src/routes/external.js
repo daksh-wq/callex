@@ -221,9 +221,13 @@ router.get('/calls', async (req, res) => {
             status: c.status || 'unknown',
             duration: c.duration || 0,
             sentiment: c.sentiment || 'neutral',
+            transcript: c.transcript || '',
+            transcriptMessages: c.transcriptMessages || [],
             hasTranscript: !!(c.transcript && c.transcript.length > 0),
             hasRecording: !!(c.recordingUrl || c.recordingFilename),
             recordingUrl: c.recordingUrl || c.recordingFilename || null,
+            summary: c.summary || null,
+            outcome: c.outcome || null,
             startedAt: c.startedAt,
             endedAt: c.endedAt || null,
         }));
@@ -290,11 +294,29 @@ router.get('/calls/:id/transcript', async (req, res) => {
         const call = docToObj(doc);
         if (!call) return res.status(404).json({ error: 'Call not found' });
 
+        // Ownership check
+        const userId = req.apiUser.userId;
+        const isSuperAdmin = userId === 'superadmin-hardcoded-id';
+        let owned = isSuperAdmin || call.userId === userId;
+        if (!owned && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            owned = agentDoc.exists && agentDoc.data().userId === userId;
+        }
+        if (!owned) return res.status(404).json({ error: 'Call not found' });
+
+        const messages = call.transcriptMessages || [];
+
         res.json({
             callId: call.id,
+            phoneNumber: call.phoneNumber || '',
+            agentId: call.agentId || '',
+            agentName: call.agentName || '',
+            duration: call.duration || 0,
             transcript: call.transcript || '',
-            messages: call.transcriptMessages || [],
-            messageCount: (call.transcriptMessages || []).length,
+            messages: messages,
+            messageCount: messages.length,
+            startedAt: call.startedAt,
+            endedAt: call.endedAt || null,
         });
     } catch (e) {
         console.error('[EXTERNAL API ERROR]', e);
@@ -415,6 +437,8 @@ router.get('/supervisor/calls', async (req, res) => {
                 agentName: call.agentName || 'Unknown Agent',
                 status: call.status || 'active',
                 sentiment: call.sentiment || 'neutral',
+                transcript: call.transcript || '',
+                transcriptMessages: call.transcriptMessages || [],
                 startedAt: call.startedAt
             });
         }

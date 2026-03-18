@@ -80,7 +80,32 @@ router.post('/calls/:id/barge', async (req, res) => {
 router.get('/calls/:id/transcript', async (req, res) => {
     const doc = await db.collection('calls').doc(req.params.id).get();
     const call = docToObj(doc);
-    res.json(call ? { transcript: call.transcript || '', sentiment: call.sentiment || 'neutral', phoneNumber: call.phoneNumber } : { transcript: '', sentiment: 'neutral' });
+    if (!call) return res.json({ transcript: '', transcriptMessages: [], messageCount: 0, sentiment: 'neutral' });
+
+    const messages = call.transcriptMessages || [];
+
+    // Get agent name if not present
+    let agentName = call.agentName || '';
+    if (!agentName && call.agentId) {
+        try {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            if (agentDoc.exists) agentName = agentDoc.data().name || '';
+        } catch (e) { /* ignore */ }
+    }
+
+    res.json({
+        callId: call.id,
+        phoneNumber: call.phoneNumber || '',
+        agentId: call.agentId || '',
+        agentName,
+        duration: call.duration || 0,
+        transcript: call.transcript || '',
+        transcriptMessages: messages,
+        messageCount: messages.length,
+        sentiment: call.sentiment || 'neutral',
+        startedAt: call.startedAt,
+        endedAt: call.endedAt || null,
+    });
 });
 
 // PATCH /api/supervisor/calls/:id/sentiment

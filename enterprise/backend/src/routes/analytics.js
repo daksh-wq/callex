@@ -96,7 +96,7 @@ router.get('/calls', async (req, res) => {
         const total = calls.length;
         const paginated = calls.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-        // Enrich with agent name
+        // Enrich with agent name and ensure consistent transcript structure
         for (const call of paginated) {
             if (call.agentId && !call.agentName) {
                 try {
@@ -104,6 +104,12 @@ router.get('/calls', async (req, res) => {
                     call.agentName = agentDoc.exists ? agentDoc.data().name : 'Unknown';
                 } catch (e) { /* ignore */ }
             }
+            // Ensure transcript fields are always present and properly formatted
+            call.transcript = call.transcript || '';
+            call.transcriptMessages = call.transcriptMessages || [];
+            call.summary = call.summary || null;
+            call.outcome = call.outcome || null;
+            call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
         }
 
         res.json({ calls: paginated, total, pagination: { page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
@@ -135,7 +141,16 @@ router.get('/calls/:id', async (req, res) => {
         if (call.agentId) {
             const agentDoc = await db.collection('agents').doc(call.agentId).get();
             call.agent = agentDoc.exists ? { name: agentDoc.data().name } : null;
+            if (!call.agentName && agentDoc.exists) call.agentName = agentDoc.data().name;
         }
+
+        // Ensure all transcript fields are present
+        call.transcript = call.transcript || '';
+        call.transcriptMessages = call.transcriptMessages || [];
+        call.summary = call.summary || null;
+        call.outcome = call.outcome || null;
+        call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
+
         res.json(call);
     } catch (e) {
         console.error('[ANALYTICS] Call detail error:', e);
