@@ -228,6 +228,8 @@ router.get('/calls', async (req, res) => {
             recordingUrl: c.recordingUrl || c.recordingFilename || null,
             summary: c.summary || null,
             outcome: c.outcome || null,
+            notes: c.notes || null,
+            agreed: c.agreed || false,
             startedAt: c.startedAt,
             endedAt: c.endedAt || null,
         }));
@@ -278,6 +280,8 @@ router.get('/calls/:id', async (req, res) => {
             recordingUrl: call.recordingUrl || call.recordingFilename || null,
             summary: call.summary || null,
             outcome: call.outcome || null,
+            notes: call.notes || null,
+            agreed: call.agreed || false,
             startedAt: call.startedAt,
             endedAt: call.endedAt || null,
         });

@@ -109,6 +109,9 @@ router.get('/calls', async (req, res) => {
             call.transcriptMessages = call.transcriptMessages || [];
             call.summary = call.summary || null;
             call.outcome = call.outcome || null;
+            call.sentiment = call.sentiment || 'neutral';
+            call.notes = call.notes || null;
+            call.agreed = call.agreed || false;
             call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
         }
 
@@ -149,6 +152,9 @@ router.get('/calls/:id', async (req, res) => {
         call.transcriptMessages = call.transcriptMessages || [];
         call.summary = call.summary || null;
         call.outcome = call.outcome || null;
+        call.sentiment = call.sentiment || 'neutral';
+        call.notes = call.notes || null;
+        call.agreed = call.agreed || false;
         call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
 
         res.json(call);

@@ -877,7 +877,9 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
         "agreed": true/false,
         "commitment": "today" / "tomorrow" / "later" / "refused",
         "disposition": "Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear",
-        "notes": "Short summary of why"
+        "sentiment": "positive" / "negative" / "neutral",
+        "summary": "2-3 sentence summary of the entire call conversation",
+        "notes": "Short summary of why the disposition was assigned"
     }
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
@@ -909,6 +911,8 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
                     "agreed": result.get("agreed"),
                     "commitment_date": comm_date,
                     "disposition": result.get("disposition", "Unclear"),
+                    "sentiment": result.get("sentiment", "neutral"),
+                    "summary": result.get("summary", ""),
                     "notes": result.get("notes", "")
                 }
     except Exception as e:
@@ -1593,7 +1597,11 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             'status': 'completed',
                             'endedAt': fs.SERVER_TIMESTAMP,
                             'duration': call_duration,
-                            'sentiment': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'neutral',
+                            'sentiment': ai_outcome.get('sentiment', 'neutral') if ai_outcome else 'neutral',
+                            'summary': ai_outcome.get('summary', '') if ai_outcome else '',
+                            'outcome': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
+                            'notes': ai_outcome.get('notes', '') if ai_outcome else '',
+                            'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
                             'userId': agent_config.get('userId', ''),  # ensure userId is always set
                         }
 
