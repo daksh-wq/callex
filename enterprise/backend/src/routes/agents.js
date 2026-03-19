@@ -31,7 +31,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/agents
-router.post('/', async (req, res) => {
+router.post('/', upload.single('file'), async (req, res) => {
     const { name, description, systemPrompt, openingLine, voice, language, sttEngine, llmModel,
         fillerPhrases, prosodyRate, prosodyPitch, ipaLexicon, tools, topK, similarityThresh,
         fallbackMessage, profanityFilter, topicRestriction, backgroundAmbience, speakingStyle,
@@ -94,6 +94,72 @@ router.post('/', async (req, res) => {
         createdAt: new Date(),
         updatedAt: new Date(),
     };
+
+    // If file is uploaded during creation, process knowledge immediately
+    if (req.file) {
+        const { buffer, mimetype, originalname, size } = req.file;
+        const GEMINI_API_KEY = process.env.GENARTML_SERVER_KEY || process.env.GEMINI_API_KEY;
+        const ext = '.' + originalname.split('.').pop().toLowerCase();
+        
+        if (GEMINI_API_KEY) {
+            const { GoogleGenAI } = await import('@google/genai');
+            const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+            const isTextFile = mimetype === 'text/plain' || mimetype === 'text/csv' || ext === '.csv' || ext === '.txt';
+            let knowledgeText = '';
+
+            try {
+                if (isTextFile) {
+                    const rawText = buffer.toString('utf-8');
+                    const response = await genAI.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [{ role: 'user', parts: [{ text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nContent:\n${rawText}` }] }]
+                    });
+                    knowledgeText = response.text;
+                } else {
+                    const base64Data = buffer.toString('base64');
+                    let geminiMime = mimetype;
+                    if (ext === '.xlsx') geminiMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+                    if (ext === '.xls') geminiMime = 'application/vnd.ms-excel';
+                    if (ext === '.pdf') geminiMime = 'application/pdf';
+
+                    const response = await genAI.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [{ role: 'user', parts: [
+                            { inlineData: { mimeType: geminiMime, data: base64Data } },
+                            { text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nRules: Extract everything. Convert pricing to spoken format. Keep the original language.` }
+                        ] }]
+                    });
+                    knowledgeText = response.text;
+                }
+
+                if (knowledgeText && knowledgeText.length > 50) {
+                    const topicsMatch = knowledgeText.match(/TOPICS COVERED:\s*\n?(.*?)(?:\n\n|\nTOTAL|\nSAMPLE)/s);
+                    const totalMatch = knowledgeText.match(/TOTAL ITEMS:\s*\n?(\d+)/);
+                    const sampleMatch = knowledgeText.match(/SAMPLE QUESTIONS:\s*\n?([\s\S]*?)$/);
+                    const knowledgeMatch = knowledgeText.match(/KNOWLEDGE BASE:\s*\n?([\s\S]*?)(?:\nTOPICS COVERED)/);
+
+                    data.knowledgeTopics = topicsMatch ? topicsMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean) : [];
+                    data.knowledgeBase = knowledgeMatch ? knowledgeMatch[1].trim() : knowledgeText;
+                    
+                    data.trainingSummary = {
+                        agentName: data.name,
+                        purpose: data.description || 'General purpose calling agent',
+                        openingLine: data.openingLine || '',
+                        knowledgeTopics: data.knowledgeTopics,
+                        totalFaqs: totalMatch ? parseInt(totalMatch[1]) : 0,
+                        sampleQuestions: sampleMatch ? sampleMatch[1].trim().split('\n').map(q => q.replace(/^[-\d.)\s]+/, '').trim()).filter(q => q.length > 5).slice(0, 5) : [],
+                        lastTrainedAt: new Date().toISOString(),
+                        lastTrainedFile: originalname,
+                        hasSystemPrompt: !!(data.systemPrompt && data.systemPrompt.length > 10),
+                        hasKnowledgeBase: true,
+                    };
+                }
+            } catch (err) {
+                console.error('[KNOWLEDGE EXTRACTION ERROR]', err);
+            }
+        }
+    }
 
     const ref = await db.collection('agents').add(data);
     const agent = { id: ref.id, ...data };
