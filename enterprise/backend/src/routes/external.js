@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { db, docToObj, queryToArray } from '../firebase.js';
 import { requireApiKey } from '../middleware/auth.js';
+import multer from 'multer';
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }); // 20MB max
 router.use(requireApiKey);
 
 // GET /v1/agents
@@ -147,6 +149,258 @@ router.delete('/agents/:id', async (req, res) => {
     } catch (e) {
         console.error('[EXTERNAL API ERROR]', e);
         res.status(500).json({ error: 'Failed to delete agent' });
+    }
+});
+
+// ═══════════════════════════════════════════════
+// KNOWLEDGE UPLOAD (Agent Training from PDF/Excel/CSV/TXT)
+// ═══════════════════════════════════════════════
+
+/**
+ * Helper: Extract raw text from uploaded file buffer based on MIME type.
+ * Supports PDF (via Gemini vision), Excel, CSV, and plain text.
+ */
+async function extractFileText(fileBuffer, mimetype, originalname) {
+    const textContent = [];
+
+    // ── Plain Text / CSV ──
+    if (mimetype === 'text/plain' || mimetype === 'text/csv' || originalname.endsWith('.csv') || originalname.endsWith('.txt')) {
+        return fileBuffer.toString('utf-8');
+    }
+
+    // ── Excel (.xlsx, .xls) ──
+    if (mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        mimetype === 'application/vnd.ms-excel' ||
+        originalname.endsWith('.xlsx') || originalname.endsWith('.xls')) {
+        // Parse Excel using a simple row-by-row extraction
+        // We'll send the base64 to Gemini for intelligent parsing
+        return null; // Signal to use Gemini vision for Excel too
+    }
+
+    // ── PDF ──
+    if (mimetype === 'application/pdf' || originalname.endsWith('.pdf')) {
+        return null; // Signal to use Gemini vision
+    }
+
+    // ── Unsupported ──
+    return null;
+}
+
+/**
+ * Use Gemini to intelligently parse a document (PDF/Excel/image) into structured knowledge.
+ */
+async function parseDocumentWithGemini(fileBuffer, mimetype, originalname, apiKey) {
+    const { GoogleGenAI } = await import('@google/genai');
+    const genAI = new GoogleGenAI({ apiKey });
+
+    const base64Data = fileBuffer.toString('base64');
+
+    // Map common mimetypes for Gemini
+    let geminiMime = mimetype;
+    if (originalname.endsWith('.xlsx')) geminiMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (originalname.endsWith('.xls')) geminiMime = 'application/vnd.ms-excel';
+    if (originalname.endsWith('.csv')) geminiMime = 'text/csv';
+
+    const response = await genAI.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [{
+            role: 'user',
+            parts: [
+                {
+                    inlineData: {
+                        mimeType: geminiMime,
+                        data: base64Data
+                    }
+                },
+                {
+                    text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information from this document.
+
+Output a clean, structured knowledge base in this EXACT format:
+
+KNOWLEDGE BASE:
+[Write all extracted information as clear Q&A pairs, facts, pricing details, product info, policies, etc. Organize by topic. Use simple language that a phone agent can speak naturally.]
+
+TOPICS COVERED:
+[Comma-separated list of main topics found]
+
+TOTAL ITEMS:
+[Number of distinct knowledge items/FAQs extracted]
+
+SAMPLE QUESTIONS:
+[List 5 example questions a customer might ask that this knowledge can answer]
+
+Rules:
+- Extract EVERY piece of information, don't skip anything
+- Convert tables/charts into readable text
+- Convert pricing into spoken format (e.g., "twenty five lakh rupees" not "₹25L")
+- If in Hindi, keep it in Hindi. If English, keep English. If mixed, keep mixed.
+- Be thorough — this knowledge will be the agent's entire brain for calls`
+                }
+            ]
+        }]
+    });
+
+    return response.text;
+}
+
+// POST /v1/agents/:id/knowledge — Upload document to train agent
+router.post('/agents/:id/knowledge', upload.single('file'), async (req, res) => {
+    try {
+        // 1. Verify agent ownership
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.apiUser.userId) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        // 2. Validate file
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded. Send a file with field name "file".' });
+        }
+
+        const { buffer, mimetype, originalname, size } = req.file;
+        const allowedTypes = [
+            'application/pdf',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel',
+            'text/csv', 'text/plain',
+        ];
+        const allowedExtensions = ['.pdf', '.xlsx', '.xls', '.csv', '.txt'];
+        const ext = '.' + originalname.split('.').pop().toLowerCase();
+
+        if (!allowedTypes.includes(mimetype) && !allowedExtensions.includes(ext)) {
+            return res.status(400).json({
+                error: 'Unsupported file type. Allowed: PDF, Excel (.xlsx/.xls), CSV, TXT',
+                received: { mimetype, extension: ext }
+            });
+        }
+
+        console.log(`[KNOWLEDGE] Processing ${originalname} (${(size / 1024).toFixed(1)}KB) for agent ${req.params.id}`);
+
+        // 3. Extract text content
+        const GEMINI_API_KEY = process.env.GENARTML_SERVER_KEY || process.env.GEMINI_API_KEY;
+        if (!GEMINI_API_KEY) {
+            return res.status(500).json({ error: 'Server configuration error: AI API key not set' });
+        }
+
+        let knowledgeText = '';
+        let rawText = await extractFileText(buffer, mimetype, originalname);
+
+        if (rawText) {
+            // For plain text/CSV, we still send to Gemini for intelligent structuring
+            const { GoogleGenAI } = await import('@google/genai');
+            const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+            const response = await genAI.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information from this text content.
+
+Output a clean, structured knowledge base in this EXACT format:
+
+KNOWLEDGE BASE:
+[Write all extracted information as clear Q&A pairs, facts, pricing details, product info, policies, etc.]
+
+TOPICS COVERED:
+[Comma-separated list of main topics found]
+
+TOTAL ITEMS:
+[Number of distinct knowledge items/FAQs extracted]
+
+SAMPLE QUESTIONS:
+[List 5 example questions a customer might ask that this knowledge can answer]
+
+Here is the content:
+${rawText}`
+                    }]
+                }]
+            });
+            knowledgeText = response.text;
+        } else {
+            // For PDF/Excel, use Gemini vision to parse the file directly
+            knowledgeText = await parseDocumentWithGemini(buffer, mimetype, originalname, GEMINI_API_KEY);
+        }
+
+        if (!knowledgeText || knowledgeText.length < 50) {
+            return res.status(422).json({ error: 'Could not extract meaningful knowledge from the uploaded file. Please try a different file.' });
+        }
+
+        // 4. Parse the structured output to extract metadata
+        const topicsMatch = knowledgeText.match(/TOPICS COVERED:\s*\n?(.*?)(?:\n\n|\nTOTAL|\nSAMPLE)/s);
+        const totalMatch = knowledgeText.match(/TOTAL ITEMS:\s*\n?(\d+)/);
+        const sampleMatch = knowledgeText.match(/SAMPLE QUESTIONS:\s*\n?([\s\S]*?)$/);
+        const knowledgeMatch = knowledgeText.match(/KNOWLEDGE BASE:\s*\n?([\s\S]*?)(?:\nTOPICS COVERED)/);
+
+        const topics = topicsMatch ? topicsMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean) : [];
+        const totalItems = totalMatch ? parseInt(totalMatch[1]) : 0;
+        const sampleQuestions = sampleMatch
+            ? sampleMatch[1].trim().split('\n').map(q => q.replace(/^[-\d.)\s]+/, '').trim()).filter(q => q.length > 5).slice(0, 5)
+            : [];
+        const extractedKnowledge = knowledgeMatch ? knowledgeMatch[1].trim() : knowledgeText;
+
+        // 5. Merge with existing knowledge (append, don't replace)
+        const existingKnowledge = existing.knowledgeBase || '';
+        const mergedKnowledge = existingKnowledge
+            ? `${existingKnowledge}\n\n--- New Knowledge (from ${originalname}) ---\n\n${extractedKnowledge}`
+            : extractedKnowledge;
+
+        // 6. Generate training summary
+        const trainingSummary = {
+            agentName: existing.name,
+            purpose: existing.description || 'General purpose calling agent',
+            openingLine: existing.openingLine || '',
+            knowledgeTopics: [...new Set([...(existing.knowledgeTopics || []), ...topics])],
+            totalFaqs: totalItems,
+            sampleQuestions,
+            lastTrainedAt: new Date().toISOString(),
+            lastTrainedFile: originalname,
+            hasSystemPrompt: !!(existing.systemPrompt && existing.systemPrompt.length > 10),
+            hasKnowledgeBase: true,
+        };
+
+        // 7. Save to Firestore
+        await db.collection('agents').doc(req.params.id).update({
+            knowledgeBase: mergedKnowledge,
+            knowledgeTopics: trainingSummary.knowledgeTopics,
+            trainingSummary,
+            updatedAt: new Date(),
+        });
+
+        console.log(`[KNOWLEDGE] ✅ Agent ${req.params.id} trained with ${originalname} (${totalItems} items, ${topics.length} topics)`);
+
+        res.json({
+            message: 'Knowledge uploaded and processed successfully',
+            trainingSummary,
+            knowledgeSize: mergedKnowledge.length,
+        });
+    } catch (e) {
+        console.error('[KNOWLEDGE ERROR]', e);
+        res.status(500).json({ error: 'Failed to process knowledge file', details: e.message });
+    }
+});
+
+// DELETE /v1/agents/:id/knowledge — Clear agent knowledge base
+router.delete('/agents/:id/knowledge', async (req, res) => {
+    try {
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.apiUser.userId) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        await db.collection('agents').doc(req.params.id).update({
+            knowledgeBase: '',
+            knowledgeTopics: [],
+            trainingSummary: null,
+            updatedAt: new Date(),
+        });
+
+        res.json({ message: 'Knowledge base cleared successfully' });
+    } catch (e) {
+        console.error('[KNOWLEDGE ERROR]', e);
+        res.status(500).json({ error: 'Failed to clear knowledge base' });
     }
 });
 

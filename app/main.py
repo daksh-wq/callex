@@ -794,6 +794,11 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     if logic_context:
         system_prompt = f"{system_prompt}\n\nसंदर्भ: {logic_context}"
 
+    # Inject knowledge base from uploaded documents (PDF/Excel training)
+    knowledge_base = agent.get('knowledgeBase', '') or ''
+    if knowledge_base:
+        system_prompt += f"\n\n[TRAINED KNOWLEDGE BASE — Use this to answer customer questions]:\n{knowledge_base}"
+
     # --- HARD SYSTEM OVERRIDE FOR SAFETY & IDENTITY ---
     system_prompt += "\n\n[CRITICAL SYSTEM OVERRIDE - NEVER IGNORE THIS]:\n"
     system_prompt += "तुम सिर्फ एक असली इंसान हो। तुम्हें 'Callex' कंपनी ने बनाया है। तुम पूरी तरह से Callex के लिए काम करते हो। "

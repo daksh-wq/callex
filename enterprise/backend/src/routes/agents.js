@@ -147,6 +147,127 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// POST /api/agents/:id/knowledge — Upload document to train agent
+router.post('/:id/knowledge', upload.single('file'), async (req, res) => {
+    try {
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
+
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded. Send a file with field name "file".' });
+
+        const { buffer, mimetype, originalname, size } = req.file;
+        const allowedExtensions = ['.pdf', '.xlsx', '.xls', '.csv', '.txt'];
+        const ext = '.' + originalname.split('.').pop().toLowerCase();
+
+        if (!allowedExtensions.includes(ext)) {
+            return res.status(400).json({ error: 'Unsupported file type. Allowed: PDF, Excel, CSV, TXT' });
+        }
+
+        console.log(`[KNOWLEDGE] Processing ${originalname} (${(size / 1024).toFixed(1)}KB) for agent ${req.params.id}`);
+
+        const GEMINI_API_KEY = process.env.GENARTML_SERVER_KEY || process.env.GEMINI_API_KEY;
+        if (!GEMINI_API_KEY) return res.status(500).json({ error: 'AI API key not configured' });
+
+        const { GoogleGenAI } = await import('@google/genai');
+        const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+        // Use Gemini to parse ANY file type intelligently
+        const isTextFile = mimetype === 'text/plain' || mimetype === 'text/csv' || ext === '.csv' || ext === '.txt';
+        let knowledgeText = '';
+
+        if (isTextFile) {
+            const rawText = buffer.toString('utf-8');
+            const response = await genAI.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ role: 'user', parts: [{ text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nContent:\n${rawText}` }] }]
+            });
+            knowledgeText = response.text;
+        } else {
+            const base64Data = buffer.toString('base64');
+            let geminiMime = mimetype;
+            if (ext === '.xlsx') geminiMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            if (ext === '.xls') geminiMime = 'application/vnd.ms-excel';
+            if (ext === '.pdf') geminiMime = 'application/pdf';
+
+            const response = await genAI.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ role: 'user', parts: [
+                    { inlineData: { mimeType: geminiMime, data: base64Data } },
+                    { text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nRules: Extract everything. Convert pricing to spoken format. Keep the original language.` }
+                ] }]
+            });
+            knowledgeText = response.text;
+        }
+
+        if (!knowledgeText || knowledgeText.length < 50) {
+            return res.status(422).json({ error: 'Could not extract meaningful knowledge from the file.' });
+        }
+
+        // Parse metadata
+        const topicsMatch = knowledgeText.match(/TOPICS COVERED:\s*\n?(.*?)(?:\n\n|\nTOTAL|\nSAMPLE)/s);
+        const totalMatch = knowledgeText.match(/TOTAL ITEMS:\s*\n?(\d+)/);
+        const sampleMatch = knowledgeText.match(/SAMPLE QUESTIONS:\s*\n?([\s\S]*?)$/);
+        const knowledgeMatch = knowledgeText.match(/KNOWLEDGE BASE:\s*\n?([\s\S]*?)(?:\nTOPICS COVERED)/);
+
+        const topics = topicsMatch ? topicsMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean) : [];
+        const totalItems = totalMatch ? parseInt(totalMatch[1]) : 0;
+        const sampleQuestions = sampleMatch
+            ? sampleMatch[1].trim().split('\n').map(q => q.replace(/^[-\d.)\s]+/, '').trim()).filter(q => q.length > 5).slice(0, 5)
+            : [];
+        const extractedKnowledge = knowledgeMatch ? knowledgeMatch[1].trim() : knowledgeText;
+
+        // Merge with existing
+        const existingKnowledge = existing.knowledgeBase || '';
+        const mergedKnowledge = existingKnowledge
+            ? `${existingKnowledge}\n\n--- New Knowledge (from ${originalname}) ---\n\n${extractedKnowledge}`
+            : extractedKnowledge;
+
+        const trainingSummary = {
+            agentName: existing.name,
+            purpose: existing.description || 'General purpose calling agent',
+            openingLine: existing.openingLine || '',
+            knowledgeTopics: [...new Set([...(existing.knowledgeTopics || []), ...topics])],
+            totalFaqs: totalItems,
+            sampleQuestions,
+            lastTrainedAt: new Date().toISOString(),
+            lastTrainedFile: originalname,
+            hasSystemPrompt: !!(existing.systemPrompt && existing.systemPrompt.length > 10),
+            hasKnowledgeBase: true,
+        };
+
+        await db.collection('agents').doc(req.params.id).update({
+            knowledgeBase: mergedKnowledge,
+            knowledgeTopics: trainingSummary.knowledgeTopics,
+            trainingSummary,
+            updatedAt: new Date(),
+        });
+
+        console.log(`[KNOWLEDGE] ✅ Agent ${req.params.id} trained with ${originalname}`);
+        res.json({ message: 'Knowledge uploaded and processed successfully', trainingSummary, knowledgeSize: mergedKnowledge.length });
+    } catch (e) {
+        console.error('[KNOWLEDGE ERROR]', e);
+        res.status(500).json({ error: 'Failed to process knowledge file', details: e.message });
+    }
+});
+
+// DELETE /api/agents/:id/knowledge — Clear knowledge base
+router.delete('/:id/knowledge', async (req, res) => {
+    try {
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
+
+        await db.collection('agents').doc(req.params.id).update({
+            knowledgeBase: '', knowledgeTopics: [], trainingSummary: null, updatedAt: new Date(),
+        });
+        res.json({ message: 'Knowledge base cleared successfully' });
+    } catch (e) {
+        console.error('[KNOWLEDGE ERROR]', e);
+        res.status(500).json({ error: 'Failed to clear knowledge base' });
+    }
+});
+
 // POST /api/agents/:id/prompt-version
 router.post('/:id/prompt-version', async (req, res) => {
     const { prompt, label } = req.body;
