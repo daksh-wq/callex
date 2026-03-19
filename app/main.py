@@ -148,11 +148,10 @@ class CallexVoiceKeyManager:
         return f"healthy={h}, exhausted={d}, cooldown={c}, total={len(self._keys)}"
 
 
-# Load 5 Callex Voice API keys from environment
-_DEFAULT_KEY = "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c"
+# Load Callex Voice API keys (hardcoded defaults — no env changes needed on server)
 _voice_keys = [
-    os.getenv("CALLEX_VOICE_KEY_1", _DEFAULT_KEY),
-    os.getenv("CALLEX_VOICE_KEY_2", ""),
+    os.getenv("CALLEX_VOICE_KEY_1", "23b48f49c918261a3d9d9f36a779bf064b5247239b13d4b2b85f9e67fc96a92a"),
+    os.getenv("CALLEX_VOICE_KEY_2", "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c"),
     os.getenv("CALLEX_VOICE_KEY_3", ""),
     os.getenv("CALLEX_VOICE_KEY_4", ""),
     os.getenv("CALLEX_VOICE_KEY_5", ""),
