@@ -1151,6 +1151,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     vad_buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     history: List[Dict] = []
+    full_history: List[Dict] = []
 
     speaking = False
     last_voice = 0.0
@@ -1231,6 +1232,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     return
                 print(f"\n[CUSTOMER] 🗣️  {user_text}")
                 history.append({"role": "user", "parts": [{"text": user_text}]})
+                full_history.append({"role": "user", "parts": [{"text": user_text}]})
                 if call_uuid:
                     tracker.log_message(call_uuid, "user", user_text)
                 history = trim_history(history)
@@ -1241,6 +1243,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     reply_text = reply_text.replace("[HANGUP]", "").strip()
                 print(f"[BOT] 🤖 {reply_text}")
                 history.append({"role": "model", "parts": [{"text": reply_text}]})
+                full_history.append({"role": "model", "parts": [{"text": reply_text}]})
                 if call_uuid:
                     tracker.log_message(call_uuid, "model", reply_text)
                 history = trim_history(history)
@@ -1279,6 +1282,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         opener_text = agent_config['openingLine']
         print(f"[{agent_config['name']}]: {opener_text}")
         history.append({"role": "model", "parts": [{"text": opener_text}]})
+        full_history.append({"role": "model", "parts": [{"text": opener_text}]})
 
         # Cache path uses safe_agent_id
         cache_path = os.path.join(CACHE_DIR, f"{safe_agent_id}_opener.pcm")
@@ -1460,6 +1464,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
+                                full_history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                         speaking = True
                         was_barge_in = True  # Mark as barge-in for faster silence timeout
                         last_voice = now
@@ -1494,6 +1499,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if whisper_msg:
                                 # Inject system instruction to steer the AI without interrupting caller
                                 history.append({"role": "model", "parts": [{"text": f"[System Whisper from Supervisor: {whisper_msg}. Incorporate this into your next responses naturally.]"}]})
+                                full_history.append({"role": "model", "parts": [{"text": f"[System Whisper from Supervisor: {whisper_msg}. Incorporate this into your next responses naturally.]"}]})
                         elif msg_type == "barge":
                             # Supervisor barged in to take over the call
                             print("[WS] BARGE received! Transferring call...")
@@ -1501,6 +1507,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             # The FreeSWITCH dialplan handles the actual bridge/transfer. 
                             # We just need to politely sign off and hang up the AI channel.
                             history.append({"role": "user", "parts": [{"text": "[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]"}]})
+                            full_history.append({"role": "user", "parts": [{"text": "[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]"}]})
                             async with task_lock:
                                 current_task = asyncio.create_task(process_audio(np.zeros(0, dtype=np.float32))) # Trigger immediate generation
                     except Exception as e:
@@ -1533,10 +1540,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     print(f"[LOCAL RECORDING ERROR] {rec_e}")
 
             ai_outcome = None
-            if history:
+            if full_history:
                 try:
                     async with httpx.AsyncClient() as analysis_client:
-                        ai_outcome = await analyze_call_outcome(analysis_client, history)
+                        ai_outcome = await analyze_call_outcome(analysis_client, full_history)
                         if ai_outcome:
                             print(f"[ANALYSIS] Result: {ai_outcome}")
                 except Exception as e:
@@ -1556,7 +1563,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     print(f"[DB ERROR] Failed to end call: {db_error}")
 
                 # ── Save Transcript to Firestore ──
-                if history:
+                if full_history:
                     try:
                         from firebase_admin import firestore as fs
                         firestore_db = fs.client()
@@ -1564,7 +1571,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         # Build readable transcript string
                         transcript_lines = []
                         transcript_messages = []
-                        for msg in history:
+                        for msg in full_history:
                             role = "AI" if msg.get("role") == "model" else "Customer"
                             text = msg.get("parts", [{}])[0].get("text", "")
                             if text and text != "SYSTEM_INITIATE_CALL" and not text.startswith("[System:"):
