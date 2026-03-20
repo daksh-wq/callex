@@ -533,6 +533,9 @@ router.get('/calls', async (req, res) => {
             outcome: c.outcome || null,
             notes: c.notes || null,
             agreed: c.agreed || false,
+            commitmentDate: c.commitmentDate || null,
+            disposition: c.disposition || c.outcome || 'Unclear',
+            structuredData: c.structuredData ? (typeof c.structuredData === 'string' ? JSON.parse(c.structuredData) : c.structuredData) : null,
             startedAt: c.startedAt,
             endedAt: c.endedAt || null,
         }));
@@ -585,6 +588,9 @@ router.get('/calls/:id', async (req, res) => {
             outcome: call.outcome || null,
             notes: call.notes || null,
             agreed: call.agreed || false,
+            commitmentDate: call.commitmentDate || null,
+            disposition: call.disposition || call.outcome || 'Unclear',
+            structuredData: call.structuredData ? (typeof call.structuredData === 'string' ? JSON.parse(call.structuredData) : call.structuredData) : null,
             startedAt: call.startedAt,
             endedAt: call.endedAt || null,
         });

@@ -109,9 +109,12 @@ router.get('/calls', async (req, res) => {
             call.transcriptMessages = call.transcriptMessages || [];
             call.summary = call.summary || null;
             call.outcome = call.outcome || null;
+            call.disposition = call.disposition || call.outcome || 'Unclear';
             call.sentiment = call.sentiment || 'neutral';
             call.notes = call.notes || null;
             call.agreed = call.agreed || false;
+            call.commitmentDate = call.commitmentDate || null;
+            try { call.structuredData = call.structuredData ? (typeof call.structuredData === 'string' ? JSON.parse(call.structuredData) : call.structuredData) : null; } catch(e) { call.structuredData = null; }
             call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
         }
 
@@ -152,9 +155,12 @@ router.get('/calls/:id', async (req, res) => {
         call.transcriptMessages = call.transcriptMessages || [];
         call.summary = call.summary || null;
         call.outcome = call.outcome || null;
+        call.disposition = call.disposition || call.outcome || 'Unclear';
         call.sentiment = call.sentiment || 'neutral';
         call.notes = call.notes || null;
         call.agreed = call.agreed || false;
+        call.commitmentDate = call.commitmentDate || null;
+        try { call.structuredData = call.structuredData ? (typeof call.structuredData === 'string' ? JSON.parse(call.structuredData) : call.structuredData) : null; } catch(e) { call.structuredData = null; }
         call.recordingUrl = call.recordingUrl || call.recordingFilename || null;
 
         res.json(call);

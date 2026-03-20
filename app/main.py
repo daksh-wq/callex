@@ -1636,8 +1636,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             'sentiment': ai_outcome.get('sentiment', 'neutral') if ai_outcome else 'neutral',
                             'summary': ai_outcome.get('summary', '') if ai_outcome else '',
                             'outcome': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
+                            'disposition': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
                             'notes': ai_outcome.get('notes', '') if ai_outcome else '',
                             'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
+                            'commitmentDate': ai_outcome.get('commitment_date') if ai_outcome else None,
                             'userId': agent_config.get('userId', ''),  # ensure userId is always set
                         }
 
