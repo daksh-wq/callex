@@ -867,25 +867,41 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
 # ───────── OUTCOME ANALYSIS (AI) ─────────
 
-async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -> Optional[Dict]:
+async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], agent_config: Dict = None) -> Optional[Dict]:
     if not history: return None
     print("[ANALYSIS] Analyzing call outcome...")
+    
+    custom_schema = []
+    if agent_config:
+        try:
+            custom_schema_str = agent_config.get('analysisSchema', '[]')
+            custom_schema = json.loads(custom_schema_str)
+        except Exception:
+            pass
+
+    custom_fields_prompt = ""
+    if custom_schema:
+        custom_fields_prompt = "Also extract the following exact keys with their corresponding data types based on these descriptions. IMPORTANT: Place these keys directly at the root level of your JSON response:\n"
+        for field in custom_schema:
+            custom_fields_prompt += f'- "{field["name"]}": {field["type"]} - {field["description"]}\n'
+
     transcript = ""
     for msg in history:
         role = "User" if msg["role"] == "user" else "Bot"
         text = msg["parts"][0]["text"]
         transcript += f"{role}: {text}\n"
-    system_prompt = """
+    system_prompt = f"""
     You are a Call Analyst. Analyze the conversation transcript and extract the outcome.
     Output JSON format only:
-    {
+    {{
         "agreed": true/false,
         "commitment": "today" / "tomorrow" / "later" / "refused",
         "disposition": "Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear",
         "sentiment": "positive" / "negative" / "neutral",
         "summary": "2-3 sentence summary of the entire call conversation",
         "notes": "Short summary of why the disposition was assigned"
-    }
+    }}
+    {custom_fields_prompt}
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
@@ -912,13 +928,21 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict]) -
                     comm_date = today + datetime.timedelta(days=1)
                 elif result.get("commitment") == "today":
                     comm_date = today
+                structured_data = {}
+                if custom_schema:
+                    for field in custom_schema:
+                        key = field["name"]
+                        if key in result:
+                            structured_data[key] = result[key]
+
                 return {
                     "agreed": result.get("agreed"),
                     "commitment_date": comm_date,
                     "disposition": result.get("disposition", "Unclear"),
                     "sentiment": result.get("sentiment", "neutral"),
                     "summary": result.get("summary", ""),
-                    "notes": result.get("notes", "")
+                    "notes": result.get("notes", ""),
+                    "structuredData": json.dumps(structured_data) if structured_data else None
                 }
     except Exception as e:
         import traceback
@@ -1543,7 +1567,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             if full_history:
                 try:
                     async with httpx.AsyncClient() as analysis_client:
-                        ai_outcome = await analyze_call_outcome(analysis_client, full_history)
+                        ai_outcome = await analyze_call_outcome(analysis_client, full_history, agent_config)
                         if ai_outcome:
                             print(f"[ANALYSIS] Result: {ai_outcome}")
                 except Exception as e:
@@ -1616,6 +1640,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
                             'userId': agent_config.get('userId', ''),  # ensure userId is always set
                         }
+
+                        if ai_outcome and ai_outcome.get('structuredData'):
+                            update_data['structuredData'] = ai_outcome['structuredData']
 
                         if doc_snap.exists:
                             doc_ref.update(update_data)
