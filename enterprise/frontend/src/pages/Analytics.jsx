@@ -249,6 +249,27 @@ export default function Analytics() {
                                                                 <p className="text-sm text-gray-700 leading-relaxed">
                                                                     {call.summary || <span className="text-gray-400 italic">No summary generated.</span>}
                                                                 </p>
+
+                                                                {/* Custom Extracted Data Section */}
+                                                                {call.structuredData && (
+                                                                    <div className="mt-4 pt-4 border-t border-gray-50">
+                                                                        <h4 className="text-xs font-bold text-orange-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                                                            <ShieldCheck size={14} /> Extracted Data
+                                                                        </h4>
+                                                                        <div className="grid grid-cols-2 gap-3">
+                                                                            {Object.entries(
+                                                                                (typeof call.structuredData === 'string' && call.structuredData.startsWith('{')) 
+                                                                                    ? JSON.parse(call.structuredData) 
+                                                                                    : (typeof call.structuredData === 'object' ? call.structuredData : {})
+                                                                            ).map(([key, val]) => (
+                                                                                <div key={key} className="bg-orange-50/50 rounded-lg p-2.5 border border-orange-100/50">
+                                                                                    <div className="text-[10px] text-orange-600/80 font-bold uppercase mb-0.5 tracking-wider">{key.replace(/_/g, ' ')}</div>
+                                                                                    <div className="text-sm font-bold text-gray-900 truncate" title={String(val)}>{String(val)}</div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
 
                                                             <div className="bg-white rounded-xl shadow-sm border border-emerald-100 bg-emerald-50/30 p-4">

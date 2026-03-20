@@ -18,7 +18,7 @@ router.post('/campaigns', async (req, res) => {
         scriptOverride, maxDuration, maxRetries, retryDelayMin, voicemailDropAudio,
         localCallerId, strictLitigatorScrub, sentimentTransfer, timezoneRespect, costCapTokens, postCallSmsTemplate,
         recordCalls, concurrentCallLimit, autoPauseFailureRate, webhookUrl, dynamicVariables,
-        transferNumber, transferWhisper, maxBudgetUsd, smsOnNoAnswer, amdAction
+        transferNumber, transferWhisper, maxBudgetUsd, smsOnNoAnswer, amdAction, analysisSchema
     } = req.body;
 
     const leads = Array.isArray(audience) ? audience : [];
@@ -45,6 +45,7 @@ router.post('/campaigns', async (req, res) => {
         transferNumber: transferNumber || null, transferWhisper: transferWhisper || null,
         maxBudgetUsd: maxBudgetUsd ? parseFloat(maxBudgetUsd) : null,
         smsOnNoAnswer: smsOnNoAnswer || null, amdAction: amdAction || 'hangup',
+        analysisSchema: analysisSchema || '[]',
         totalLeads: leads.length, dialedLeads: 0, connectedLeads: 0,
         startDate: startDate ? new Date(startDate) : null, endDate: endDate ? new Date(endDate) : null,
         audience: JSON.stringify(leads), status: 'draft', createdAt: new Date(),

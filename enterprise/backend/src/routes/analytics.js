@@ -182,19 +182,48 @@ router.post('/calls/:id/acw', async (req, res) => {
             return res.json({ ...call, ...updateData });
         }
 
+        // Fetch analysisSchema if agent or campaign exists
+        let customSchemaStr = '[]';
+        if (call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            if (agentDoc.exists && agentDoc.data().analysisSchema) customSchemaStr = agentDoc.data().analysisSchema;
+        } else if (call.campaignId) {
+            const campaignDoc = await db.collection('campaigns').doc(call.campaignId).get();
+            if (campaignDoc.exists && campaignDoc.data().analysisSchema) customSchemaStr = campaignDoc.data().analysisSchema;
+        }
+
+        let customSchema = [];
+        try { customSchema = JSON.parse(customSchemaStr); } catch (e) {}
+
         const { GoogleGenAI } = await import('@google/genai');
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const prompt = `Analyze this call transcript between an AI agent and a customer.\nTranscript:\n---\n${redactedMsg}\n---\n\nReturn ONLY raw strict JSON containing:\n1. "summary": A concise 2-sentence executive summary.\n2. "intent": The primary reason for the call.\n3. "agreed": boolean.\n4. "followUpRequired": boolean.`;
+        
+        let customPromptPart = '';
+        if (customSchema.length > 0) {
+            customPromptPart = customSchema.map((field, i) => `${i + 3}. "${field.name}": ${field.type} - ${field.description}`).join('\n');
+        } else {
+            customPromptPart = `3. "intent": string - The primary reason for the call.\n4. "agreed": boolean.\n5. "followUpRequired": boolean.`;
+        }
 
-        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { systemInstruction: "You are an expert Q&A Call Center Analyst.", temperature: 0.2 } });
+        const prompt = `Analyze this call transcript between an AI agent and a customer.\nTranscript:\n---\n${redactedMsg}\n---\n\nReturn ONLY raw strict JSON containing:\n1. "summary": A concise 1-2 sentence executive summary.\n2. "disposition": A short 1-3 word classification of the call outcome.\n${customPromptPart}`;
 
-        let jsonText = (response.text || "{}").replace(/```json/gi, '').replace(/```/g, '').trim();
+        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { systemInstruction: "You are an expert Q&A Call Center Analyst. You must return EXACTLY valid JSON, without any markdown formatting or code blocks.", temperature: 0.2 } });
+
+        let jsonText = (response.text || "{}").replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
         let structured = {};
-        try { structured = JSON.parse(jsonText); } catch { structured = { summary: jsonText.substring(0, 200) }; }
+        try { 
+            structured = JSON.parse(jsonText); 
+        } catch { 
+            structured = { summary: jsonText.substring(0, 200) }; 
+        }
+
+        const summaryText = structured.summary || 'Summary unavailable.';
+        delete structured.summary; // Remove from structuredData so it doesn't double-render
+        if (structured.disposition) delete structured.disposition; // Optional cleanup
 
         const updateData = {
-            summary: structured.summary || 'Summary unavailable.',
-            structuredData: JSON.stringify({ intent: structured.intent || 'unknown', agreed: structured.agreed || false, followUpRequired: structured.followUpRequired || false }),
+            summary: summaryText,
+            structuredData: JSON.stringify(structured),
             redactedTranscript: redactedMsg
         };
         await db.collection('calls').doc(req.params.id).update(updateData);

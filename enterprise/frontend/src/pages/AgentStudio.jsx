@@ -14,7 +14,8 @@ const CALLEX_MODELS = [
 const TAB_LABELS = [
     { id: 'identity', label: 'Identity & Prompt', icon: Sparkles },
     { id: 'speech', label: 'Speech & Voice', icon: Mic },
-    { id: 'telephony', label: 'Telephony & Post-Call', icon: PhoneCall }
+    { id: 'telephony', label: 'Telephony & Post-Call', icon: PhoneCall },
+    { id: 'analysis', label: 'Custom Analysis', icon: FileArchive }
 ];
 
 export default function AgentStudio() {
@@ -320,6 +321,7 @@ function UserAgentStudio() {
             fillerPhrases: tryParse(a.fillerPhrases, []),
             ipaLexicon: tryParse(a.ipaLexicon, {}),
             tools: tryParse(a.tools, []),
+            analysisSchema: tryParse(a.analysisSchema, []),
         });
         fetchVersions(a.id);
     }
@@ -327,7 +329,7 @@ function UserAgentStudio() {
     function tryParse(val, def) { try { return JSON.parse(val); } catch { return def; } }
 
     async function saveAgent() {
-        const payload = { ...form, fillerPhrases: form.fillerPhrases, ipaLexicon: form.ipaLexicon, tools: form.tools };
+        const payload = { ...form, fillerPhrases: form.fillerPhrases, ipaLexicon: form.ipaLexicon, tools: form.tools, analysisSchema: JSON.stringify(form.analysisSchema || []) };
         if (newAgent) {
             const a = await api.createAgent(payload);
             showToast('Agent created', 'success'); fetchAgents(); selectAgent(a);
@@ -705,6 +707,57 @@ function UserAgentStudio() {
                                                         </label>
                                                     </div>
                                                 </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* TAB: CUSTOM ANALYSIS */}
+                                {tab === 'analysis' && (
+                                    <div className="space-y-6 animate-fade-in">
+                                        <div className="bg-white p-5 rounded-xl border border-gray-100 space-y-4 shadow-sm">
+                                            <div>
+                                                <h3 className="font-bold text-gray-800 flex items-center gap-2"><FileArchive size={16} className="text-orange-500" /> Custom Call Analysis Params</h3>
+                                                <p className="text-sm text-gray-500 mt-1">Define exactly what data the AI should extract from every call and return as structured data.</p>
+                                            </div>
+
+                                            <div className="space-y-3">
+                                                {(Array.isArray(form.analysisSchema) ? form.analysisSchema : []).map((field, idx) => (
+                                                    <div key={idx} className="flex gap-3 items-start bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                                        <div className="flex-1 space-y-2">
+                                                            <input className="input-field text-sm font-semibold text-gray-800 bg-white" placeholder="Variable Name (e.g., budget)" value={field.name} onChange={e => {
+                                                                const newCols = [...(form.analysisSchema || [])];
+                                                                newCols[idx] = { ...newCols[idx], name: e.target.value };
+                                                                setForm(f => ({ ...f, analysisSchema: newCols }));
+                                                            }} />
+                                                            <input className="input-field text-xs text-gray-600 bg-white" placeholder="Description/Hint for AI" value={field.description} onChange={e => {
+                                                                const newCols = [...(form.analysisSchema || [])];
+                                                                newCols[idx] = { ...newCols[idx], description: e.target.value };
+                                                                setForm(f => ({ ...f, analysisSchema: newCols }));
+                                                            }} />
+                                                        </div>
+                                                        <div className="w-32">
+                                                            <select className="input-field text-xs bg-white" value={field.type} onChange={e => {
+                                                                const newCols = [...(form.analysisSchema || [])];
+                                                                newCols[idx] = { ...newCols[idx], type: e.target.value };
+                                                                setForm(f => ({ ...f, analysisSchema: newCols }));
+                                                            }}>
+                                                                <option value="string">Text / String</option>
+                                                                <option value="number">Number</option>
+                                                                <option value="boolean">True/False</option>
+                                                            </select>
+                                                        </div>
+                                                        <button className="btn-secondary py-2 px-3 text-red-500 hover:bg-red-50" onClick={() => {
+                                                            setForm(f => ({ ...f, analysisSchema: f.analysisSchema.filter((_, i) => i !== idx) }))
+                                                        }}><Trash2 size={14} /></button>
+                                                    </div>
+                                                ))}
+                                                
+                                                <button className="btn-secondary w-full border-dashed border-2 text-orange-600 hover:bg-orange-50 py-3 font-semibold text-sm flex items-center justify-center gap-2" onClick={() => {
+                                                    setForm(f => ({ ...f, analysisSchema: [...(Array.isArray(f.analysisSchema) ? f.analysisSchema : []), { name: '', description: '', type: 'string' }] }));
+                                                }}>
+                                                    <Plus size={16} /> Add Extraction Variable
+                                                </button>
                                             </div>
                                         </div>
                                     </div>

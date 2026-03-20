@@ -40,7 +40,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
         piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
         complianceScript, dynamicCodeSwitching, dncLitigatorScrub, callBlending, costCapTokens,
-        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime
+        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema
     } = req.body;
 
     const data = {
@@ -90,6 +90,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         autoFollowUp: autoFollowUp ?? true,
         followUpDefaultDays: followUpDefaultDays || 1,
         followUpDefaultTime: followUpDefaultTime || '10:00',
+        analysisSchema: analysisSchema || '[]',
         status: 'draft',
         createdAt: new Date(),
         updatedAt: new Date(),
