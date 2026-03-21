@@ -86,8 +86,8 @@ class SemanticFilter:
         if all(word in self.filler_words for word in words):
             return False
         
-        # Rule 4: Repetition detection (same word repeated > 4 times with no other meaningful content)
-        if len(words) >= 5:
+        # Rule 4: Repetition detection (same word repeated > 2 times)
+        if len(words) >= 3:
             if self._is_repetitive(words):
                 return False
         
@@ -106,31 +106,23 @@ class SemanticFilter:
         return True
     
     def _is_repetitive(self, words: List[str]) -> bool:
-        """Check if words list is PURELY repetitive noise with no meaningful content"""
-        if len(words) < 5:
+        """Check if words list contains excessive repetition"""
+        if len(words) < 3:
             return False
         
         # Count consecutive identical words
         max_consecutive = 1
         current_consecutive = 1
-        repeated_word = None
         
         for i in range(1, len(words)):
             if words[i] == words[i-1]:
                 current_consecutive += 1
-                if current_consecutive > max_consecutive:
-                    max_consecutive = current_consecutive
-                    repeated_word = words[i]
+                max_consecutive = max(max_consecutive, current_consecutive)
             else:
                 current_consecutive = 1
         
-        # If same word repeated 5+ times, check if there's meaningful content alongside
-        if max_consecutive >= 5 and repeated_word:
-            non_repeated = [w for w in words if w != repeated_word and w not in self.filler_words]
-            # Only block if there are fewer than 3 non-repeated meaningful words
-            return len(non_repeated) < 3
-        
-        return False
+        # If same word repeated 3+ times, it's repetitive
+        return max_consecutive >= 3
     
     def get_rejection_reason(self, text: str) -> Optional[str]:
         """

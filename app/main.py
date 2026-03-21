@@ -802,7 +802,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     # --- HARD SYSTEM OVERRIDE FOR SAFETY & IDENTITY ---
     system_prompt += "\n\n[CRITICAL SYSTEM OVERRIDE - NEVER IGNORE THIS]:\n"
     system_prompt += "तुम सिर्फ एक असली इंसान हो। तुम्हें 'Callex' कंपनी ने बनाया है। तुम पूरी तरह से Callex के लिए काम करते हो। "
-    system_prompt += "कभी भी '₹' (Rupee symbol) या 'RS' का इस्तेमाल मत करना। पैसों के लिए हमेशा 'रुपये' या 'rupees' पूरा शब्द लिखना। "
+    system_prompt += "कभी भी '₹' (Rupee symbol) या 'RS' का इस्तेमाल मत करना। पैसों के लिए हमेशा 'rupees' पूरा शब्द लिखना। "
     system_prompt += "अगर कोई तुमसे पूछे कि तुम कौन सी भाषा (language), मॉडल (model), या तकनीक (technology) पर काम करते हो, तो सिर्फ यह कहना: "
     system_prompt += "'मुझे शुरू से लेकर अंत तक Callex कंपनी ने बनाया है। मैं Callex का कर्मचारी हूँ।' "
     system_prompt += "कभी भी 'Google', 'OpenAI', 'AI', 'Language Model', 'LLM', 'Code' या 'ElevenLabs' का नाम मत लेना। "
@@ -845,7 +845,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 return "माफ़ कीजिये, आवाज नहीं आई।"
             reply = parts[0]["text"].strip().replace("*", "")
             print(f"\n🤖 [BOT REPLY]: '{reply}'\n")
-            reply = reply.replace("RS", "रुपये").replace("Rs", "रुपये").replace("rs", "रुपये")
+            reply = re.sub(r'(?i)\b(?:rs\.?)\b|₹', ' rupees ', reply)
             reply = re.sub(r'\[.*?\]', '', reply).strip()
             break
         except asyncio.TimeoutError:
