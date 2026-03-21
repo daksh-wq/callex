@@ -899,8 +899,15 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
         "disposition": "Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear",
         "sentiment": "positive" / "negative" / "neutral",
         "summary": "2-3 sentence summary of the entire call conversation",
-        "notes": "Short summary of why the disposition was assigned"
+        "notes": "Short summary of why the disposition was assigned",
+        "highlighted_points": [
+            {{
+                "question_or_topic": "What the bot asked or the important topic discussed",
+                "customer_answer": "The specific answer, preference, or information the customer provided"
+            }}
+        ]
     }}
+    Instructions for highlighted_points: Extract 2-5 of the most important pieces of information or Q&A pairs from the conversation. This data will be used by companies to quickly understand the customer's exact needs, objections, or answers without reading the full transcript.
     {custom_fields_prompt}
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
@@ -929,6 +936,10 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
                 elif result.get("commitment") == "today":
                     comm_date = today
                 structured_data = {}
+                highlighted = result.get("highlighted_points")
+                if highlighted and isinstance(highlighted, list) and len(highlighted) > 0:
+                    structured_data["highlighted_points"] = highlighted
+
                 if custom_schema:
                     for field in custom_schema:
                         key = field["name"]
