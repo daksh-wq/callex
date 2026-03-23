@@ -617,6 +617,47 @@ router.get('/calls/:id', async (req, res) => {
     }
 });
 
+// PATCH /v1/calls/:id/disposition — Update the disposition for a specific call
+router.patch('/calls/:id/disposition', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { disposition, dispositionId } = req.body;
+        const apiUserId = req.apiUser.userId;
+
+        if (!disposition && !dispositionId) {
+            return res.status(400).json({ error: "Missing 'disposition' or 'dispositionId' in request body" });
+        }
+
+        const callRef = db.collection('calls').doc(id);
+        const doc = await callRef.get();
+
+        if (!doc.exists) return res.status(404).json({ error: 'Call not found' });
+
+        const call = doc.data();
+        
+        // Ownership check: allow if call belongs to apiUserId OR if call's agent belongs to apiUserId
+        let isOwner = call.userId === apiUserId;
+        if (!isOwner && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            if (agentDoc.exists && agentDoc.data().userId === apiUserId) {
+                isOwner = true;
+            }
+        }
+
+        if (!isOwner) return res.status(403).json({ error: 'Access denied to this call' });
+
+        const updates = { updatedAt: new Date() };
+        if (disposition !== undefined) updates.disposition = disposition;
+        if (dispositionId !== undefined) updates.dispositionId = dispositionId;
+
+        await callRef.update(updates);
+        res.json({ message: 'Disposition updated successfully', id, ...updates });
+    } catch (e) {
+        console.error('[EXT-API ERROR] PATCH /v1/calls/:id/disposition:', e);
+        res.status(500).json({ error: 'Failed to update call disposition' });
+    }
+});
+
 // GET /v1/calls/:id/transcript — Get just the transcript for a call
 router.get('/calls/:id/transcript', async (req, res) => {
     try {
