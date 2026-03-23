@@ -186,7 +186,7 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.65
+SILERO_CONFIDENCE_THRESHOLD = 0.85
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
@@ -1238,6 +1238,21 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     pass
             current_task = None
 
+    async def log_live_message(role: str, text: str):
+        if not call_uuid or not text: return
+        try:
+            def push():
+                from firebase_admin import firestore as fs
+                import time
+                db = fs.client()
+                msg = {"role": role, "text": text, "timestamp": time.time()}
+                db.collection('calls').document(call_uuid).set({
+                    "transcriptMessages": fs.ArrayUnion([msg])
+                }, merge=True)
+            await asyncio.to_thread(push)
+        except Exception as e:
+            print(f"[LIVE TRANSCRIPT ERROR] {e}")
+
     async def send_audio_safe(audio_chunk: bytes) -> bool:
         if not ws_alive:
             return False
@@ -1273,6 +1288,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 full_history.append({"role": "user", "parts": [{"text": user_text}]})
                 if call_uuid:
                     tracker.log_message(call_uuid, "user", user_text)
+                    asyncio.create_task(log_live_message("user", user_text))
                 history = trim_history(history)
                 reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
                 should_hangup = False
@@ -1284,6 +1300,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 full_history.append({"role": "model", "parts": [{"text": reply_text}]})
                 if call_uuid:
                     tracker.log_message(call_uuid, "model", reply_text)
+                    asyncio.create_task(log_live_message("model", reply_text))
                 history = trim_history(history)
                 bot_speaking = True
                 async for audio_chunk in tts_stream_generate(client, reply_text, voice_id=agent_config['voice']):
@@ -1321,6 +1338,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         print(f"[{agent_config['name']}]: {opener_text}")
         history.append({"role": "model", "parts": [{"text": opener_text}]})
         full_history.append({"role": "model", "parts": [{"text": opener_text}]})
+        asyncio.create_task(log_live_message("model", opener_text))
 
         # Cache path uses safe_agent_id
         cache_path = os.path.join(CACHE_DIR, f"{safe_agent_id}_opener.pcm")
@@ -1503,6 +1521,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if current_task and not current_task.done():
                                 history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
                                 full_history.append({"role": "model", "parts": [{"text": "[System: User interrupted previous response]"}]})
+                                asyncio.create_task(log_live_message("model", "[System: User interrupted previous response]"))
                         speaking = True
                         was_barge_in = True  # Mark as barge-in for faster silence timeout
                         last_voice = now
@@ -1538,6 +1557,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 # Inject system instruction to steer the AI without interrupting caller
                                 history.append({"role": "model", "parts": [{"text": f"[System Whisper from Supervisor: {whisper_msg}. Incorporate this into your next responses naturally.]"}]})
                                 full_history.append({"role": "model", "parts": [{"text": f"[System Whisper from Supervisor: {whisper_msg}. Incorporate this into your next responses naturally.]"}]})
+                                asyncio.create_task(log_live_message("model", f"[System Whisper from Supervisor: {whisper_msg}]"))
                         elif msg_type == "barge":
                             # Supervisor barged in to take over the call
                             print("[WS] BARGE received! Transferring call...")
