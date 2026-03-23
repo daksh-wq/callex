@@ -361,6 +361,7 @@ router.get('/users/:userId/export', async (req, res) => {
 // GET /api/admin/users/:userId/calls — Get call logs for a specific user
 router.get('/users/:userId/calls', async (req, res) => {
     try {
+        const { startDate, endDate } = req.query;
         const agentsSnap = await db.collection('agents').where('userId', '==', req.params.userId).get();
         const agentIds = agentsSnap.docs.map(d => d.id);
 
@@ -380,6 +381,26 @@ router.get('/users/:userId/calls', async (req, res) => {
                         calls.push({ id: d.id, ...d.data() });
                         callIds.add(d.id);
                     }
+                });
+            }
+        }
+
+        // Apply Date Filters
+        if (startDate) {
+            const startMs = new Date(startDate).getTime();
+            if (!isNaN(startMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts >= startMs;
+                });
+            }
+        }
+        if (endDate) {
+            const endMs = new Date(endDate).getTime();
+            if (!isNaN(endMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts <= endMs;
                 });
             }
         }

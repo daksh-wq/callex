@@ -462,8 +462,7 @@ router.get('/calls', async (req, res) => {
     try {
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-        const status = req.query.status;
-        const agentId = req.query.agentId;
+        const { status, agentId, startDate, endDate } = req.query;
         const apiUserId = req.apiUser.userId;
         const isSuperAdmin = apiUserId === 'superadmin-hardcoded-id';
 
@@ -504,7 +503,25 @@ router.get('/calls', async (req, res) => {
         let calls = Array.from(callsMap.values());
         console.log(`[EXT-API] Total calls found (direct + fallback): ${calls.length}`);
 
-        // 3. Filter by status/agentId if provided (filtered in memory to avoid complex indexes)
+        // 3. Filter by status/agentId/date if provided (filtered in memory to avoid complex indexes)
+        if (startDate) {
+            const startMs = new Date(startDate).getTime();
+            if (!isNaN(startMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts >= startMs;
+                });
+            }
+        }
+        if (endDate) {
+            const endMs = new Date(endDate).getTime();
+            if (!isNaN(endMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts <= endMs;
+                });
+            }
+        }
         if (status) calls = calls.filter(c => c.status === status);
         if (agentId) calls = calls.filter(c => c.agentId === agentId);
 

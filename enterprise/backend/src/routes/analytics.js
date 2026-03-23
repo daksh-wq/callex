@@ -49,7 +49,7 @@ router.get('/', async (req, res) => {
 // GET /api/analytics/calls — List ALL calls for current user (direct userId + agentId fallback)
 router.get('/calls', async (req, res) => {
     try {
-        const { page = 1, limit = 50, sentiment, minDuration, disposition, status } = req.query;
+        const { page = 1, limit = 50, sentiment, minDuration, disposition, status, startDate, endDate } = req.query;
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
         const userId = req.userId;
@@ -81,6 +81,24 @@ router.get('/calls', async (req, res) => {
         console.log(`[ANALYTICS] Total calls found: ${calls.length}`);
 
         // Apply filters
+        if (startDate) {
+            const startMs = new Date(startDate).getTime();
+            if (!isNaN(startMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts >= startMs;
+                });
+            }
+        }
+        if (endDate) {
+            const endMs = new Date(endDate).getTime();
+            if (!isNaN(endMs)) {
+                calls = calls.filter(c => {
+                    const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
+                    return ts <= endMs;
+                });
+            }
+        }
         if (status) calls = calls.filter(c => c.status === status);
         if (sentiment) calls = calls.filter(c => c.sentiment === sentiment);
         if (minDuration) calls = calls.filter(c => (c.duration || 0) >= parseInt(minDuration, 10));
