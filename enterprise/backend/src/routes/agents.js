@@ -40,7 +40,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
         piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
         complianceScript, dynamicCodeSwitching, dncLitigatorScrub, callBlending, costCapTokens,
-        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema
+        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions
     } = req.body;
 
     const data = {
@@ -168,6 +168,33 @@ router.post('/', upload.single('file'), async (req, res) => {
     await db.collection('promptVersions').add({
         agentId: ref.id, version: 1, prompt: systemPrompt || '', isActive: true, label: 'v1 - Initial', createdAt: new Date()
     });
+
+    // Handle optional unified dispositions
+    let createdDispositions = [];
+    if (dispositions) {
+        try {
+            const parsedDispositions = typeof dispositions === 'string' ? JSON.parse(dispositions) : dispositions;
+            if (Array.isArray(parsedDispositions)) {
+                for (let d of parsedDispositions) {
+                    if (!d.name) continue;
+                    const dispData = {
+                        name: d.name,
+                        category: d.category || 'General',
+                        requiresNote: d.requiresNote || false,
+                        active: true,
+                        userId: req.userId,
+                        createdAt: new Date()
+                    };
+                    const dispRef = await db.collection('dispositions').add(dispData);
+                    createdDispositions.push({ id: dispRef.id, ...dispData });
+                }
+            }
+        } catch (err) {
+            console.error('[AGENT CREATION] Failed to parse dispositions:', err);
+        }
+    }
+    
+    if (createdDispositions.length > 0) agent.createdDispositions = createdDispositions;
 
     res.json(agent);
 });

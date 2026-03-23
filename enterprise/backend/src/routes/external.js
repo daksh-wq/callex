@@ -47,7 +47,8 @@ router.post('/agents', upload.single('file'), async (req, res) => {
             amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
             piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
             complianceScript, dynamicCodeSwitching, dncLitigatorScrub, callBlending, costCapTokens,
-            postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime
+            postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime,
+            dispositions
         } = req.body;
 
         if (!name) return res.status(400).json({ error: "Agent 'name' is required." });
@@ -131,6 +132,33 @@ router.post('/agents', upload.single('file'), async (req, res) => {
         const agent = { id: ref.id, ...data };
 
         await db.collection('promptVersions').add({ agentId: ref.id, version: 1, prompt: systemPrompt || '', isActive: true, label: 'v1 - Initial', createdAt: new Date() });
+
+        // Handle optional unified dispositions
+        let createdDispositions = [];
+        if (dispositions) {
+            try {
+                const parsedDispositions = typeof dispositions === 'string' ? JSON.parse(dispositions) : dispositions;
+                if (Array.isArray(parsedDispositions)) {
+                    for (let d of parsedDispositions) {
+                        if (!d.name) continue;
+                        const dispData = {
+                            name: d.name,
+                            category: d.category || 'General',
+                            requiresNote: d.requiresNote || false,
+                            active: true,
+                            userId: req.apiUser.userId,
+                            createdAt: new Date()
+                        };
+                        const dispRef = await db.collection('dispositions').add(dispData);
+                        createdDispositions.push({ id: dispRef.id, ...dispData });
+                    }
+                }
+            } catch (err) {
+                console.error('[AGENT CREATION] Failed to parse dispositions:', err);
+            }
+        }
+        
+        if (createdDispositions.length > 0) agent.createdDispositions = createdDispositions;
 
         res.status(201).json({ message: "Agent successfully created.", agentId: ref.id, agent });
     } catch (e) {
