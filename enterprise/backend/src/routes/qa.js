@@ -25,6 +25,38 @@ router.post('/dispositions', async (req, res) => {
     }
 });
 
+// PUT /api/qa/dispositions/:id
+router.put('/dispositions/:id', async (req, res) => {
+    try {
+        const doc = await db.collection('dispositions').doc(req.params.id).get();
+        if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
+
+        const { name, category, requiresNote, active } = req.body;
+        const updates = { updatedAt: new Date() };
+        if (name !== undefined) updates.name = name;
+        if (category !== undefined) updates.category = category;
+        if (requiresNote !== undefined) updates.requiresNote = requiresNote;
+        if (active !== undefined) updates.active = active;
+
+        await db.collection('dispositions').doc(req.params.id).update(updates);
+        res.json({ id: req.params.id, ...doc.data(), ...updates });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE /api/qa/dispositions/:id
+router.delete('/dispositions/:id', async (req, res) => {
+    try {
+        const doc = await db.collection('dispositions').doc(req.params.id).get();
+        if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
+        await db.collection('dispositions').doc(req.params.id).delete();
+        res.json({ message: 'Disposition deleted successfully', id: req.params.id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // GET /api/qa/scores/:callId
 router.get('/scores/:callId', async (req, res) => {
     try {

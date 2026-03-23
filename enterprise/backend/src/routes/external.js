@@ -927,4 +927,113 @@ router.get('/debug/my-identity', async (req, res) => {
     }
 });
 
+// ═══════════════════════════════════════════════
+// DISPOSITIONS CRUD API
+// ═══════════════════════════════════════════════
+
+// GET /v1/dispositions — List all dispositions for this account
+router.get('/dispositions', async (req, res) => {
+    try {
+        const userId = req.apiUser.userId;
+        // Get dispositions owned by this user, plus global ones (no userId)
+        const snap = await db.collection('dispositions').get();
+        let dispositions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Filter: show user's own + global dispositions
+        dispositions = dispositions.filter(d => !d.userId || d.userId === userId);
+        // Sort by name
+        dispositions.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        res.json({ dispositions });
+    } catch (e) {
+        console.error('[EXT-API ERROR] GET /v1/dispositions:', e);
+        res.status(500).json({ error: 'Failed to list dispositions' });
+    }
+});
+
+// POST /v1/dispositions — Create a new disposition
+router.post('/dispositions', async (req, res) => {
+    try {
+        const { name, category, requiresNote } = req.body;
+        if (!name) return res.status(400).json({ error: "Disposition 'name' is required." });
+
+        const data = {
+            name,
+            category: category || 'General',
+            requiresNote: requiresNote || false,
+            active: true,
+            userId: req.apiUser.userId,
+            createdAt: new Date()
+        };
+        const ref = await db.collection('dispositions').add(data);
+        res.status(201).json({ id: ref.id, ...data });
+    } catch (e) {
+        console.error('[EXT-API ERROR] POST /v1/dispositions:', e);
+        res.status(500).json({ error: 'Failed to create disposition' });
+    }
+});
+
+// GET /v1/dispositions/:id — Get a single disposition by ID
+router.get('/dispositions/:id', async (req, res) => {
+    try {
+        const doc = await db.collection('dispositions').doc(req.params.id).get();
+        if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
+
+        const disposition = { id: doc.id, ...doc.data() };
+        // Verify ownership: allow if global or user's own
+        if (disposition.userId && disposition.userId !== req.apiUser.userId) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        res.json(disposition);
+    } catch (e) {
+        console.error('[EXT-API ERROR] GET /v1/dispositions/:id:', e);
+        res.status(500).json({ error: 'Failed to get disposition' });
+    }
+});
+
+// PUT /v1/dispositions/:id — Update a disposition
+router.put('/dispositions/:id', async (req, res) => {
+    try {
+        const doc = await db.collection('dispositions').doc(req.params.id).get();
+        if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
+
+        const existing = doc.data();
+        // Only allow updating own dispositions
+        if (existing.userId && existing.userId !== req.apiUser.userId) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const { name, category, requiresNote, active } = req.body;
+        const updates = { updatedAt: new Date() };
+        if (name !== undefined) updates.name = name;
+        if (category !== undefined) updates.category = category;
+        if (requiresNote !== undefined) updates.requiresNote = requiresNote;
+        if (active !== undefined) updates.active = active;
+
+        await db.collection('dispositions').doc(req.params.id).update(updates);
+        res.json({ id: req.params.id, ...existing, ...updates });
+    } catch (e) {
+        console.error('[EXT-API ERROR] PUT /v1/dispositions/:id:', e);
+        res.status(500).json({ error: 'Failed to update disposition' });
+    }
+});
+
+// DELETE /v1/dispositions/:id — Delete a disposition
+router.delete('/dispositions/:id', async (req, res) => {
+    try {
+        const doc = await db.collection('dispositions').doc(req.params.id).get();
+        if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
+
+        const existing = doc.data();
+        // Only allow deleting own dispositions
+        if (existing.userId && existing.userId !== req.apiUser.userId) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        await db.collection('dispositions').doc(req.params.id).delete();
+        res.json({ message: 'Disposition deleted successfully', id: req.params.id });
+    } catch (e) {
+        console.error('[EXT-API ERROR] DELETE /v1/dispositions/:id:', e);
+        res.status(500).json({ error: 'Failed to delete disposition' });
+    }
+});
+
 export default router;
