@@ -1021,19 +1021,25 @@ router.get('/dispositions', async (req, res) => {
 // POST /v1/dispositions — Create a new disposition
 router.post('/dispositions', async (req, res) => {
     try {
-        const { name, category, requiresNote } = req.body;
+        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
         if (!name) return res.status(400).json({ error: "Disposition 'name' is required." });
 
-        const data = {
+        const dispData = {
             name,
             category: category || 'General',
             requiresNote: requiresNote || false,
+            tagline: tagline || '',
+            requiredFields: Array.isArray(requiredFields) ? requiredFields : [],
+            linkedAgents: Array.isArray(linkedAgents) ? linkedAgents : [],
+            linkedCampaigns: Array.isArray(linkedCampaigns) ? linkedCampaigns : [],
             active: true,
             userId: req.apiUser.userId,
-            createdAt: new Date()
+            createdAt: new Date(),
+            updatedAt: new Date()
         };
-        const ref = await db.collection('dispositions').add(data);
-        res.status(201).json({ id: ref.id, ...data });
+
+        const ref = await db.collection('dispositions').add(dispData);
+        res.status(201).json({ message: 'Disposition created successfully', id: ref.id, ...dispData });
     } catch (e) {
         console.error('[EXT-API ERROR] POST /v1/dispositions:', e);
         res.status(500).json({ error: 'Failed to create disposition' });

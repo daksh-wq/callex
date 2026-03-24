@@ -16,8 +16,18 @@ router.get('/dispositions', async (req, res) => {
 // POST /api/qa/dispositions
 router.post('/dispositions', async (req, res) => {
     try {
-        const { name, category, requiresNote } = req.body;
-        const data = { name, category, requiresNote: requiresNote || false, active: true, createdAt: new Date() };
+        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
+        const data = { 
+            name, 
+            category, 
+            requiresNote: requiresNote || false, 
+            tagline: tagline || '',
+            requiredFields: Array.isArray(requiredFields) ? requiredFields : [],
+            linkedAgents: Array.isArray(linkedAgents) ? linkedAgents : [],
+            linkedCampaigns: Array.isArray(linkedCampaigns) ? linkedCampaigns : [],
+            active: true, 
+            createdAt: new Date() 
+        };
         const ref = await db.collection('dispositions').add(data);
         res.json({ id: ref.id, ...data });
     } catch (err) {
@@ -31,12 +41,16 @@ router.put('/dispositions/:id', async (req, res) => {
         const doc = await db.collection('dispositions').doc(req.params.id).get();
         if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
 
-        const { name, category, requiresNote, active } = req.body;
+        const { name, category, requiresNote, active, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
         const updates = { updatedAt: new Date() };
         if (name !== undefined) updates.name = name;
         if (category !== undefined) updates.category = category;
         if (requiresNote !== undefined) updates.requiresNote = requiresNote;
         if (active !== undefined) updates.active = active;
+        if (tagline !== undefined) updates.tagline = tagline;
+        if (requiredFields !== undefined) updates.requiredFields = Array.isArray(requiredFields) ? requiredFields : [];
+        if (linkedAgents !== undefined) updates.linkedAgents = Array.isArray(linkedAgents) ? linkedAgents : [];
+        if (linkedCampaigns !== undefined) updates.linkedCampaigns = Array.isArray(linkedCampaigns) ? linkedCampaigns : [];
 
         await db.collection('dispositions').doc(req.params.id).update(updates);
         res.json({ id: req.params.id, ...doc.data(), ...updates });
