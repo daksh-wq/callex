@@ -1004,14 +1004,27 @@ router.get('/debug/my-identity', async (req, res) => {
 router.get('/dispositions', async (req, res) => {
     try {
         const userId = req.apiUser.userId;
-        // Get dispositions owned by this user, plus global ones (no userId)
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+
         const snap = await db.collection('dispositions').get();
         let dispositions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
         // Filter: show user's own + global dispositions
         dispositions = dispositions.filter(d => !d.userId || d.userId === userId);
+        
         // Sort by name
         dispositions.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        res.json({ dispositions });
+
+        const total = dispositions.length;
+        const startIndex = (page - 1) * limit;
+        const endIndex = page * limit;
+        const paginatedDispositions = dispositions.slice(startIndex, endIndex);
+
+        res.json({ 
+            dispositions: paginatedDispositions,
+            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+        });
     } catch (e) {
         console.error('[EXT-API ERROR] GET /v1/dispositions:', e);
         res.status(500).json({ error: 'Failed to list dispositions' });

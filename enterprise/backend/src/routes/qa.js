@@ -6,8 +6,21 @@ const router = Router();
 // GET /api/qa/dispositions
 router.get('/dispositions', async (req, res) => {
     try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+
         const snap = await db.collection('dispositions').orderBy('name', 'asc').get();
-        res.json(queryToArray(snap));
+        const dispositions = queryToArray(snap);
+
+        const total = dispositions.length;
+        const startIndex = (page - 1) * limit;
+        const endIndex = page * limit;
+        const paginatedDispositions = dispositions.slice(startIndex, endIndex);
+
+        res.json({
+            dispositions: paginatedDispositions,
+            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
