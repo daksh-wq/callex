@@ -1024,13 +1024,17 @@ router.post('/dispositions', async (req, res) => {
         const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
         if (!name) return res.status(400).json({ error: "Disposition 'name' is required." });
 
+        if (!linkedAgents || !Array.isArray(linkedAgents) || linkedAgents.length === 0) {
+            return res.status(400).json({ error: "You must select at least one Agent to link this disposition to." });
+        }
+
         const dispData = {
             name,
             category: category || 'General',
             requiresNote: requiresNote || false,
             tagline: tagline || '',
             requiredFields: Array.isArray(requiredFields) ? requiredFields : [],
-            linkedAgents: Array.isArray(linkedAgents) ? linkedAgents : [],
+            linkedAgents,
             linkedCampaigns: Array.isArray(linkedCampaigns) ? linkedCampaigns : [],
             active: true,
             userId: req.apiUser.userId,
