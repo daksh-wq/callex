@@ -723,6 +723,56 @@ router.get('/calls/:id/transcript', async (req, res) => {
     }
 });
 
+// GET /v1/calls/:id/transcript/live — Live polling endpoint for real-time transcription
+// Query Params: ?since=<unix_timestamp> — only returns messages after this timestamp
+router.get('/calls/:id/transcript/live', async (req, res) => {
+    try {
+        const doc = await db.collection('calls').doc(req.params.id).get();
+        const call = docToObj(doc);
+        if (!call) return res.status(404).json({ error: 'Call not found' });
+
+        // Ownership check
+        const userId = req.apiUser.userId;
+        const isSuperAdmin = userId === 'superadmin-hardcoded-id';
+        let owned = isSuperAdmin || call.userId === userId;
+        if (!owned && call.agentId) {
+            const agentDoc = await db.collection('agents').doc(call.agentId).get();
+            owned = agentDoc.exists && agentDoc.data().userId === userId;
+        }
+        if (!owned) return res.status(404).json({ error: 'Call not found' });
+
+        const allMessages = call.transcriptMessages || [];
+        const since = parseFloat(req.query.since) || 0;
+
+        // Filter messages that arrived AFTER the `since` timestamp
+        const newMessages = since > 0
+            ? allMessages.filter(m => (m.timestamp || 0) > since)
+            : allMessages;
+
+        // Determine if the call is still active (no endedAt means still live)
+        const isLive = !call.endedAt;
+
+        // Latest timestamp for the client to use as `since` in the next poll
+        const latestTimestamp = newMessages.length > 0
+            ? Math.max(...newMessages.map(m => m.timestamp || 0))
+            : since;
+
+        res.json({
+            callId: call.id,
+            isLive,
+            messages: newMessages,
+            newCount: newMessages.length,
+            totalCount: allMessages.length,
+            latestTimestamp,
+            pollAgainAt: isLive ? latestTimestamp : null,
+        });
+    } catch (e) {
+        console.error('[EXTERNAL API ERROR] GET /v1/calls/:id/transcript/live:', e);
+        res.status(500).json({ error: 'Failed to retrieve live transcript' });
+    }
+});
+
+
 // ═══════════════════════════════════════════════
 // VOICES API
 // ═══════════════════════════════════════════════
