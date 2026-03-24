@@ -1497,8 +1497,33 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         speaker_verifier.clear_verify_buffer()  # Reset verify buffer for next utterance
                         duration = len(buffer) / SAMPLE_RATE
                         if duration >= MIN_SPEECH_DURATION:
-                            print(f"[VAD] End of speech detected ({duration:.2f}s). Processing...")
+                            # ── Smart Short Utterance Validation ──
+                            # For very short speech (<0.5s), apply stricter energy check
+                            # to distinguish genuine words ("haan", "ok") from noise bursts
                             samples = np.array(buffer, dtype=np.float32)
+                            if duration < 0.5:
+                                avg_energy = np.sqrt(np.mean(samples * samples))
+                                avg_db = 20 * np.log10(avg_energy + 1e-9)
+                                # Short genuine words are spoken clearly (higher energy)
+                                # Noise bursts are random and have low average energy
+                                if avg_db < -30.0:
+                                    print(f"[VAD] Short utterance rejected: too quiet ({avg_db:.1f}dB, {duration:.2f}s)")
+                                    buffer.clear()
+                                    vad_buffer.clear()
+                                    speaker_verifier.clear_verify_buffer()
+                                    continue
+                                # Also verify Silero gives decent confidence on the full short buffer
+                                if use_silero and silero_vad and len(vad_buffer) > 0:
+                                    vad_samples = np.array(vad_buffer, dtype=np.float32)
+                                    is_valid, short_conf = silero_vad.is_speech(vad_samples)
+                                    if not is_valid or short_conf < 0.55:
+                                        print(f"[VAD] Short utterance rejected: low VAD confidence ({short_conf:.2f}, {duration:.2f}s)")
+                                        buffer.clear()
+                                        vad_buffer.clear()
+                                        speaker_verifier.clear_verify_buffer()
+                                        continue
+                                print(f"[VAD] ✅ Short utterance accepted ({avg_db:.1f}dB, {duration:.2f}s)")
+                            print(f"[VAD] End of speech detected ({duration:.2f}s). Processing...")
                             buffer.clear()
                             vad_buffer.clear()
                             async with task_lock:
