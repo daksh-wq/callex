@@ -12,8 +12,8 @@ class VADSettings(BaseModel):
     """Voice Activity Detection configuration"""
     min_speech_duration: float = Field(0.1, ge=0.05, le=2.0, description="Minimum speech duration in seconds")
     silence_timeout: float = Field(1.5, ge=0.3, le=5.0, description="Silence timeout in seconds")
-    interruption_threshold_db: float = Field(-25.0, ge=-50.0, le=-10.0, description="Audio threshold in dB")
-    noise_gate_db: float = Field(-45.0, ge=-70.0, le=-30.0, description="Noise gate threshold in dB")
+    interruption_threshold_db: float = Field(-35.0, ge=-50.0, le=-10.0, description="Audio threshold in dB")
+    noise_gate_db: float = Field(-55.0, ge=-70.0, le=-30.0, description="Noise gate threshold in dB")
     spectral_flatness_threshold: float = Field(0.55, ge=0.1, le=1.0, description="Spectral flatness threshold")
 
 

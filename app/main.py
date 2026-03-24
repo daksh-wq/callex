@@ -173,7 +173,7 @@ SAMPLE_RATE = 16000  # 16kHz (High Quality)
 MAX_BUFFER_SECONDS = 5
 
 # VAD Configuration (from config)
-MIN_SPEECH_DURATION = max(0.4, bot_config.vad.min_speech_duration)
+MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 SILENCE_TIMEOUT = max(2.0, bot_config.vad.silence_timeout)
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
@@ -186,7 +186,7 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.85
+SILERO_CONFIDENCE_THRESHOLD = 0.65
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
@@ -194,7 +194,7 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
-BARGE_IN_SILENCE_TIMEOUT = 1.0  # faster silence timeout after barge-in (customer wants quick reply)
+BARGE_IN_SILENCE_TIMEOUT = 1.5  # seconds of silence after barge-in before committing (was 1.0, too fast for short phrases)
 
 SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
 
