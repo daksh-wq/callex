@@ -1058,7 +1058,12 @@ router.get('/dispositions', async (req, res) => {
         const limit = parseInt(req.query.limit) || 50;
 
         const snap = await db.collection('dispositions').get();
-        let dispositions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        let dispositions = snap.docs.map(d => ({ 
+            id: d.id, 
+            ...d.data(),
+            linkedAgents: d.data().linkedAgents || [],
+            requiredFields: d.data().requiredFields || []
+        }));
         
         // Filter: show user's own + global dispositions
         dispositions = dispositions.filter(d => !d.userId || d.userId === userId);
@@ -1119,7 +1124,12 @@ router.get('/dispositions/:id', async (req, res) => {
         const doc = await db.collection('dispositions').doc(req.params.id).get();
         if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
 
-        const disposition = { id: doc.id, ...doc.data() };
+        const disposition = { 
+            id: doc.id, 
+            ...doc.data(),
+            linkedAgents: doc.data().linkedAgents || [],
+            requiredFields: doc.data().requiredFields || []
+        };
         // Verify ownership: allow if global or user's own
         if (disposition.userId && disposition.userId !== req.apiUser.userId) {
             return res.status(403).json({ error: 'Access denied' });
