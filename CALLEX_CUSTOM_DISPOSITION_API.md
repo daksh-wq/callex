@@ -1,7 +1,7 @@
-# Golex Voice AI — Custom Disposition API Protocol
-> **Version:** 3.1 | **Engine:** Golex Voice AI Core
+# Callex Voice AI — Custom Disposition API Protocol
+> **Version:** 3.1 | **Engine:** Callex Voice AI Core
 
-Welcome to the **Golex Voice AI Disposition Module**. A disposition is not just a tag indicating how a call ended; in the Golex ecosystem, a disposition dictates **exactly what data** the AI must extract from the customer interaction.
+Welcome to the **Callex Voice AI Disposition Module**. A disposition is not just a tag indicating how a call ended; in the Callex ecosystem, a disposition dictates **exactly what data** the AI must extract from the customer interaction.
 
 **Critical Workflow Requirement:** All custom dispositions *must* be linked to at least one active AI Agent upon creation. When configuring your application's UI, you should query the `/v1/agents` endpoint, display a list of available agents to the user, and pass their selected Agent IDs to the disposition creation payload.
 
@@ -9,7 +9,7 @@ Welcome to the **Golex Voice AI Disposition Module**. A disposition is not just 
 
 ## 🛠️ The Disposition Object Architecture
 
-A customized disposition in Golex follows this exact JSON structure:
+A customized disposition in Callex follows this exact JSON structure:
 
 ```json
 {
@@ -42,7 +42,7 @@ A customized disposition in Golex follows this exact JSON structure:
 
 ## 🚀 API Endpoints
 
-**Base Endpoint URL:** `https://api.golex.ai/v1/dispositions`
+**Base Endpoint URL:** `https://api.callex.ai/v1/dispositions`
 **Authentication:** `Authorization: Bearer <YOUR_API_KEY>`
 
 ### 1. Create a New Custom Disposition
@@ -110,8 +110,28 @@ Before creating a disposition, use this endpoint to populate a dropdown menu in 
 ### 4. Fetch / List Your Dispositions
 * **Method:** `GET`
 * **URL:** `/v1/dispositions`
+* **Query Params:** `?page=1&limit=50`
 
-Returns an array of all custom dispositions in your Golex workspace. Filter this list dynamically on your frontend by inspecting the `linkedAgents` arrays to display only relevant possibilities when rendering a specific Agent's settings module.
+Returns a paginated array of all custom dispositions in your Callex workspace. Filter this list dynamically on your frontend by inspecting the `linkedAgents` arrays to display only relevant possibilities when rendering a specific Agent's settings module.
+
+**Success Response (200 OK):**
+```json
+{
+  "dispositions": [
+    {
+      "id": "disp_8f72a9b3",
+      "name": "Meeting Booked",
+      "linkedAgents": ["agent_12345"]
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 12,
+    "totalPages": 1
+  }
+}
+```
 
 ---
 
@@ -124,8 +144,8 @@ Permanently deletes the custom disposition.
 
 ---
 
-## 🧠 How Golex Voice AI Uses This Data
+## 🧠 How Callex Voice AI Uses This Data
 
-When a live call concludes, the Golex Voice AI pipeline evaluates the transcript strictly against the **active dispositions** embedded inside the `linkedAgents` array for the AI Agent that handled the call. 
+When a live call concludes, the Callex Voice AI pipeline evaluates the transcript strictly against the **active dispositions** embedded inside the `linkedAgents` array for the AI Agent that handled the call. 
 
 If the AI determines the outcome logically matches the `tagline` of a disposition, it will automatically attempt to extract every variable listed inside `requiredFields` directly from the conversational context, delivering a perfectly structured JSON object back to your webhook or API dashboard infrastructure. 
