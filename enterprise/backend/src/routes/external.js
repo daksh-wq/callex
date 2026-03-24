@@ -1071,6 +1071,18 @@ router.get('/dispositions', async (req, res) => {
         // Sort by name
         dispositions.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
+        // Filter: linkedAgent
+        if (req.query.linkedAgent) {
+            dispositions = dispositions.filter(d => 
+                d.linkedAgents && d.linkedAgents.includes(req.query.linkedAgent)
+            );
+        }
+
+        // Optional pagination bypass
+        if (req.query.pagination === 'false') {
+            return res.json({ dispositions });
+        }
+
         const total = dispositions.length;
         const startIndex = (page - 1) * limit;
         const endIndex = page * limit;

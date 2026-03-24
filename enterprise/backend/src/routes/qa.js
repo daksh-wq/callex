@@ -10,7 +10,17 @@ router.get('/dispositions', async (req, res) => {
         const limit = parseInt(req.query.limit) || 50;
 
         const snap = await db.collection('dispositions').orderBy('name', 'asc').get();
-        const dispositions = queryToArray(snap);
+        let dispositions = queryToArray(snap);
+
+        if (req.query.linkedAgent) {
+            dispositions = dispositions.filter(d => 
+                d.linkedAgents && d.linkedAgents.includes(req.query.linkedAgent)
+            );
+        }
+
+        if (req.query.pagination === 'false') {
+            return res.json({ dispositions });
+        }
 
         const total = dispositions.length;
         const startIndex = (page - 1) * limit;
