@@ -770,6 +770,70 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     return text
 
 
+# ───────── TTS Number Sanitizer (Production Safety Net) ─────────
+
+DIGIT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
+TEEN_WORDS = ['ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen']
+TENS_WORDS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety']
+
+def _number_to_indian_words(n: int) -> str:
+    """Convert an integer to spoken Indian English words (lakh/crore system)."""
+    if n < 0:
+        return 'minus ' + _number_to_indian_words(-n)
+    if n == 0:
+        return 'zero'
+    if n < 10:
+        return DIGIT_WORDS[n]
+    if n < 20:
+        return TEEN_WORDS[n - 10]
+    if n < 100:
+        t, u = divmod(n, 10)
+        return TENS_WORDS[t] + (' ' + DIGIT_WORDS[u] if u else '')
+    if n < 1000:
+        h, rem = divmod(n, 100)
+        return DIGIT_WORDS[h] + ' hundred' + (' ' + _number_to_indian_words(rem) if rem else '')
+    if n < 100000:
+        t, rem = divmod(n, 1000)
+        return _number_to_indian_words(t) + ' thousand' + (' ' + _number_to_indian_words(rem) if rem else '')
+    if n < 10000000:
+        l, rem = divmod(n, 100000)
+        return _number_to_indian_words(l) + ' lakh' + (' ' + _number_to_indian_words(rem) if rem else '')
+    cr, rem = divmod(n, 10000000)
+    return _number_to_indian_words(cr) + ' crore' + (' ' + _number_to_indian_words(rem) if rem else '')
+
+def _convert_number_match(match) -> str:
+    """Regex callback: convert a matched number string to spoken words."""
+    text = match.group(0)
+    # Handle decimals like 8.5
+    if '.' in text:
+        parts = text.split('.', 1)
+        try:
+            integer_part = _number_to_indian_words(int(parts[0])) if parts[0] else 'zero'
+            decimal_part = ' '.join(DIGIT_WORDS[int(d)] for d in parts[1])
+            return f"{integer_part} point {decimal_part}"
+        except (ValueError, IndexError):
+            return text
+    try:
+        num = int(text)
+        # Phone numbers (10+ digits) should be spoken digit by digit
+        if len(text) >= 10:
+            return ' '.join(DIGIT_WORDS[int(d)] for d in text)
+        return _number_to_indian_words(num)
+    except ValueError:
+        return text
+
+def sanitize_for_tts(text: str) -> str:
+    """Production safety net: converts ANY remaining digits in LLM output to spoken words.
+    This runs AFTER the LLM response, so even if Gemini ignores formatting rules, the TTS
+    engine will never receive raw digit characters."""
+    # Replace % with ' percent'
+    text = text.replace('%', ' percent')
+    # Convert all number sequences (including decimals) to words
+    text = re.sub(r'\d+\.?\d*', _convert_number_match, text)
+    # Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 # ───────── LLM Response Generation ─────────
 
 async def generate_response(client: httpx.AsyncClient, user_text: str, history: List[Dict], agent_config: Dict = None) -> str:
@@ -800,10 +864,15 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
         system_prompt += f"\n\n[TRAINED KNOWLEDGE BASE — Use this to answer customer questions]:\n{knowledge_base}"
 
     # --- HARD SYSTEM OVERRIDE FOR SAFETY & IDENTITY ---
-    system_prompt += "\n\n[CRITICAL FORMATTING RULES FOR NUMBERS AND CURRENCY - NEVER IGNORE THIS]:\n"
-    system_prompt += "1. NEVER use digits or numbers like '45000', '23', '320'. ALWAYS spell them out in words.\n"
-    system_prompt += "2. For Indian currency amounts, use 'Lakh' (or 'Lex') and 'Thousand' instead of digits. For example: write '45 Lakh' instead of '4500000', write '38 thousand' instead of '38000', write '320 rupees' instead of '320'.\n"
-    system_prompt += "3. NEVER use the currency symbol '₹' or abbreviations like 'RS' or 'Rs'. ALWAYS use the word 'rupees' or 'रुपये'.\n\n"
+    system_prompt += "\n\n[ABSOLUTE FORMATTING RULES - VIOLATION MEANS FAILURE]:\n"
+    system_prompt += "1. You are speaking on a PHONE CALL. Your text will be read aloud by a voice engine. It CANNOT read digits.\n"
+    system_prompt += "2. NEVER output any digit characters (0-9). Convert ALL numbers to full spoken words. Examples: '45000' → 'forty five thousand', '23' → 'twenty three', '4500000' → 'forty five lakh'.\n"
+    system_prompt += "3. For Indian amounts: use 'lakh' and 'thousand' system. '1500000' = 'fifteen lakh', '38000' = 'thirty eight thousand', '250' = 'two hundred fifty'.\n"
+    system_prompt += "4. NEVER use the ₹ symbol, 'Rs', 'Rs.', or 'INR'. ALWAYS write the word 'rupees' instead.\n"
+    system_prompt += "5. NEVER use percentage symbols (%). Write 'percent' instead. Example: '8.5%' → 'eight point five percent'.\n"
+    system_prompt += "6. Phone numbers must be spoken digit by digit: '9876543210' → 'nine eight seven six five four three two one zero'.\n"
+    system_prompt += "7. Dates must be spoken: '15/03/2025' → 'fifteenth March twenty twenty five'.\n"
+    system_prompt += "8. This is the MOST IMPORTANT rule. If you output even ONE digit, the call will sound robotic and the customer will hang up.\n\n"
     
     system_prompt += "[IDENTITY RULES]:\n"
     system_prompt += "अगर कोई तुमसे पूछे कि तुम कौन सी भाषा (language), मॉडल (model), या तकनीक (technology) पर काम करते हो, तो सिर्फ यह कहना: "
@@ -848,8 +917,9 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 return "माफ़ कीजिये, आवाज नहीं आई।"
             reply = parts[0]["text"].strip().replace("*", "")
             print(f"\n🤖 [BOT REPLY]: '{reply}'\n")
-            reply = re.sub(r'(?i)\b(?:rs\.?)\b|₹', ' rupees ', reply)
+            reply = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', reply)
             reply = re.sub(r'\[.*?\]', '', reply).strip()
+            reply = sanitize_for_tts(reply)
             break
         except asyncio.TimeoutError:
             print(f"[LLM] Timeout on attempt {attempt + 1}")
