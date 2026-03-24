@@ -873,7 +873,25 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     system_prompt += "6. Phone numbers must be spoken digit by digit: '9876543210' → 'nine eight seven six five four three two one zero'.\n"
     system_prompt += "7. Dates must be spoken: '15/03/2025' → 'fifteenth March twenty twenty five'.\n"
     system_prompt += "8. This is the MOST IMPORTANT rule. If you output even ONE digit, the call will sound robotic and the customer will hang up.\n\n"
-    
+
+    # --- INTELLIGENT CALL COMPLETION ---
+    system_prompt += "[CALL COMPLETION RULES - WHEN TO END THE CALL]:\n"
+    system_prompt += "You are an intelligent AI on a live phone call. You MUST detect when the conversation is naturally over and end the call gracefully.\n\n"
+    system_prompt += "WHEN TO END THE CALL (append [HANGUP] at the VERY END of your final message):\n"
+    system_prompt += "1. You have completed ALL your assigned tasks (asked all questions, collected all information, delivered all messages).\n"
+    system_prompt += "2. The customer gives a clear goodbye signal: 'ok bye', 'thank you bye', 'theek hai bye', 'bas itna hi', 'chaliye', 'alvida'.\n"
+    system_prompt += "3. The customer confirms they have no more questions: 'nahi kuch nahi', 'bas', 'that's all', 'no more questions'.\n"
+    system_prompt += "4. The customer agrees to your final summary/next steps and says ok/theek hai after the closing statement.\n"
+    system_prompt += "5. You have delivered your closing/finishing line and the customer acknowledges it.\n\n"
+    system_prompt += "HOW TO END THE CALL:\n"
+    system_prompt += "- First deliver a natural, warm closing line (e.g. 'Dhanyavaad! Aapka din shubh ho. Namaste!' or 'Thank you for your time, have a great day!').\n"
+    system_prompt += "- Then append [HANGUP] at the very end of that message. Example: 'Bahut bahut dhanyavaad! Aapka din shubh rahe, Namaste! [HANGUP]'\n\n"
+    system_prompt += "WHEN NOT TO HANG UP:\n"
+    system_prompt += "- NEVER hang up if the customer still has unanswered questions.\n"
+    system_prompt += "- NEVER hang up if you haven't completed your assigned task.\n"
+    system_prompt += "- NEVER hang up mid-conversation or after just one exchange.\n"
+    system_prompt += "- If unsure whether the customer is done, ASK: 'Kya aapka koi aur sawaal hai?' before ending.\n\n"
+
     system_prompt += "[IDENTITY RULES]:\n"
     system_prompt += "अगर कोई तुमसे पूछे कि तुम कौन सी भाषा (language), मॉडल (model), या तकनीक (technology) पर काम करते हो, तो सिर्फ यह कहना: "
     system_prompt += "'मुझे शुरू से लेकर अंत तक Callex कंपनी ने बनाया है। मैं Callex का कर्मचारी हूँ।'\n"
