@@ -30,6 +30,18 @@ router.get('/:id', async (req, res) => {
     res.json(agent);
 });
 
+const parseBool = (val, def) => {
+    if (val === undefined || val === null || val === '') return def;
+    if (typeof val === 'string') return val.toLowerCase() === 'true' || val === '1';
+    return Boolean(val);
+};
+
+const parseNum = (val, def) => {
+    if (val === undefined || val === null || val === '') return def;
+    const n = Number(val);
+    return isNaN(n) ? def : n;
+};
+
 // POST /api/agents
 router.post('/', upload.single('file'), async (req, res) => {
     const { name, description, systemPrompt, openingLine, voice, language, sttEngine, llmModel,
@@ -48,49 +60,49 @@ router.post('/', upload.single('file'), async (req, res) => {
         name, description: description || '', systemPrompt: systemPrompt || '', openingLine: openingLine || '',
         voice: voice || 'alloy', language: language || 'en-US', sttEngine: sttEngine || 'callex-1.1',
         llmModel: llmModel || 'callex-1.3',
-        fillerPhrases: JSON.stringify(fillerPhrases || ['Let me check...', 'One moment...']),
-        prosodyRate: prosodyRate || 1.0, prosodyPitch: prosodyPitch || 1.0,
-        ipaLexicon: JSON.stringify(ipaLexicon || {}),
-        tools: JSON.stringify(tools || []),
-        topK: topK || 5, similarityThresh: similarityThresh || 0.75,
+        fillerPhrases: typeof fillerPhrases === 'string' ? fillerPhrases : JSON.stringify(fillerPhrases || ['Let me check...', 'One moment...']),
+        prosodyRate: parseNum(prosodyRate, 1.0), prosodyPitch: parseNum(prosodyPitch, 1.0),
+        ipaLexicon: typeof ipaLexicon === 'string' ? ipaLexicon : JSON.stringify(ipaLexicon || {}),
+        tools: typeof tools === 'string' ? tools : JSON.stringify(tools || []),
+        topK: parseNum(topK, 5), similarityThresh: parseNum(similarityThresh, 0.75),
         fallbackMessage: fallbackMessage || "I'm sorry, I don't have that information right now.",
         profanityFilter: profanityFilter || 'redact',
-        topicRestriction: topicRestriction || false,
+        topicRestriction: parseBool(topicRestriction, false),
         backgroundAmbience: backgroundAmbience || 'none',
         speakingStyle: speakingStyle || 'professional',
         bargeInMode: bargeInMode || 'balanced',
-        patienceMs: patienceMs || 800,
-        maxDuration: maxDuration || 30,
-        temperature: temperature || 0.7,
-        maxTokens: maxTokens || 250,
-        strictToolCalling: strictToolCalling ?? true,
-        ringTimeout: ringTimeout || 30,
+        patienceMs: parseNum(patienceMs, 800),
+        maxDuration: parseNum(maxDuration, 30),
+        temperature: parseNum(temperature, 0.7),
+        maxTokens: parseNum(maxTokens, 250),
+        strictToolCalling: parseBool(strictToolCalling, true),
+        ringTimeout: parseNum(ringTimeout, 30),
         voicemailLogic: voicemailLogic || 'hangup',
         webhookUrl: webhookUrl || null,
-        autoSummary: autoSummary ?? true,
-        autoSentiment: autoSentiment ?? true,
-        recordCall: recordCall ?? true,
-        processDtmf: processDtmf ?? true,
+        autoSummary: parseBool(autoSummary, true),
+        autoSentiment: parseBool(autoSentiment, true),
+        recordCall: parseBool(recordCall, true),
+        processDtmf: parseBool(processDtmf, true),
         amdPrecision: amdPrecision || 'balanced',
         voicemailDropAudio: voicemailDropAudio || null,
-        sentimentRouting: sentimentRouting ?? false,
+        sentimentRouting: parseBool(sentimentRouting, false),
         competitorAlerts: competitorAlerts || '',
-        supervisorWhisper: supervisorWhisper ?? true,
-        piiRedaction: piiRedaction ?? true,
-        geoCallerId: geoCallerId ?? false,
-        multiAgentHandoff: multiAgentHandoff ?? false,
+        supervisorWhisper: parseBool(supervisorWhisper, true),
+        piiRedaction: parseBool(piiRedaction, true),
+        geoCallerId: parseBool(geoCallerId, false),
+        multiAgentHandoff: parseBool(multiAgentHandoff, false),
         objectionHandling: objectionHandling || 'standard',
-        emotionalMirroring: emotionalMirroring ?? true,
+        emotionalMirroring: parseBool(emotionalMirroring, true),
         complianceScript: complianceScript || null,
-        dynamicCodeSwitching: dynamicCodeSwitching ?? true,
-        dncLitigatorScrub: dncLitigatorScrub ?? true,
-        callBlending: callBlending ?? false,
-        costCapTokens: costCapTokens || 5000,
+        dynamicCodeSwitching: parseBool(dynamicCodeSwitching, true),
+        dncLitigatorScrub: parseBool(dncLitigatorScrub, true),
+        callBlending: parseBool(callBlending, false),
+        costCapTokens: parseNum(costCapTokens, 5000),
         postCallSms: postCallSms || null,
-        autoFollowUp: autoFollowUp ?? true,
-        followUpDefaultDays: followUpDefaultDays || 1,
+        autoFollowUp: parseBool(autoFollowUp, true),
+        followUpDefaultDays: parseNum(followUpDefaultDays, 1),
         followUpDefaultTime: followUpDefaultTime || '10:00',
-        analysisSchema: analysisSchema || '[]',
+        analysisSchema: typeof analysisSchema === 'string' ? analysisSchema : JSON.stringify(analysisSchema || []),
         status: 'draft',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -205,13 +217,29 @@ router.patch('/:id', async (req, res) => {
     const existing = docToObj(doc);
     if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
 
-    const data = { ...req.body, updatedAt: new Date() };
-    if (data.fillerPhrases && Array.isArray(data.fillerPhrases)) data.fillerPhrases = JSON.stringify(data.fillerPhrases);
-    if (data.ipaLexicon && typeof data.ipaLexicon === 'object') data.ipaLexicon = JSON.stringify(data.ipaLexicon);
-    if (data.tools && Array.isArray(data.tools)) data.tools = JSON.stringify(data.tools);
-    delete data.id;
+    const updates = { ...req.body, updatedAt: new Date() };
 
-    await db.collection('agents').doc(req.params.id).update(data);
+    // JSON Stringified Arrays
+    if (updates.fillerPhrases !== undefined) updates.fillerPhrases = typeof updates.fillerPhrases === 'string' ? updates.fillerPhrases : JSON.stringify(updates.fillerPhrases);
+    if (updates.ipaLexicon !== undefined) updates.ipaLexicon = typeof updates.ipaLexicon === 'string' ? updates.ipaLexicon : JSON.stringify(updates.ipaLexicon);
+    if (updates.tools !== undefined) updates.tools = typeof updates.tools === 'string' ? updates.tools : JSON.stringify(updates.tools);
+    if (updates.analysisSchema !== undefined) updates.analysisSchema = typeof updates.analysisSchema === 'string' ? updates.analysisSchema : JSON.stringify(updates.analysisSchema);
+
+    // Booleans
+    const boolFields = ['topicRestriction', 'strictToolCalling', 'autoSummary', 'autoSentiment', 'recordCall', 'processDtmf', 'sentimentRouting', 'supervisorWhisper', 'piiRedaction', 'geoCallerId', 'multiAgentHandoff', 'emotionalMirroring', 'dynamicCodeSwitching', 'dncLitigatorScrub', 'callBlending', 'autoFollowUp'];
+    for (const f of boolFields) {
+        if (updates[f] !== undefined) updates[f] = parseBool(updates[f], updates[f]);
+    }
+
+    // Numbers
+    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
+    for (const f of numFields) {
+        if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
+    }
+
+    delete updates.id;
+
+    await db.collection('agents').doc(req.params.id).update(updates);
     const updated = await db.collection('agents').doc(req.params.id).get();
     res.json(docToObj(updated));
 });
