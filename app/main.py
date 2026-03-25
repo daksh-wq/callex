@@ -1235,8 +1235,36 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
                     yield fallback_chunk
                 return
     
+    
     print(f"[Callex Voice Engine] Stream ended ({time.time() - start_time:.2f}s)")
 
+# ───────── CRM PHONE LOOKUP ─────────
+_crm_phone_cache = {}
+
+async def fetch_crm_phone(crm_id: str) -> str:
+    if not crm_id:
+        return "Unknown"
+    
+    if crm_id in _crm_phone_cache:
+        return _crm_phone_cache[crm_id]
+
+    url = f"https://demo.callex.in:3300/crms_info/?crm_id={crm_id}"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=5.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    primary = data.get("primaryNumber")
+                    if primary:
+                        _crm_phone_cache[crm_id] = primary
+                        return primary
+        except Exception as e:
+            print(f"[CRM API] Attempt {attempt+1} failed for {crm_id}: {e}")
+            await asyncio.sleep(0.5)
+
+    return "Unknown"
 
 # ───────── WEBSOCKET HANDLERS ─────────
 
@@ -1285,6 +1313,18 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         or ws.query_params.get("to")
     )
 
+    crm_id = ws.query_params.get("crm_id") or ws.headers.get("crm-id")
+    if crm_id:
+        print(f"[CALL] Fetching CRM Phone for crm_id: {crm_id}")
+        crm_phone = await fetch_crm_phone(crm_id)
+        if crm_phone != "Unknown":
+            phone_number = crm_phone
+        elif not phone_number:
+            phone_number = "Unknown"
+    else:
+        if not phone_number:
+            phone_number = "Unknown"
+
     if call_uuid:
         print(f"[CALL] UUID: {call_uuid}")
     else:
@@ -1292,8 +1332,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         import uuid
         call_uuid = str(uuid.uuid4())
 
-    if phone_number:
-        print(f"[CALL] Phone: {phone_number}")
+    print(f"[CALL] Phone: {phone_number} (CRM ID: {crm_id})")
         
     # --- LOAD AGENT CONFIGURATION ---
     if agent_id:
@@ -1318,6 +1357,22 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     try:
         from firebase_admin import firestore as fs
         firestore_db = fs.client()
+        call_doc = {
+            'id': call_uuid,
+            'agentId': agent_id or 'default',
+            'agentName': agent_config['name'],
+            'phoneNumber': phone_number,
+            'crmId': crm_id,
+            'direction': 'inbound',
+            'status': 'in-progress',
+            'duration': 0,
+            'startedAt': fs.SERVER_TIMESTAMP,
+            'cost': 0
+        }
+        firestore_db.collection('calls').doc(call_uuid).set(call_doc)
+        print(f"[DB] Live call {call_uuid} created in Firestore")
+    except Exception as e:
+        print(f"[DB] Error creating live call row: {e}")
         call_doc = {
             'id': call_uuid,
             'phoneNumber': phone_number,
@@ -1866,6 +1921,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             doc_ref.set({
                                 'id': call_uuid,
                                 'phoneNumber': phone_number or '',
+                                'crmId': crm_id or '',
                                 'agentId': agent_config.get('id', ''),
                                 'agentName': agent_config.get('name', ''),
                                 'startedAt': fs.SERVER_TIMESTAMP,
