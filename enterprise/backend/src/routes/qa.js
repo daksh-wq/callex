@@ -39,7 +39,7 @@ router.get('/dispositions', async (req, res) => {
 // POST /api/qa/dispositions
 router.post('/dispositions', async (req, res) => {
     try {
-        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
+        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns, callDirection } = req.body;
         
         if (!linkedAgents || !Array.isArray(linkedAgents) || linkedAgents.length === 0) {
             return res.status(400).json({ error: "You must select at least one Agent to link this disposition to." });
@@ -53,6 +53,7 @@ router.post('/dispositions', async (req, res) => {
             requiredFields: Array.isArray(requiredFields) ? requiredFields : [],
             linkedAgents,
             linkedCampaigns: Array.isArray(linkedCampaigns) ? linkedCampaigns : [],
+            callDirection: callDirection || 'both', // 'inbound', 'outbound', 'both'
             active: true, 
             createdAt: new Date() 
         };
@@ -69,7 +70,7 @@ router.put('/dispositions/:id', async (req, res) => {
         const doc = await db.collection('dispositions').doc(req.params.id).get();
         if (!doc.exists) return res.status(404).json({ error: 'Disposition not found' });
 
-        const { name, category, requiresNote, active, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
+        const { name, category, requiresNote, active, tagline, requiredFields, linkedAgents, linkedCampaigns, callDirection } = req.body;
         const updates = { updatedAt: new Date() };
         if (name !== undefined) updates.name = name;
         if (category !== undefined) updates.category = category;
@@ -79,6 +80,7 @@ router.put('/dispositions/:id', async (req, res) => {
         if (requiredFields !== undefined) updates.requiredFields = Array.isArray(requiredFields) ? requiredFields : [];
         if (linkedAgents !== undefined) updates.linkedAgents = Array.isArray(linkedAgents) ? linkedAgents : [];
         if (linkedCampaigns !== undefined) updates.linkedCampaigns = Array.isArray(linkedCampaigns) ? linkedCampaigns : [];
+        if (callDirection !== undefined) updates.callDirection = callDirection;
 
         await db.collection('dispositions').doc(req.params.id).update(updates);
         res.json({ id: req.params.id, ...doc.data(), ...updates });

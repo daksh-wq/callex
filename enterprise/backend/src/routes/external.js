@@ -1239,7 +1239,7 @@ router.get('/dispositions', async (req, res) => {
 // POST /v1/dispositions — Create a new disposition
 router.post('/dispositions', async (req, res) => {
     try {
-        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns } = req.body;
+        const { name, category, requiresNote, tagline, requiredFields, linkedAgents, linkedCampaigns, callDirection } = req.body;
         if (!name) return res.status(400).json({ error: "Disposition 'name' is required." });
 
         if (!linkedAgents || !Array.isArray(linkedAgents) || linkedAgents.length === 0) {
@@ -1254,6 +1254,7 @@ router.post('/dispositions', async (req, res) => {
             requiredFields: Array.isArray(requiredFields) ? requiredFields : [],
             linkedAgents,
             linkedCampaigns: Array.isArray(linkedCampaigns) ? linkedCampaigns : [],
+            callDirection: callDirection || 'both',
             active: true,
             userId: req.apiUser.userId,
             createdAt: new Date(),
