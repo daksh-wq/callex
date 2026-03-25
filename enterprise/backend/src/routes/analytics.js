@@ -91,8 +91,13 @@ router.get('/calls', async (req, res) => {
             }
         }
         if (endDate) {
-            const endMs = new Date(endDate).getTime();
-            if (!isNaN(endMs)) {
+            let endObj = new Date(endDate);
+            if (!isNaN(endObj.getTime())) {
+                // If only a date was passed, bump it to the end of that day (23:59:59.999)
+                if (endDate.trim().length <= 10) {
+                    endObj.setUTCHours(23, 59, 59, 999);
+                }
+                const endMs = endObj.getTime();
                 calls = calls.filter(c => {
                     const ts = c.startedAt?.toDate ? c.startedAt.toDate().getTime() : new Date(c.startedAt || 0).getTime();
                     return ts <= endMs;
