@@ -313,7 +313,7 @@ def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]
 
 
 class LocalRecorder:
-    """Records audio from WebSocket streams (customer + bot) into a WAV file"""
+    """Records audio from WebSocket streams (customer + bot) into a STEREO WAV file"""
     def __init__(self, call_uuid: str):
         self.call_uuid = call_uuid
         self.filepath = f"/tmp/call_{call_uuid}.wav"
@@ -321,34 +321,56 @@ class LocalRecorder:
         self.frames_written = 0
         self.customer_chunks = 0
         self.bot_chunks = 0
+        self.bot_buffer = bytearray()
+        
         try:
             self.wav_file = wave.open(self.filepath, 'wb')
-            self.wav_file.setnchannels(1)
+            self.wav_file.setnchannels(2) # STEREO: L=Customer, R=Bot
             self.wav_file.setsampwidth(2)
             self.wav_file.setframerate(SAMPLE_RATE)
-            print(f"[LOCAL RECORDING] Started: {self.filepath}")
+            print(f"[LOCAL RECORDING] Started Stereo: {self.filepath}")
         except Exception as e:
             print(f"[LOCAL RECORDING ERROR] Failed to create file: {e}")
 
-    def write_audio(self, pcm_bytes: bytes, source: str = "unknown"):
-        if self.wav_file:
-            try:
-                self.wav_file.writeframes(pcm_bytes)
-                self.frames_written += len(pcm_bytes) // 2
-                if source == "customer":
-                    self.customer_chunks += 1
-                elif source == "bot":
-                    self.bot_chunks += 1
-            except Exception as e:
-                print(f"[LOCAL RECORDING ERROR] Write failed: {e}")
+    def write_bot_audio(self, pcm_bytes: bytes):
+        """Buffer incoming bot audio rapidly streamed by the AI TTS"""
+        self.bot_buffer.extend(pcm_bytes)
+        self.bot_chunks += 1
+
+    def write_customer_audio(self, pcm_bytes: bytes):
+        """As the real-time clock (customer stream) arrives, interleave the buffered bot audio to create stereo frames"""
+        if not self.wav_file:
+            return
+            
+        try:
+            stereo_frames = bytearray()
+            # Each PCM16 sample is 2 bytes
+            for i in range(0, len(pcm_bytes), 2):
+                customer_sample = pcm_bytes[i:i+2]
+                
+                # Check if we have bot audio in the buffer to play alongside this customer sample
+                if len(self.bot_buffer) >= 2:
+                    bot_sample = self.bot_buffer[:2]
+                    del self.bot_buffer[:2]
+                else:
+                    bot_sample = b'\x00\x00' # Silence
+                    
+                # Combine Left (Customer) + Right (Bot)
+                stereo_frames.extend(customer_sample)
+                stereo_frames.extend(bot_sample)
+                
+            self.wav_file.writeframes(stereo_frames)
+            self.frames_written += len(pcm_bytes) // 2
+            self.customer_chunks += 1
+        except Exception as e:
+            print(f"[LOCAL RECORDING ERROR] Write failed: {e}")
 
     def close(self) -> str:
         if self.wav_file:
             try:
                 self.wav_file.close()
                 duration = self.frames_written / SAMPLE_RATE
-                print(f"[LOCAL RECORDING] Saved: {self.filepath} ({duration:.1f}s)")
-                print(f"[LOCAL RECORDING] Customer chunks: {self.customer_chunks}, Bot chunks: {self.bot_chunks}")
+                print(f"[LOCAL RECORDING] Saved Stereo: {self.filepath} ({duration:.1f}s)")
                 return self.filepath
             except Exception as e:
                 print(f"[LOCAL RECORDING ERROR] Close failed: {e}")
@@ -1388,7 +1410,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             return False
         try:
             if bot_speaking:
-                recorder.write_audio(audio_chunk, source="bot")
+                recorder.write_bot_audio(audio_chunk)
             await ws.send_json({
                 "type": "streamAudio",
                 "data": {
@@ -1407,7 +1429,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     ) as client:
 
         async def process_audio(samples: np.ndarray):
-            nonlocal history, ws_alive
+            nonlocal history, ws_alive, bot_speaking
             try:
                 pcm16 = (samples * 32767).astype(np.int16).tobytes()
                 user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
@@ -1535,7 +1557,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     break
 
                 if "bytes" in msg:
-                    recorder.write_audio(msg["bytes"], source="customer")
+                    recorder.write_customer_audio(msg["bytes"])
                     pcm = np.frombuffer(msg["bytes"], dtype=np.int16)
                     if pcm.size == 0:
                         continue
