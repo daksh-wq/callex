@@ -1256,10 +1256,16 @@ async def fetch_crm_phone(crm_id: str) -> str:
                 resp = await client.get(url, timeout=5.0)
                 if resp.status_code == 200:
                     data = resp.json()
+                    print(f"[CRM API] Success for {crm_id}, parsing response: {data}")
                     primary = data.get("primaryNumber")
                     if primary:
+                        print(f"[CRM API] Extracted primaryNumber: {primary}")
                         _crm_phone_cache[crm_id] = primary
                         return primary
+                    else:
+                        print(f"[CRM API] Warning: 'primaryNumber' not found in JSON data!")
+                else:
+                    print(f"[CRM API] Server returned {resp.status_code}: {resp.text}")
         except Exception as e:
             print(f"[CRM API] Attempt {attempt+1} failed for {crm_id}: {e}")
             await asyncio.sleep(0.5)
