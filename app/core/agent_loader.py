@@ -86,10 +86,34 @@ def load_agent(agent_id: str) -> Optional[Dict[str, Any]]:
         if active_prompt:
             agent['systemPrompt'] = active_prompt
 
-        print(f"[AgentLoader] ✅ Loaded agent: {agent['name']} (id={agent['id']})")
+        # Load linked custom dispositions
+        agent['customDispositions'] = get_linked_dispositions(agent_id)
+
+        print(f"[AgentLoader] ✅ Loaded agent: {agent['name']} (id={agent['id']}) with {len(agent.get('customDispositions', []))} dispositions")
         return agent
 
     except Exception as e:
+        print(f"[AgentLoader] ❌ Error loading agent '{agent_id}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def get_linked_dispositions(agent_id: str) -> list:
+    """Fetch active custom dispositions linked to this agent."""
+    try:
+        db = _get_db()
+        query = db.collection('dispositions').where('linkedAgents', 'array_contains', str(agent_id)).where('active', '==', True).stream()
+        
+        dispositions = []
+        for doc in query:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            dispositions.append(data)
+            
+        return dispositions
+    except Exception as e:
+        print(f"[AgentLoader] ❌ Error loading dispositions for '{agent_id}': {e}")
+        return []
         print(f"[AgentLoader] ❌ Error loading agent '{agent_id}': {e}")
         import traceback
         traceback.print_exc()

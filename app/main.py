@@ -974,12 +974,41 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
     print("[ANALYSIS] Analyzing call outcome...")
     
     custom_schema = []
+    custom_dispositions = []
     if agent_config:
         try:
             custom_schema_str = agent_config.get('analysisSchema', '[]')
             custom_schema = json.loads(custom_schema_str)
         except Exception:
             pass
+        custom_dispositions = agent_config.get('customDispositions', [])
+
+    disposition_options_str = '"Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear"'
+    disposition_rules_prompt = ""
+
+    if custom_dispositions:
+        disp_names = [f'"{d.get("name")}"' for d in custom_dispositions if d.get('name')]
+        disp_names.extend(['"Unclear"', '"Other"'])
+        disposition_options_str = " / ".join(disp_names)
+        
+        disposition_rules_prompt = "\n[CUSTOM DISPOSITION RULES - Use ONE of the above dispositions based strictly on these rules]:\n"
+        for d in custom_dispositions:
+            name = d.get('name')
+            tagline = d.get('tagline', '')
+            if name and tagline:
+                disposition_rules_prompt += f'- If {tagline} -> Set disposition to "{name}"\n'
+                
+            # Inject disposition-specific required fields into the JSON extraction schema
+            req_fields_arr = d.get('requiredFields')
+            if req_fields_arr and isinstance(req_fields_arr, list):
+                for f in req_fields_arr:
+                    fname = f.get("name")
+                    if fname and not any(existing.get("name") == fname for existing in custom_schema):
+                        custom_schema.append({
+                            "name": fname,
+                            "type": f.get("type", "string"),
+                            "description": f.get("description", "")
+                        })
 
     custom_fields_prompt = ""
     if custom_schema:
@@ -992,13 +1021,14 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
         role = "User" if msg["role"] == "user" else "Bot"
         text = msg["parts"][0]["text"]
         transcript += f"{role}: {text}\n"
+        
     system_prompt = f"""
     You are a Call Analyst. Analyze the conversation transcript and extract the outcome.
     Output JSON format only:
     {{
         "agreed": true/false,
         "commitment": "today" / "tomorrow" / "later" / "refused",
-        "disposition": "Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear",
+        "disposition": {disposition_options_str},
         "sentiment": "positive" / "negative" / "neutral",
         "summary": "2-3 sentence summary of the entire call conversation",
         "notes": "Short summary of why the disposition was assigned",
@@ -1010,6 +1040,7 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
         ]
     }}
     Instructions for highlighted_points: Extract 2-5 of the most important pieces of information or Q&A pairs from the conversation. This data will be used by companies to quickly understand the customer's exact needs, objections, or answers without reading the full transcript.
+    {disposition_rules_prompt}
     {custom_fields_prompt}
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
@@ -1795,6 +1826,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             'summary': ai_outcome.get('summary', '') if ai_outcome else '',
                             'outcome': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
                             'disposition': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
+                            'dispositionId': ai_outcome.get('dispositionId') if ai_outcome else None,
                             'notes': ai_outcome.get('notes', '') if ai_outcome else '',
                             'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
                             'commitmentDate': ai_outcome.get('commitment_date') if ai_outcome else None,
