@@ -212,7 +212,7 @@ router.post('/', upload.single('file'), async (req, res) => {
 });
 
 // PATCH /api/agents/:id
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', upload.single('file'), async (req, res) => {
     const doc = await db.collection('agents').doc(req.params.id).get();
     const existing = docToObj(doc);
     if (!existing || existing.userId !== req.userId) return res.status(404).json({ error: 'Agent not found' });
@@ -235,6 +235,100 @@ router.patch('/:id', async (req, res) => {
     const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
     for (const f of numFields) {
         if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
+    }
+
+    // Handle Knowledge Base Upload if file is present
+    if (req.file) {
+        const { buffer, mimetype, originalname } = req.file;
+        const GEMINI_API_KEY = process.env.GENARTML_SERVER_KEY || process.env.GEMINI_API_KEY;
+        const ext = '.' + originalname.split('.').pop().toLowerCase();
+        
+        if (GEMINI_API_KEY) {
+            const { GoogleGenAI } = await import('@google/genai');
+            const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+            const isTextFile = mimetype === 'text/plain' || mimetype === 'text/csv' || ext === '.csv' || ext === '.txt';
+            let knowledgeText = '';
+
+            try {
+                if (isTextFile) {
+                    const rawText = buffer.toString('utf-8');
+                    const response = await genAI.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [{ role: 'user', parts: [{ text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nContent:\n${rawText}` }] }]
+                    });
+                    knowledgeText = response.text;
+                } else {
+                    const base64Data = buffer.toString('base64');
+                    let geminiMime = mimetype;
+                    if (ext === '.xlsx') geminiMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+                    if (ext === '.xls') geminiMime = 'application/vnd.ms-excel';
+                    if (ext === '.pdf') geminiMime = 'application/pdf';
+
+                    const response = await genAI.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [{ role: 'user', parts: [
+                            { inlineData: { mimeType: geminiMime, data: base64Data } },
+                            { text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information.\n\nOutput format:\nKNOWLEDGE BASE:\n[All Q&A pairs, facts, pricing, policies etc.]\n\nTOPICS COVERED:\n[Comma-separated topics]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[5 customer questions]\n\nRules: Extract everything. Convert pricing to spoken format. Keep the original language.` }
+                        ] }]
+                    });
+                    knowledgeText = response.text;
+                }
+
+                if (knowledgeText && knowledgeText.length > 50) {
+                    const topicsMatch = knowledgeText.match(/TOPICS COVERED:\s*\n?(.*?)(?:\n\n|\nTOTAL|\nSAMPLE)/s);
+                    const totalMatch = knowledgeText.match(/TOTAL ITEMS:\s*\n?(\d+)/);
+                    const sampleMatch = knowledgeText.match(/SAMPLE QUESTIONS:\s*\n?([\s\S]*?)$/);
+                    const knowledgeMatch = knowledgeText.match(/KNOWLEDGE BASE:\s*\n?([\s\S]*?)(?:\nTOPICS COVERED)/);
+
+                    updates.knowledgeTopics = topicsMatch ? topicsMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean) : [];
+                    updates.knowledgeBase = knowledgeMatch ? knowledgeMatch[1].trim() : knowledgeText;
+                    
+                    updates.trainingSummary = {
+                        agentName: existing.name || '',
+                        purpose: existing.description || 'General purpose calling agent',
+                        openingLine: existing.openingLine || '',
+                        knowledgeTopics: updates.knowledgeTopics,
+                        totalFaqs: totalMatch ? parseInt(totalMatch[1]) : 0,
+                        sampleQuestions: sampleMatch ? sampleMatch[1].trim().split('\n').map(q => q.replace(/^[-\d.)\s]+/, '').trim()).filter(q => q.length > 5).slice(0, 5) : [],
+                        lastTrainedAt: new Date().toISOString(),
+                        lastTrainedFile: originalname,
+                        hasSystemPrompt: existing.systemPrompt ? true : false,
+                        hasKnowledgeBase: true,
+                    };
+                }
+            } catch (err) {
+                console.error('[KNOWLEDGE EXTRACTION ERROR]', err);
+            }
+        }
+    }
+
+    // Handle system prompt clear or update dynamically outside of the prompt tab
+    if (updates.systemPrompt !== undefined) {
+        try {
+            const pvSnap = await db.collection('promptVersions')
+                .where('agentId', '==', req.params.id)
+                .orderBy('version', 'desc').limit(1).get();
+            
+            let nextVersion = 1;
+            if (!pvSnap.empty) {
+                nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
+                const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+                for (const pvDoc of allPvSnap.docs) {
+                    await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
+                }
+            }
+            
+            await db.collection('promptVersions').add({
+                agentId: req.params.id,
+                version: nextVersion,
+                prompt: updates.systemPrompt,
+                isActive: true,
+                label: `v${nextVersion} - Edit Settings Update`,
+                createdAt: new Date()
+            });
+        } catch(err) {
+            console.error('[AGENT EDIT] Failed to save prompt version:', err);
+        }
     }
 
     delete updates.id;

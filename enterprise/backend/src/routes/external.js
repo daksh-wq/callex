@@ -224,7 +224,7 @@ router.get('/agents/:id', async (req, res) => {
 });
 
 // PUT /v1/agents/:id
-router.put('/agents/:id', async (req, res) => {
+router.put('/agents/:id', upload.single('file'), async (req, res) => {
     try {
         const doc = await db.collection('agents').doc(req.params.id).get();
         const existing = docToObj(doc);
@@ -248,6 +248,84 @@ router.put('/agents/:id', async (req, res) => {
         const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
         for (const f of numFields) {
             if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
+        }
+
+        // Handle Knowledge Base Upload if file is present
+        if (req.file) {
+            const { buffer, mimetype, originalname } = req.file;
+            const GEMINI_API_KEY = process.env.GENARTML_SERVER_KEY || process.env.GEMINI_API_KEY;
+            
+            if (GEMINI_API_KEY) {
+                let knowledgeText = '';
+                let rawText = await extractFileText(buffer, mimetype, originalname);
+
+                if (rawText) {
+                    const { GoogleGenAI } = await import('@google/genai');
+                    const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+                    const response = await genAI.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [{
+                            role: 'user',
+                            parts: [{ text: `You are a Knowledge Extractor for an AI calling agent. Extract ALL useful information from this text content.\n\nOutput a clean, structured knowledge base in this EXACT format:\nKNOWLEDGE BASE:\n[Write all extracted information as clear Q&A pairs, facts, pricing details, product info, policies, etc.]\n\nTOPICS COVERED:\n[Comma-separated list of main topics found]\n\nTOTAL ITEMS:\n[Number]\n\nSAMPLE QUESTIONS:\n[List 5 example customer questions]\n\nHere is the content:\n${rawText}` }]
+                        }]
+                    });
+                    knowledgeText = response.text;
+                } else {
+                    knowledgeText = await parseDocumentWithGemini(buffer, mimetype, originalname, GEMINI_API_KEY);
+                }
+
+                if (knowledgeText && knowledgeText.length > 50) {
+                    const topicsMatch = knowledgeText.match(/TOPICS COVERED:\s*\n?(.*?)(?:\n\n|\nTOTAL|\nSAMPLE)/s);
+                    const totalMatch = knowledgeText.match(/TOTAL ITEMS:\s*\n?(\d+)/);
+                    const sampleMatch = knowledgeText.match(/SAMPLE QUESTIONS:\s*\n?([\s\S]*?)$/);
+                    const knowledgeMatch = knowledgeText.match(/KNOWLEDGE BASE:\s*\n?([\s\S]*?)(?:\nTOPICS COVERED)/);
+
+                    updates.knowledgeTopics = topicsMatch ? topicsMatch[1].trim().split(',').map(t => t.trim()).filter(Boolean) : [];
+                    updates.knowledgeBase = knowledgeMatch ? knowledgeMatch[1].trim() : knowledgeText;
+                    
+                    updates.trainingSummary = {
+                        agentName: existing.name || '',
+                        purpose: existing.description || 'General purpose calling agent',
+                        openingLine: existing.openingLine || '',
+                        knowledgeTopics: updates.knowledgeTopics,
+                        totalFaqs: totalMatch ? parseInt(totalMatch[1]) : 0,
+                        sampleQuestions: sampleMatch ? sampleMatch[1].trim().split('\n').map(q => q.replace(/^[-\d.)\s]+/, '').trim()).filter(q => q.length > 5).slice(0, 5) : [],
+                        lastTrainedAt: new Date().toISOString(),
+                        lastTrainedFile: originalname,
+                        hasSystemPrompt: existing.systemPrompt ? true : false,
+                        hasKnowledgeBase: true,
+                    };
+                }
+            }
+        }
+
+        // Handle system prompt clear or update dynamically outside of the prompt tab
+        if (updates.systemPrompt !== undefined) {
+            try {
+                const pvSnap = await db.collection('promptVersions')
+                    .where('agentId', '==', req.params.id)
+                    .orderBy('version', 'desc').limit(1).get();
+                
+                let nextVersion = 1;
+                if (!pvSnap.empty) {
+                    nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
+                    const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+                    for (const pvDoc of allPvSnap.docs) {
+                        await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
+                    }
+                }
+                
+                await db.collection('promptVersions').add({
+                    agentId: req.params.id,
+                    version: nextVersion,
+                    prompt: updates.systemPrompt,
+                    isActive: true,
+                    label: `v${nextVersion} - Edit Settings Update`,
+                    createdAt: new Date()
+                });
+            } catch(err) {
+                console.error('[AGENT EDIT] Failed to save prompt version:', err);
+            }
         }
 
         delete updates.id; delete updates.createdAt;
