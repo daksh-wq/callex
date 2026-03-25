@@ -19,7 +19,7 @@ router.get('/dispositions', async (req, res) => {
         }
 
         if (req.query.pagination === 'false') {
-            return res.json({ dispositions });
+            return res.json(dispositions);
         }
 
         const total = dispositions.length;

@@ -7,14 +7,34 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/agents
 router.get('/', async (req, res) => {
-    const snap = await db.collection('agents').where('userId', '==', req.userId).get();
-    const agents = queryToArray(snap);
-    agents.sort((a, b) => {
-        const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
-        const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
-        return tb - ta;
-    });
-    res.json(agents);
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+
+        const snap = await db.collection('agents').where('userId', '==', req.userId).get();
+        let agents = queryToArray(snap);
+        agents.sort((a, b) => {
+            const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+            const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+            return tb - ta;
+        });
+
+        if (req.query.pagination === 'false') {
+            return res.json(agents);
+        }
+
+        const total = agents.length;
+        const startIndex = (page - 1) * limit;
+        const endIndex = page * limit;
+        const paginatedAgents = agents.slice(startIndex, endIndex);
+
+        res.json({
+            agents: paginatedAgents,
+            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/agents/:id

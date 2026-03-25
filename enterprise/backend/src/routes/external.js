@@ -1218,7 +1218,7 @@ router.get('/dispositions', async (req, res) => {
 
         // Optional pagination bypass
         if (req.query.pagination === 'false') {
-            return res.json({ dispositions });
+            return res.json(dispositions);
         }
 
         const total = dispositions.length;
