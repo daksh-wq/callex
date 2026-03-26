@@ -338,6 +338,60 @@ router.put('/agents/:id', upload.single('file'), async (req, res) => {
         res.status(500).json({ error: 'Failed to update agent' });
     }
 });
+// PATCH /v1/agents/:id/prompt
+router.patch('/agents/:id/prompt', async (req, res) => {
+    try {
+        const doc = await db.collection('agents').doc(req.params.id).get();
+        const existing = docToObj(doc);
+        if (!existing || existing.userId !== req.apiUser.userId) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        const { systemPrompt } = req.body;
+        if (typeof systemPrompt !== 'string') {
+            return res.status(400).json({ error: 'systemPrompt must be a string' });
+        }
+
+        // Update the main agent document directly
+        await db.collection('agents').doc(req.params.id).update({ 
+            systemPrompt: systemPrompt,
+            updatedAt: new Date()
+        });
+
+        // Track version history
+        try {
+            const pvSnap = await db.collection('promptVersions')
+                .where('agentId', '==', req.params.id)
+                .orderBy('version', 'desc').limit(1).get();
+            
+            let nextVersion = 1;
+            if (!pvSnap.empty) {
+                nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
+                const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+                for (const pvDoc of allPvSnap.docs) {
+                    await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
+                }
+            }
+            
+            await db.collection('promptVersions').add({
+                agentId: req.params.id,
+                version: nextVersion,
+                prompt: systemPrompt,
+                isActive: true,
+                label: `v${nextVersion} - API Update`,
+                createdAt: new Date()
+            });
+        } catch(err) {
+            console.error('[AGENT EDIT] Failed to save prompt version:', err);
+        }
+
+        const updated = await db.collection('agents').doc(req.params.id).get();
+        res.json({ message: 'System prompt updated successfully.', agentId: req.params.id, agent: docToObj(updated) });
+    } catch (e) {
+        console.error('[EXTERNAL API ERROR]', e);
+        res.status(500).json({ error: 'Failed to update system prompt' });
+    }
+});
 
 // DELETE /v1/agents/:id
 router.delete('/agents/:id', async (req, res) => {
