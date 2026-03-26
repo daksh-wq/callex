@@ -888,13 +888,12 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     logic_context = agent.get('description', '') or ''
     temperature = agent.get('temperature', 0.7)
     max_tokens = agent.get('maxTokens', 250)
+    print(f"[LLM] Using system prompt (first 200 chars): {system_prompt[:200]}")
 
     # Check for active prompt version (overrides systemPrompt)
-    if agent.get('id') and agent['id'] != 'fallback':
-        active_prompt = get_active_prompt(agent['id'])
-        if active_prompt:
-            system_prompt = active_prompt
-
+    # Removing this override because the latest prompt is always saved directly to agent['systemPrompt']
+    # If we query promptVersions here, it forces an extra DB read and causes stale cache bugs
+    
     # Append logic context if available
     if logic_context:
         system_prompt = f"{system_prompt}\n\nसंदर्भ: {logic_context}"

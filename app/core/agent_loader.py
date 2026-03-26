@@ -81,11 +81,6 @@ def load_agent(agent_id: str) -> Optional[Dict[str, Any]]:
 
         agent = _doc_to_dict(doc)
         
-        # Load active prompt version if one exists
-        active_prompt = get_active_prompt(agent_id)
-        if active_prompt:
-            agent['systemPrompt'] = active_prompt
-
         # Load linked custom dispositions
         agent['customDispositions'] = get_linked_dispositions(agent_id)
 
@@ -132,9 +127,6 @@ def get_default_agent() -> Optional[Dict[str, Any]]:
         query = db.collection('agents').where('status', '==', 'active').limit(1).stream()
         for doc in query:
             agent = _doc_to_dict(doc)
-            active_prompt = get_active_prompt(agent['id'])
-            if active_prompt:
-                agent['systemPrompt'] = active_prompt
             print(f"[AgentLoader] ✅ Default agent: {agent['name']} (id={agent['id']})")
             return agent
 
@@ -142,9 +134,6 @@ def get_default_agent() -> Optional[Dict[str, Any]]:
         query = db.collection('agents').limit(1).stream()
         for doc in query:
             agent = _doc_to_dict(doc)
-            active_prompt = get_active_prompt(agent['id'])
-            if active_prompt:
-                agent['systemPrompt'] = active_prompt
             print(f"[AgentLoader] ✅ Default agent (fallback): {agent['name']} (id={agent['id']})")
             return agent
 
