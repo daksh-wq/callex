@@ -1370,6 +1370,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         agent_config = get_default_agent() or FALLBACK_AGENT
 
     print(f"[CALL] Using Agent: {agent_config['name']} (Voice: {agent_config['voice']}, Temp: {agent_config['temperature']})")
+    print(f"[CALL] 🔍 systemPrompt loaded from Firestore (first 300 chars):")
+    print(f"[CALL] >>> {str(agent_config.get('systemPrompt', ''))[:300]}")
+    print(f"[CALL] 🔍 openingLine: {str(agent_config.get('openingLine', ''))[:200]}")
     
     # Store safe ID for caching
     safe_agent_id = str(agent_config['id']).replace('-', '_')[:32]
