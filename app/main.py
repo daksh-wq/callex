@@ -884,15 +884,35 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
     # Use agent config from database, fallback to FALLBACK_AGENT
     agent = agent_config or FALLBACK_AGENT
-    system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
     logic_context = agent.get('description', '') or ''
     temperature = agent.get('temperature', 0.7)
     max_tokens = agent.get('maxTokens', 250)
-    print(f"[LLM] Using system prompt (first 200 chars): {system_prompt[:200]}")
 
-    # Check for active prompt version (overrides systemPrompt)
-    # Removing this override because the latest prompt is always saved directly to agent['systemPrompt']
-    # If we query promptVersions here, it forces an extra DB read and causes stale cache bugs
+    # ── ALWAYS re-read systemPrompt directly from Firestore (nuclear fix) ──
+    # This guarantees the absolute latest prompt is used, even if agent_config
+    # was loaded at call start and edited mid-call.
+    system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
+    agent_id = agent.get('id')
+    if agent_id and agent_id != 'fallback':
+        try:
+            import firebase_admin
+            from firebase_admin import firestore as _fs
+            _db = _fs.client()
+            _doc = _db.collection('agents').document(str(agent_id)).get()
+            if _doc.exists:
+                fresh_prompt = _doc.to_dict().get('systemPrompt')
+                if fresh_prompt:
+                    system_prompt = fresh_prompt
+                    print(f"[LLM] ✅ Fresh systemPrompt from Firestore (first 200 chars): {system_prompt[:200]}")
+                else:
+                    print(f"[LLM] ⚠️ Firestore agent has no systemPrompt, using agent_config fallback")
+            else:
+                print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore, using agent_config fallback")
+        except Exception as e:
+            print(f"[LLM] ⚠️ Firestore re-read failed ({e}), using agent_config fallback")
+    else:
+        print(f"[LLM] Using fallback agent systemPrompt")
+
     
     # Append logic context if available
     if logic_context:
