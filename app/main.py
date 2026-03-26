@@ -377,8 +377,27 @@ class LocalRecorder:
         return None
 
 
+def _opener_cache_path(agent_id: str, opener_text: str) -> str:
+    """Build a content-hash based cache path so edits to the opener auto-invalidate."""
+    import hashlib
+    safe_id = str(agent_id).replace('-', '_')[:32]
+    text_hash = hashlib.md5(opener_text.encode('utf-8')).hexdigest()[:10]
+    return os.path.join(CACHE_DIR, f"{safe_id}_opener_{text_hash}.pcm")
+
+def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
+    """Remove stale opener cache files for this agent (different text hash)."""
+    safe_id = str(agent_id).replace('-', '_')[:32]
+    prefix = f"{safe_id}_opener_"
+    try:
+        for f in os.listdir(CACHE_DIR):
+            if f.startswith(prefix) and os.path.join(CACHE_DIR, f) != keep_path:
+                os.remove(os.path.join(CACHE_DIR, f))
+                print(f"[CACHE] Cleaned stale opener: {f}")
+    except Exception:
+        pass
+
 async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None):
-    """Ensure opener audio is cached for an agent"""
+    """Ensure opener audio is cached for an agent (content-hash invalidated)."""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
 
@@ -386,19 +405,19 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
         print("[CACHE] No agent/opener provided, skipping cache")
         return
 
-    safe_id = agent_id.replace('-', '_')[:32]
-    filename = f"{safe_id}_opener.pcm"
-    filepath = os.path.join(CACHE_DIR, filename)
+    filepath = _opener_cache_path(agent_id, opener_text)
 
     if os.path.exists(filepath):
         print(f"[CACHE] Opener found: {filepath}")
         return
 
-    print(f"[CACHE] Generating opener for agent {agent_id}...")
+    # New text → generate fresh audio and clean old caches
+    print(f"[CACHE] Generating opener for agent {agent_id} (text changed)...")
     async with httpx.AsyncClient() as client:
         with open(filepath, "wb") as f:
             async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id):
                 f.write(chunk)
+    _cleanup_old_opener_caches(agent_id, filepath)
     print(f"[CACHE] Opener saved to {filepath}")
 
 
@@ -1553,8 +1572,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         full_history.append({"role": "model", "parts": [{"text": opener_text}]})
         asyncio.create_task(log_live_message("model", opener_text))
 
-        # Cache path uses safe_agent_id
-        cache_path = os.path.join(CACHE_DIR, f"{safe_agent_id}_opener.pcm")
+        # Cache path uses content-hash so edits to opening line auto-invalidate
+        cache_path = _opener_cache_path(agent_config['id'], opener_text)
         total_opener_bytes = 0
         bot_speaking = True
 
