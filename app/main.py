@@ -1912,7 +1912,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             'dispositionId': ai_outcome.get('dispositionId') if ai_outcome else None,
                             'notes': ai_outcome.get('notes', '') if ai_outcome else '',
                             'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
-                            'commitmentDate': ai_outcome.get('commitment_date') if ai_outcome else None,
+                            'commitmentDate': str(ai_outcome.get('commitment_date')) if ai_outcome and ai_outcome.get('commitment_date') else None,
                             'userId': agent_config.get('userId', ''),  # ensure userId is always set
                         }
 
