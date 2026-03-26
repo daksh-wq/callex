@@ -109,10 +109,6 @@ def get_linked_dispositions(agent_id: str) -> list:
     except Exception as e:
         print(f"[AgentLoader] ❌ Error loading dispositions for '{agent_id}': {e}")
         return []
-        print(f"[AgentLoader] ❌ Error loading agent '{agent_id}': {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 
 
 def get_default_agent() -> Optional[Dict[str, Any]]:
