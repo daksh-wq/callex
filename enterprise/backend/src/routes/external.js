@@ -762,6 +762,7 @@ router.get('/calls', async (req, res) => {
         const paginated = calls.slice((page - 1) * limit, page * limit).map(c => ({
             id: c.id,
             phoneNumber: c.phoneNumber || '',
+            crmId: c.crmId || null,
             agentId: c.agentId || '',
             agentName: c.agentName || '',
             status: c.status || 'unknown',
@@ -819,6 +820,7 @@ router.get('/calls/:id', async (req, res) => {
         res.json({
             id: call.id,
             phoneNumber: call.phoneNumber || '',
+            crmId: call.crmId || null,
             agentId: call.agentId || '',
             agentName,
             status: call.status || 'unknown',
@@ -906,6 +908,7 @@ router.get('/calls/:id/transcript', async (req, res) => {
         res.json({
             callId: call.id,
             phoneNumber: call.phoneNumber || '',
+            crmId: call.crmId || null,
             agentId: call.agentId || '',
             agentName: call.agentName || '',
             duration: call.duration || 0,
@@ -1080,6 +1083,7 @@ router.get('/supervisor/calls', async (req, res) => {
             calls.push({
                 id: call.id,
                 phoneNumber: call.phoneNumber || '',
+                crmId: call.crmId || null,
                 agentId: call.agentId || '',
                 agentName: call.agentName || 'Unknown Agent',
                 status: call.status || 'active',
