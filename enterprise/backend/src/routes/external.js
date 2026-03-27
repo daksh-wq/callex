@@ -302,17 +302,19 @@ router.put('/agents/:id', upload.single('file'), async (req, res) => {
         // Handle system prompt clear or update dynamically outside of the prompt tab
         if (updates.systemPrompt !== undefined) {
             try {
-                const pvSnap = await db.collection('promptVersions')
-                    .where('agentId', '==', req.params.id)
-                    .orderBy('version', 'desc').limit(1).get();
+                // Fetch ALL prompt versions (no orderBy = no composite index needed)
+                const allPvSnap = await db.collection('promptVersions')
+                    .where('agentId', '==', req.params.id).get();
                 
                 let nextVersion = 1;
-                if (!pvSnap.empty) {
-                    nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
-                    const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+                if (!allPvSnap.empty) {
+                    let maxVersion = 0;
                     for (const pvDoc of allPvSnap.docs) {
+                        const v = pvDoc.data().version || 0;
+                        if (v > maxVersion) maxVersion = v;
                         await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
                     }
+                    nextVersion = maxVersion + 1;
                 }
                 
                 await db.collection('promptVersions').add({
@@ -323,6 +325,7 @@ router.put('/agents/:id', upload.single('file'), async (req, res) => {
                     label: `v${nextVersion} - Edit Settings Update`,
                     createdAt: new Date()
                 });
+                console.log(`[EXTERNAL API] ✅ Prompt version v${nextVersion} saved for agent ${req.params.id}`);
             } catch(err) {
                 console.error('[AGENT EDIT] Failed to save prompt version:', err);
             }
@@ -360,17 +363,19 @@ router.patch('/agents/:id/prompt', async (req, res) => {
 
         // Track version history
         try {
-            const pvSnap = await db.collection('promptVersions')
-                .where('agentId', '==', req.params.id)
-                .orderBy('version', 'desc').limit(1).get();
+            // Fetch ALL prompt versions (no orderBy = no composite index needed)
+            const allPvSnap = await db.collection('promptVersions')
+                .where('agentId', '==', req.params.id).get();
             
             let nextVersion = 1;
-            if (!pvSnap.empty) {
-                nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
-                const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+            if (!allPvSnap.empty) {
+                let maxVersion = 0;
                 for (const pvDoc of allPvSnap.docs) {
+                    const v = pvDoc.data().version || 0;
+                    if (v > maxVersion) maxVersion = v;
                     await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
                 }
+                nextVersion = maxVersion + 1;
             }
             
             await db.collection('promptVersions').add({
@@ -381,6 +386,7 @@ router.patch('/agents/:id/prompt', async (req, res) => {
                 label: `v${nextVersion} - API Update`,
                 createdAt: new Date()
             });
+            console.log(`[EXTERNAL API] ✅ Prompt version v${nextVersion} saved for agent ${req.params.id}`);
         } catch(err) {
             console.error('[AGENT EDIT] Failed to save prompt version:', err);
         }

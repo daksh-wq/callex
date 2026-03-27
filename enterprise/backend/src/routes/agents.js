@@ -325,17 +325,21 @@ router.patch('/:id', upload.single('file'), async (req, res) => {
     // Handle system prompt clear or update dynamically outside of the prompt tab
     if (updates.systemPrompt !== undefined) {
         try {
-            const pvSnap = await db.collection('promptVersions')
-                .where('agentId', '==', req.params.id)
-                .orderBy('version', 'desc').limit(1).get();
+            // Fetch ALL prompt versions for this agent (no orderBy = no composite index needed)
+            const allPvSnap = await db.collection('promptVersions')
+                .where('agentId', '==', req.params.id).get();
             
             let nextVersion = 1;
-            if (!pvSnap.empty) {
-                nextVersion = (pvSnap.docs[0].data().version || 0) + 1;
-                const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+            if (!allPvSnap.empty) {
+                // Find highest version number in memory (avoids needing Firebase composite index)
+                let maxVersion = 0;
                 for (const pvDoc of allPvSnap.docs) {
+                    const v = pvDoc.data().version || 0;
+                    if (v > maxVersion) maxVersion = v;
+                    // Deactivate all existing versions
                     await db.collection('promptVersions').doc(pvDoc.id).update({ isActive: false });
                 }
+                nextVersion = maxVersion + 1;
             }
             
             await db.collection('promptVersions').add({
@@ -346,6 +350,7 @@ router.patch('/:id', upload.single('file'), async (req, res) => {
                 label: `v${nextVersion} - Edit Settings Update`,
                 createdAt: new Date()
             });
+            console.log(`[AGENT EDIT] ✅ Prompt version v${nextVersion} saved for agent ${req.params.id}`);
         } catch(err) {
             console.error('[AGENT EDIT] Failed to save prompt version:', err);
         }
@@ -507,14 +512,16 @@ router.delete('/:id/knowledge', async (req, res) => {
 // POST /api/agents/:id/prompt-version
 router.post('/:id/prompt-version', async (req, res) => {
     const { prompt, label } = req.body;
-    const pvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).orderBy('version', 'desc').limit(1).get();
-    const lastVersion = pvSnap.empty ? 0 : pvSnap.docs[0].data().version;
-    const version = lastVersion + 1;
-
-    // Deactivate all previous
+    // Fetch all versions (no orderBy = no composite index needed)
     const allPvSnap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+    let lastVersion = 0;
     const batch = db.batch();
-    allPvSnap.forEach(d => batch.update(d.ref, { isActive: false }));
+    allPvSnap.forEach(d => {
+        const v = d.data().version || 0;
+        if (v > lastVersion) lastVersion = v;
+        batch.update(d.ref, { isActive: false });
+    });
+    const version = lastVersion + 1;
 
     const pvData = { agentId: req.params.id, version, prompt, label: label || `v${version}`, isActive: true, createdAt: new Date() };
     const pvRef = db.collection('promptVersions').doc();
@@ -526,8 +533,9 @@ router.post('/:id/prompt-version', async (req, res) => {
 
 // GET /api/agents/:id/prompt-versions
 router.get('/:id/prompt-versions', async (req, res) => {
-    const snap = await db.collection('promptVersions').where('agentId', '==', req.params.id).orderBy('version', 'desc').get();
-    res.json(queryToArray(snap));
+    const snap = await db.collection('promptVersions').where('agentId', '==', req.params.id).get();
+    const versions = queryToArray(snap).sort((a, b) => (b.version || 0) - (a.version || 0));
+    res.json(versions);
 });
 
 // PATCH /api/agents/:id/status
