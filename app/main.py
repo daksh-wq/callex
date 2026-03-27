@@ -1290,18 +1290,32 @@ async def fetch_crm_phone(crm_id: str) -> str:
     
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(verify=False) as client:
                 resp = await client.get(url, timeout=5.0)
                 if resp.status_code == 200:
                     data = resp.json()
-                    print(f"[CRM API] Success for {crm_id}, parsing response: {data}")
-                    primary = data.get("primaryNumber")
+                    print(f"[CRM API] Success for {crm_id}, parsing response...")
+                    
+                    # The API returns: {data: [{main_crms: ...}, {crmDetails: {primaryNumber: "..."}}, ...]}
+                    primary = None
+                    data_list = data.get("data", [])
+                    if isinstance(data_list, list):
+                        for item in data_list:
+                            crm_details = item.get("crmDetails") if isinstance(item, dict) else None
+                            if crm_details and crm_details.get("primaryNumber"):
+                                primary = str(crm_details["primaryNumber"])
+                                break
+                    
+                    # Fallback: check top-level (in case API format changes)
+                    if not primary:
+                        primary = data.get("primaryNumber")
+                    
                     if primary:
-                        print(f"[CRM API] Extracted primaryNumber: {primary}")
+                        print(f"[CRM API] ✅ Extracted primaryNumber: {primary}")
                         _crm_phone_cache[crm_id] = primary
                         return primary
                     else:
-                        print(f"[CRM API] Warning: 'primaryNumber' not found in JSON data!")
+                        print(f"[CRM API] ⚠️ 'primaryNumber' not found in response for crm_id={crm_id}")
                 else:
                     print(f"[CRM API] Server returned {resp.status_code}: {resp.text}")
         except Exception as e:
