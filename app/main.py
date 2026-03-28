@@ -1429,13 +1429,28 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             'status': 'active',
             'duration': 0,
             'sentiment': 'neutral',
+            'transcript': '',
+            'transcriptMessages': [],
             'startedAt': fs.SERVER_TIMESTAMP,
             'cost': 0
         }
         firestore_db.collection('calls').doc(call_uuid).set(call_doc)
-        print(f"[DB] ✅ Live call {call_uuid} created in Firestore (crmId={crm_id})")
+        print(f"")
+        print(f"{'='*60}")
+        print(f"[FIRESTORE] ✅ CALL DOC CREATED SUCCESSFULLY")
+        print(f"[FIRESTORE]   id        = {call_uuid}")
+        print(f"[FIRESTORE]   agentId   = {call_doc['agentId']}")
+        print(f"[FIRESTORE]   agentName = {call_doc['agentName']}")
+        print(f"[FIRESTORE]   phone     = {call_doc['phoneNumber']}")
+        print(f"[FIRESTORE]   crmId     = {call_doc['crmId']}")
+        print(f"[FIRESTORE]   userId    = {call_doc['userId']}")
+        print(f"[FIRESTORE]   status    = {call_doc['status']}")
+        print(f"{'='*60}")
+        print(f"")
     except Exception as e:
-        print(f"[DB ERROR] Failed to create Firebase live call: {e}")
+        print(f"[DB ERROR] ❌ Failed to create Firebase live call: {e}")
+        import traceback
+        traceback.print_exc()
 
     print(f"[DB] ✅ Local call record created")
 
