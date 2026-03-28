@@ -6,22 +6,58 @@ const router = Router();
 
 // GET /api/supervisor/calls
 router.get('/calls', async (req, res) => {
-    const snap = await db.collection('calls').where('status', '==', 'active').get();
-    const calls = [];
-    for (const doc of snap.docs) {
-        const call = { id: doc.id, ...doc.data() };
-        if (call.agentId) {
-            const agentDoc = await db.collection('agents').doc(call.agentId).get();
-            call.agent = agentDoc.exists ? { name: agentDoc.data().name } : null;
+    try {
+        // Query BOTH 'active' and 'in-progress' for maximum compatibility
+        const [activeSnap, inProgressSnap] = await Promise.all([
+            db.collection('calls').where('status', '==', 'active').get(),
+            db.collection('calls').where('status', '==', 'in-progress').get(),
+        ]);
+
+        const allDocs = [...activeSnap.docs, ...inProgressSnap.docs];
+        const now = Date.now();
+        const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours — ghost call protection
+
+        const calls = [];
+        for (const doc of allDocs) {
+            const callData = doc.data();
+
+            // Skip ghost calls older than 2 hours
+            const startedAt = callData.startedAt?.toDate ? callData.startedAt.toDate().getTime() : new Date(callData.startedAt || 0).getTime();
+            if (now - startedAt > MAX_AGE_MS) continue;
+
+            const call = { id: doc.id, ...callData };
+            if (call.agentId && !call.agentName) {
+                try {
+                    const agentDoc = await db.collection('agents').doc(call.agentId).get();
+                    if (agentDoc.exists) call.agentName = agentDoc.data().name || 'Unknown Agent';
+                } catch (e) { /* ignore */ }
+            }
+            calls.push({
+                id: call.id,
+                phoneNumber: call.phoneNumber || 'Unknown',
+                crmId: call.crmId || null,
+                agentId: call.agentId || '',
+                agentName: call.agentName || 'Unknown Agent',
+                status: call.status || 'active',
+                sentiment: call.sentiment || 'neutral',
+                transcript: call.transcript || '',
+                transcriptMessages: call.transcriptMessages || [],
+                startedAt: call.startedAt,
+                endedAt: call.endedAt || null,
+            });
         }
-        calls.push(call);
+        calls.sort((a, b) => {
+            const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
+            const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
+            return db2 - da;
+        });
+
+        console.log(`[SUPERVISOR] Returning ${calls.length} active calls`);
+        res.json({ success: true, data: calls, message: 'Active call fetched successfully' });
+    } catch (e) {
+        console.error('[SUPERVISOR ERROR] GET /calls failed:', e);
+        res.status(500).json({ success: false, data: [], message: 'Failed to fetch active calls' });
     }
-    calls.sort((a, b) => {
-        const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
-        const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
-        return db2 - da;
-    });
-    res.json(calls);
 });
 
 // POST /api/supervisor/calls

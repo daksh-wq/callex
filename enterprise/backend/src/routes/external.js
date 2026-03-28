@@ -1047,9 +1047,13 @@ router.get('/supervisor/calls', async (req, res) => {
         const isSuperAdmin = apiUserId === 'superadmin-hardcoded-id';
         console.log(`[EXT-API] GET /v1/supervisor/calls — apiUserId: ${apiUserId}, isSuperAdmin: ${isSuperAdmin}`);
 
-        // Query active calls only (single field) to avoid composite index requirement
-        const activeSnap = await db.collection('calls').where('status', '==', 'active').get();
-        console.log(`[EXT-API] Total active calls in DB: ${activeSnap.size}`);
+        // Query BOTH 'active' and 'in-progress' for maximum compatibility
+        const [activeSnap, inProgressSnap] = await Promise.all([
+            db.collection('calls').where('status', '==', 'active').get(),
+            db.collection('calls').where('status', '==', 'in-progress').get(),
+        ]);
+        const combinedDocs = [...activeSnap.docs, ...inProgressSnap.docs];
+        console.log(`[EXT-API] Total active/in-progress calls in DB: ${combinedDocs.length}`);
 
         // Get this user's agent IDs for fallback matching
         const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
@@ -1060,7 +1064,7 @@ router.get('/supervisor/calls', async (req, res) => {
         const now = Date.now();
         const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
-        for (const doc of activeSnap.docs) {
+        for (const doc of combinedDocs) {
             const callData = doc.data();
             
             // Ghost call protection: If call is older than 2 hours, ignore it
