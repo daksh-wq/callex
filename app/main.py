@@ -1421,32 +1421,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         call_doc = {
             'id': call_uuid,
             'agentId': agent_id or 'default',
-            'agentName': agent_config['name'],
+            'agentName': agent_config.get('name', 'Unknown Agent'),
             'phoneNumber': phone_number,
-            'crmId': crm_id,
-            'direction': 'inbound',
-            'status': 'in-progress',
+            'crmId': crm_id or None,
+            'userId': agent_config.get('userId', ''),
+            'direction': 'outbound',
+            'status': 'active',
             'duration': 0,
+            'sentiment': 'neutral',
             'startedAt': fs.SERVER_TIMESTAMP,
             'cost': 0
         }
         firestore_db.collection('calls').doc(call_uuid).set(call_doc)
-        print(f"[DB] Live call {call_uuid} created in Firestore")
-    except Exception as e:
-        print(f"[DB] Error creating live call row: {e}")
-        call_doc = {
-            'id': call_uuid,
-            'phoneNumber': phone_number,
-            'agentId': agent_id,
-            'agentName': agent_config.get('name', 'Unknown Agent'),
-            'userId': agent_config.get('userId', ''),  # Important: Maps call to API owner
-            'status': 'active',
-            'startedAt': fs.SERVER_TIMESTAMP,
-            'sentiment': 'neutral'
-        }
-        # Use call_uuid as document ID for easier updates and lookups
-        firestore_db.collection('calls').document(call_uuid).set(call_doc)
-        print(f"[DB] ✅ Firebase live call record created")
+        print(f"[DB] ✅ Live call {call_uuid} created in Firestore (crmId={crm_id})")
     except Exception as e:
         print(f"[DB ERROR] Failed to create Firebase live call: {e}")
 
