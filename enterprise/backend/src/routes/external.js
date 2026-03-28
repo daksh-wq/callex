@@ -1045,7 +1045,6 @@ router.get('/supervisor/calls', async (req, res) => {
     try {
         const apiUserId = req.apiUser.userId;
         const isSuperAdmin = apiUserId === 'superadmin-hardcoded-id';
-        console.log(`[EXT-API] GET /v1/supervisor/calls — apiUserId: ${apiUserId}, isSuperAdmin: ${isSuperAdmin}`);
 
         // Query BOTH 'active' and 'in-progress' for maximum compatibility
         const [activeSnap, inProgressSnap] = await Promise.all([
@@ -1053,36 +1052,34 @@ router.get('/supervisor/calls', async (req, res) => {
             db.collection('calls').where('status', '==', 'in-progress').get(),
         ]);
         const combinedDocs = [...activeSnap.docs, ...inProgressSnap.docs];
-        console.log(`[EXT-API] Total active/in-progress calls in DB: ${combinedDocs.length}`);
 
         // Get this user's agent IDs for fallback matching
         const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
         const userAgentIds = new Set(agentsSnap.docs.map(d => d.id));
-        console.log(`[EXT-API] User owns ${userAgentIds.size} agents: [${[...userAgentIds].join(', ')}]`);
 
         const calls = [];
+        const ghostCleanupBatch = db.batch();
+        let ghostCount = 0;
         const now = Date.now();
         const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
         for (const doc of combinedDocs) {
             const callData = doc.data();
             
-            // Ghost call protection: If call is older than 2 hours, ignore it
+            // Ghost call auto-cleanup: mark stale calls as completed
             const startedAt = callData.startedAt?.toDate ? callData.startedAt.toDate().getTime() : new Date(callData.startedAt || 0).getTime();
             if (now - startedAt > MAX_AGE_MS) {
-                console.log(`[EXT-API] Skipping ghost call ${doc.id} (too old)`);
+                ghostCleanupBatch.update(doc.ref, { status: 'completed', endedAt: new Date(), duration: Math.round((now - startedAt) / 1000) });
+                ghostCount++;
                 continue;
             }
 
-            // Include call if: userId matches OR call belongs to user's agent OR userId is empty (legacy) OR user is superadmin
+            // Include call if: userId matches OR agent belongs to user OR userId empty (legacy) OR superadmin
             const userIdMatch = callData.userId === apiUserId;
             const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
             const noUserId = !callData.userId || callData.userId === '';
 
-            if (!isSuperAdmin && !userIdMatch && !agentMatch && !noUserId) {
-                console.log(`[EXT-API] Skipping call ${doc.id} — userId:${callData.userId} != apiUserId:${apiUserId}, agentId:${callData.agentId} not in user's agents`);
-                continue;
-            }
+            if (!isSuperAdmin && !userIdMatch && !agentMatch && !noUserId) continue;
 
             const call = { id: doc.id, ...callData };
             if (call.agentId && !call.agentName) {
@@ -1105,12 +1102,19 @@ router.get('/supervisor/calls', async (req, res) => {
                 endedAt: call.endedAt || null,
             });
         }
+
+        // Auto-cleanup ghost calls in background
+        if (ghostCount > 0) {
+            ghostCleanupBatch.commit().catch(e => console.error('[EXT-API] Ghost cleanup error:', e));
+            console.log(`[EXT-API] Auto-cleaned ${ghostCount} ghost calls`);
+        }
+
         calls.sort((a, b) => {
             const da = a.startedAt?.toDate ? a.startedAt.toDate().getTime() : new Date(a.startedAt || 0).getTime();
             const db2 = b.startedAt?.toDate ? b.startedAt.toDate().getTime() : new Date(b.startedAt || 0).getTime();
             return db2 - da;
         });
-        console.log(`[EXT-API] Returning ${calls.length} active calls for user ${apiUserId}`);
+        console.log(`[EXT-API] /v1/supervisor/calls — ${calls.length} active, ${ghostCount} ghost cleaned`);
         res.json({ success: true, data: calls, message: 'Active call fetched successfully' });
     } catch (e) {
         console.error('[EXT-API ERROR] GET /v1/supervisor/calls failed:', e);
