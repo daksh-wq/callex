@@ -1058,7 +1058,7 @@ router.get('/supervisor/calls', async (req, res) => {
         // Get this user's agent IDs for fallback matching
         const agentsSnap = await db.collection('agents').where('userId', '==', apiUserId).get();
         const userAgentIds = new Set(agentsSnap.docs.map(d => d.id));
-        console.log(`[EXT-API] User owns ${userAgentIds.size} agents`);
+        console.log(`[EXT-API] User owns ${userAgentIds.size} agents: [${[...userAgentIds].join(', ')}]`);
 
         const calls = [];
         const now = Date.now();
@@ -1069,13 +1069,20 @@ router.get('/supervisor/calls', async (req, res) => {
             
             // Ghost call protection: If call is older than 2 hours, ignore it
             const startedAt = callData.startedAt?.toDate ? callData.startedAt.toDate().getTime() : new Date(callData.startedAt || 0).getTime();
-            if (now - startedAt > MAX_AGE_MS) continue;
+            if (now - startedAt > MAX_AGE_MS) {
+                console.log(`[EXT-API] Skipping ghost call ${doc.id} (too old)`);
+                continue;
+            }
 
-            // Include call if: userId matches OR call belongs to user's agent OR user is superadmin
+            // Include call if: userId matches OR call belongs to user's agent OR userId is empty (legacy) OR user is superadmin
             const userIdMatch = callData.userId === apiUserId;
             const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
+            const noUserId = !callData.userId || callData.userId === '';
 
-            if (!isSuperAdmin && !userIdMatch && !agentMatch) continue;
+            if (!isSuperAdmin && !userIdMatch && !agentMatch && !noUserId) {
+                console.log(`[EXT-API] Skipping call ${doc.id} — userId:${callData.userId} != apiUserId:${apiUserId}, agentId:${callData.agentId} not in user's agents`);
+                continue;
+            }
 
             const call = { id: doc.id, ...callData };
             if (call.agentId && !call.agentName) {
@@ -1086,7 +1093,7 @@ router.get('/supervisor/calls', async (req, res) => {
             }
             calls.push({
                 id: call.id,
-                phoneNumber: call.phoneNumber || '',
+                phoneNumber: call.phoneNumber || 'Unknown',
                 crmId: call.crmId || null,
                 agentId: call.agentId || '',
                 agentName: call.agentName || 'Unknown Agent',
@@ -1094,7 +1101,8 @@ router.get('/supervisor/calls', async (req, res) => {
                 sentiment: call.sentiment || 'neutral',
                 transcript: call.transcript || '',
                 transcriptMessages: call.transcriptMessages || [],
-                startedAt: call.startedAt
+                startedAt: call.startedAt,
+                endedAt: call.endedAt || null,
             });
         }
         calls.sort((a, b) => {
@@ -1103,10 +1111,10 @@ router.get('/supervisor/calls', async (req, res) => {
             return db2 - da;
         });
         console.log(`[EXT-API] Returning ${calls.length} active calls for user ${apiUserId}`);
-        res.json(calls);
+        res.json({ success: true, data: calls, message: 'Active call fetched successfully' });
     } catch (e) {
         console.error('[EXT-API ERROR] GET /v1/supervisor/calls failed:', e);
-        res.status(500).json({ error: 'Failed to list active calls' });
+        res.status(500).json({ success: false, data: [], message: 'Failed to fetch active calls' });
     }
 });
 
