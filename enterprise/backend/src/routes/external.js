@@ -1074,12 +1074,7 @@ router.get('/supervisor/calls', async (req, res) => {
                 continue;
             }
 
-            // Include call if: userId matches OR agent belongs to user OR userId empty (legacy) OR superadmin
-            const userIdMatch = callData.userId === apiUserId;
-            const agentMatch = callData.agentId && userAgentIds.has(callData.agentId);
-            const noUserId = !callData.userId || callData.userId === '';
-
-            if (!isSuperAdmin && !userIdMatch && !agentMatch && !noUserId) continue;
+            // Admin API: Returns ALL active calls (user filtering removed as requested)
 
             const call = { id: doc.id, ...callData };
             if (call.agentId && !call.agentName) {
