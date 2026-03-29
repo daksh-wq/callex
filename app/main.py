@@ -1434,7 +1434,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             'startedAt': fs.SERVER_TIMESTAMP,
             'cost': 0
         }
-        firestore_db.collection('calls').doc(call_uuid).set(call_doc)
+        firestore_db.collection('calls').document(call_uuid).set(call_doc)
         print(f"")
         print(f"{'='*60}")
         print(f"[FIRESTORE] ✅ CALL DOC CREATED SUCCESSFULLY")
