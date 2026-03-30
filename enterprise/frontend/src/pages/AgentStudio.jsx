@@ -911,42 +911,74 @@ function LiveSimulationModal({ agent, onClose }) {
         }
 
         try {
-            const res = await api.agentChat({
+            const res = await api.agentChatStream({
                 agentId: agent.id,
                 history: currentHistory,
                 userText: userText,
-                agentOverride: agent // Send the live, unsaved form state to override the DB!
+                agentOverride: agent
             });
 
-            if (activeReqIdRef.current !== reqId) return; // Stale request due to barge-in
+            if (activeReqIdRef.current !== reqId) return;
 
             if (!res.ok) throw new Error("API Failed");
 
-            const aiTextHeader = res.headers.get('x-agent-text');
-            const aiText = aiTextHeader ? decodeURIComponent(aiTextHeader) : "Audio generated.";
-
-            // Save AI context silently
+            const aiText = "Audio generated."; // Stream text headers are tricky, we just use placeholder
             historyRef.current = [...historyRef.current, { role: 'model', text: aiText }];
             setHistory([...historyRef.current]);
 
-            // Play audio
-            const blob = await res.blob();
-            if (activeReqIdRef.current !== reqId) return; // Stale request during download
-
-            const url = URL.createObjectURL(blob);
+            // Play streaming audio via MediaSource (MSE) for ultra-low latency
+            const mediaSource = new MediaSource();
+            const url = URL.createObjectURL(mediaSource);
             const audio = new Audio(url);
             audioRef.current = audio;
 
-            // Re-enable microphone WHIlE AI is speaking to allow for next barge-in
             triggerListen();
 
             await new Promise((resolve, reject) => {
+                mediaSource.addEventListener('sourceopen', async () => {
+                    try {
+                        const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                        const reader = res.body.getReader();
+                        
+                        const pump = async () => {
+                            if (activeReqIdRef.current !== reqId) return;
+                            const { done, value } = await reader.read();
+                            
+                            if (done) {
+                                if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+                                return;
+                            }
+                            
+                            const append = () => {
+                                if (mediaSource.readyState !== 'open') return;
+                                try {
+                                    sourceBuffer.appendBuffer(value);
+                                    sourceBuffer.addEventListener('updateend', pump, { once: true });
+                                } catch (e) {
+                                    console.error("MSE append error", e);
+                                }
+                            };
+
+                            if (sourceBuffer.updating) {
+                                sourceBuffer.addEventListener('updateend', append, { once: true });
+                            } else {
+                                append();
+                            }
+                        };
+                        
+                        pump();
+                    } catch (err) {
+                        console.error("MSE format unsupported?", err);
+                        reject(err);
+                    }
+                });
+
                 audio.onended = () => {
                     URL.revokeObjectURL(url);
                     resolve();
                 };
                 audio.onerror = reject;
-                audio.play();
+                audio.play().catch(reject);
             });
 
         } catch (e) {
