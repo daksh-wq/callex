@@ -855,12 +855,24 @@ function LiveSimulationModal({ agent, onClose }) {
             let interimTranscript = '';
             for (let i = e.resultIndex; i < e.results.length; ++i) {
                 if (e.results[i].isFinal) {
-                    // Noise Filtration: Ignore distant or staticky background voices.
-                    // Set to 0.4 because non-English words (like "haan", "ahmedabad") often get low confidence from the browser in en-US mode.
-                    if (e.results[i][0].confidence < 0.40) {
-                        console.log("Voice Assistant ignored low-confidence phrase:", e.results[i][0].transcript, "Confidence:", e.results[i][0].confidence);
+                    const segText = e.results[i][0].transcript.trim().toLowerCase();
+                    const segWords = segText.split(/\s+/).filter(w => w.length > 0).length;
+                    const isFiller = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi|stop|wait|hold|pause)\.?$/i.test(segText);
+
+                    let requiredConfidence = 0.50; // Standard 2+ word sentence confidence
+                    if (segWords === 1 && !isFiller) {
+                        // A random single word (e.g. from a TV in the background saying "and"). Requires very high confidence to accept.
+                        requiredConfidence = 0.80;
+                    } else if (segWords === 1 && isFiller) {
+                        // Intentional short answers (often get low confidence if non-English)
+                        requiredConfidence = 0.30;
+                    }
+
+                    if (e.results[i][0].confidence < requiredConfidence) {
+                        console.log("Voice Assistant blocked background noise:", segText, "Confidence:", e.results[i][0].confidence, "Required:", requiredConfidence);
                         continue;
                     }
+                    
                     finalTranscript += e.results[i][0].transcript + ' ';
                 } else {
                     interimTranscript += e.results[i][0].transcript;
@@ -869,15 +881,19 @@ function LiveSimulationModal({ agent, onClose }) {
 
             const currentText = (finalTranscript + interimTranscript).trim();
             const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
+            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi|stop|wait|hold|pause)\.?$/i.test(currentText);
 
-            // Immediate barge-in detection: Stop AI audio instantly on ANY recognized speech (1+ words)
-            if (wordCount >= 1 && speakerActiveRef.current) {
-                if (audioRef.current) {
-                    audioRef.current.pause();
-                    audioRef.current = null;
+            // Smart Barge-In
+            if (speakerActiveRef.current) {
+                // Only interrupt AI if user speaks 2+ words, OR deliberately uses a 1-word command ("stop", "haan")
+                if (wordCount >= 2 || (wordCount === 1 && isFillerPhrase)) {
+                    if (audioRef.current) {
+                        audioRef.current.pause();
+                        audioRef.current = null;
+                    }
+                    speakerActiveRef.current = false;
+                    setCallStatus('listening');
                 }
-                speakerActiveRef.current = false;
-                setCallStatus('listening');
             }
 
             // Dynamic VAD Patience
@@ -890,7 +906,6 @@ function LiveSimulationModal({ agent, onClose }) {
             }
             
             // If it's an explicitly known conversational filler, we drop to ultra-fast 200ms.
-            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi)\.?$/i.test(currentText);
             if (isFillerPhrase) {
                 dynamicPatience = 200;
             }
