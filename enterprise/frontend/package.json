@@ -9,6 +9,7 @@
         "preview": "vite preview"
     },
     "dependencies": {
+        "@sapphi-red/web-noise-suppressor": "^0.3.5",
         "firebase": "^12.9.0",
         "jspdf": "^4.2.0",
         "jspdf-autotable": "^5.0.7",

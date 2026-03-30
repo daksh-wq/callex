@@ -4,6 +4,11 @@ import { useStore } from '../store/index.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { Plus, Save, Trash2, Copy, Bot, Mic, Cpu, PhoneCall, ShieldAlert, Sparkles, SlidersHorizontal, Settings, Volume2, Globe, Wrench, FileArchive, X, Send, Loader2, AlertTriangle, Clock, Users } from 'lucide-react';
 
+// AI Noise Suppression (RNNoise deep neural network)
+import { RnnoiseWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
+import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
+import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
+
 // Callex AI Models
 const CALLEX_MODELS = [
     { value: 'callex-1.1', label: 'Callex-1.1', desc: 'Fast · Optimized for high-volume calls' },
@@ -861,15 +866,21 @@ function LiveSimulationModal({ agent, onClose }) {
                 });
                 console.log("🎤 Microphone acquired with Hardware DSP.");
 
-                // Step 2: Set up AudioContext & AudioWorklet for 16kHz PCM downsampling
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                await audioContext.audioWorklet.addModule('/stt-worklet.js');
-                const source = audioContext.createMediaStreamSource(micStream);
+                // Step 2: Set up AudioContext at native 48kHz (needed for RNNoise AI)
+                // RNNoise neural network requires 48kHz input for its spectral analysis
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-                // Step 2.5: VOICE BANDPASS FILTER (300Hz - 3400Hz)
-                // Human voice sits at 300Hz-3400Hz. Everything outside is noise.
-                // High-pass removes: wind, bike engine, road rumble (below 300Hz)
-                // Low-pass removes: AC hiss, phone static, TV treble (above 3400Hz)
+                // Step 2.5: AI NEURAL NOISE SUPPRESSION (RNNoise Deep RNN)
+                // This is the same AI noise cancellation used by Jitsi Meet, Discord, etc.
+                // It analyzes spectral patterns to distinguish human voice from ALL background noise
+                // (traffic, wind, crowd, TV, construction) and surgically removes non-speech audio.
+                const rnnoiseWasmBinary = await loadRnnoise({ url: rnnoiseWasmPath });
+                await audioContext.audioWorklet.addModule(rnnoiseWorkletPath);
+                const rnnoiseNode = new RnnoiseWorkletNode(audioContext, { wasmBinary: rnnoiseWasmBinary });
+                console.log("🧠 AI Neural Noise Suppression (RNNoise) Active.");
+
+                // Step 2.6: VOICE BANDPASS FILTER (300Hz - 3400Hz)
+                // Extra safety layer on top of AI denoiser
                 const highPassFilter = audioContext.createBiquadFilter();
                 highPassFilter.type = 'highpass';
                 highPassFilter.frequency.value = 300;
@@ -877,15 +888,21 @@ function LiveSimulationModal({ agent, onClose }) {
 
                 const lowPassFilter = audioContext.createBiquadFilter();
                 lowPassFilter.type = 'lowpass';
-                lowPassFilter.frequency.value = 3400; // Cut everything above 3400Hz
+                lowPassFilter.frequency.value = 3400;
                 lowPassFilter.Q.value = 0.7;
 
+                // Step 2.7: PCM Downsampler AudioWorklet (48kHz → 16kHz for Sarvam)
+                await audioContext.audioWorklet.addModule('/stt-worklet.js');
                 const workletNode = new AudioWorkletNode(audioContext, 'stt-processor');
-                source.connect(highPassFilter);      // Mic → Wind Filter
-                highPassFilter.connect(lowPassFilter); // Wind Filter → Hiss Filter  
-                lowPassFilter.connect(workletNode);    // Hiss Filter → PCM Downsampler
+
+                // Chain: Mic → RNNoise AI → High-Pass → Low-Pass → PCM Downsampler
+                const source = audioContext.createMediaStreamSource(micStream);
+                source.connect(rnnoiseNode);           // Mic → AI Denoiser
+                rnnoiseNode.connect(highPassFilter);    // AI Denoiser → Wind Filter
+                highPassFilter.connect(lowPassFilter);  // Wind Filter → Hiss Filter
+                lowPassFilter.connect(workletNode);     // Hiss Filter → 16kHz Downsampler
                 workletNode.connect(audioContext.destination);
-                console.log("🔇 Voice Bandpass Filter Active (300Hz-3400Hz).");
+                console.log("🔇 Full Voice Isolation Pipeline Active: AI Denoise → Bandpass → 16kHz.");
 
                 // Step 3: Connect to backend WebSocket proxy -> Sarvam AI
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
