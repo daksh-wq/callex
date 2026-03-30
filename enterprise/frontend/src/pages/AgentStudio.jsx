@@ -865,9 +865,20 @@ function LiveSimulationModal({ agent, onClose }) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 await audioContext.audioWorklet.addModule('/stt-worklet.js');
                 const source = audioContext.createMediaStreamSource(micStream);
+
+                // Step 2.5: HIGH-PASS WIND NOISE FILTER
+                // Wind/bike noise lives below 300Hz. Human voice sits at 300Hz-3400Hz.
+                // This physically strips out wind rumble before audio reaches Sarvam AI.
+                const highPassFilter = audioContext.createBiquadFilter();
+                highPassFilter.type = 'highpass';
+                highPassFilter.frequency.value = 300; // Cut everything below 300Hz (wind, engine, road noise)
+                highPassFilter.Q.value = 0.7; // Gentle rolloff to avoid voice distortion
+
                 const workletNode = new AudioWorkletNode(audioContext, 'stt-processor');
-                source.connect(workletNode);
+                source.connect(highPassFilter); // Mic -> Wind Filter
+                highPassFilter.connect(workletNode); // Wind Filter -> PCM Downsampler
                 workletNode.connect(audioContext.destination); // Required to keep worklet alive (silent output)
+                console.log("🌬️ 300Hz High-Pass Wind Noise Filter Active.");
 
                 // Step 3: Connect to backend WebSocket proxy -> Sarvam AI
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';

@@ -8,10 +8,7 @@ export function setupSarvamWS(clientWs, agentConfig) {
         return;
     }
 
-    // Connect to Sarvam AI STT WebSocket
-    const sarvamWsUrl = 'wss://api.sarvam.ai/speech-to-text-translate/ws'; // or speech-to-text/ws depending on dialect translation needs, we'll try speech-to-text/ws
-    
-    // We'll use the core speech-to-text endpoint since the user wants Hindi STT
+    // Connect to Sarvam AI STT WebSocket (codemix mode for Hindi-English mixed speech)
     const sarvamWs = new WebSocket('wss://api.sarvam.ai/speech-to-text/ws', {
         headers: {
             'API-Subscription-Key': SARVAM_API_KEY
@@ -30,7 +27,7 @@ export function setupSarvamWS(clientWs, agentConfig) {
             data: {
                 model: "saaras:v1",
                 language_code: agentConfig.languageCode || "hi-IN",
-                mode: "transcribe",
+                mode: "codemix", // Naturally handles Hindi-English mixed speech like '5 lakh', '9 lakh'
                 audio_format: {
                     mime_type: "audio/x-raw",
                     sample_rate: 16000,
