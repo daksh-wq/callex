@@ -836,8 +836,27 @@ function LiveSimulationModal({ agent, onClose }) {
         } catch (e) { /* already started */ }
     }
 
-    // Initialize Web Speech API
+    // Initialize Web Speech API & Hardware DSP
     useEffect(() => {
+        let hardwareStream = null;
+
+        // Force hardware-level noise suppression and echo cancellation actively
+        const initHardwareDSP = async () => {
+            try {
+                hardwareStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        noiseSuppression: true,
+                        echoCancellation: true,
+                        autoGainControl: true
+                    }
+                });
+                console.log("Hardware DSP Noise Suppression Activated.");
+            } catch (err) {
+                console.warn("Could not activate Hardware DSP (browser may fallback to software VAD):", err);
+            }
+        };
+        initHardwareDSP();
+
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
             setCallStatus('error');
@@ -992,6 +1011,9 @@ function LiveSimulationModal({ agent, onClose }) {
             recognitionRef.current?.stop();
             if (audioRef.current) {
                 audioRef.current.pause();
+            }
+            if (hardwareStream) {
+                hardwareStream.getTracks().forEach(t => t.stop());
             }
         };
     }, []);
