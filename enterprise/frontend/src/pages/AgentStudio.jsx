@@ -855,8 +855,9 @@ function LiveSimulationModal({ agent, onClose }) {
             let interimTranscript = '';
             for (let i = e.resultIndex; i < e.results.length; ++i) {
                 if (e.results[i].isFinal) {
-                    // Noise Filtration: Ignore distant or staticky background voices
-                    if (e.results[i][0].confidence < 0.65) {
+                    // Noise Filtration: Ignore distant or staticky background voices.
+                    // Set to 0.4 because non-English words (like "haan", "ahmedabad") often get low confidence from the browser in en-US mode.
+                    if (e.results[i][0].confidence < 0.40) {
                         console.log("Voice Assistant ignored low-confidence phrase:", e.results[i][0].transcript, "Confidence:", e.results[i][0].confidence);
                         continue;
                     }
@@ -880,9 +881,19 @@ function LiveSimulationModal({ agent, onClose }) {
             }
 
             // Dynamic VAD Patience
-            // If the user says a very common short filler/answer, trigger instantly (150ms) instead of waiting full patienceMs
-            const isShortPhrase = /^(yes|no|hello|hi|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you)\.?$/i.test(currentText);
-            const dynamicPatience = isShortPhrase ? 150 : (agent.patienceMs || 800);
+            let dynamicPatience = agent.patienceMs || 800;
+            
+            if (wordCount > 0 && wordCount <= 3) {
+                // For ANY universal short answer (like "Ahmedabad", "My name is John"), 
+                // we drop latency to 400ms to make it delightfully fast.
+                dynamicPatience = 400;
+            }
+            
+            // If it's an explicitly known conversational filler, we drop to ultra-fast 200ms.
+            const isFillerPhrase = /^(yes|no|hello|hi|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi)\.?$/i.test(currentText);
+            if (isFillerPhrase) {
+                dynamicPatience = 200;
+            }
 
             // Custom Silence Detection (VAD) instead of waiting for isFinal delay
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
