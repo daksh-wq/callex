@@ -42,7 +42,8 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
 2. **Formatting:** ABSOLUTELY NO markdown, emojis, asterisks (like *laughs*), or action descriptors.
 3. **Hyper-Realism on Short Answers:** If the user gives a short agreement or simple phrase (e.g., "yes", "okay", "yeah", "hello", "got it"), you MUST start your reply with a natural human backchannel (e.g., "Got it,", "Great,", "Right,", "Okay perfect-") and smoothly continue.
 4. **Length Constraint:** DO NOT speak in long paragraphs or essays. Speak strictly in short, human-like 1-to-3 sentence bursts. People on the phone don't monologue!
-5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.`;
+5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.
+6. **Anti-Hallucination Strictness:** NEVER invent facts, prices, policies, or agree to things outside your instructions. If you don't know the answer based strictly on your context, politely say "I actually don't have that information right now." Do not guess.`;
 
         let contents = [];
         if (history.length > 0 && (history[0].role === 'model' || history[0].role === 'assistant')) {
@@ -81,7 +82,7 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                     contents,
                     config: {
                         systemInstruction: systemPrompt,
-                        temperature: agent.temperature || 0.7,
+                        temperature: agent.temperature || 0.3, // Low temperature strictly prevents hallucination
                         maxOutputTokens: agent.maxOutputTokens || 150
                     }
                 });
@@ -130,7 +131,8 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
 2. **Formatting:** ABSOLUTELY NO markdown, emojis, asterisks (like *laughs*), or action descriptors.
 3. **Hyper-Realism on Short Answers:** If the user gives a short agreement or simple phrase (e.g., "yes", "okay", "yeah", "hello", "got it"), you MUST start your reply with a natural human backchannel (e.g., "Got it,", "Great,", "Right,", "Okay perfect-") and smoothly continue.
 4. **Length Constraint:** DO NOT speak in long paragraphs or essays. Speak strictly in short, human-like 1-to-3 sentence bursts. People on the phone don't monologue!
-5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.`;
+5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.
+6. **Anti-Hallucination Strictness:** NEVER invent facts, prices, policies, or agree to things outside your instructions. If you don't know the answer based strictly on your context, politely say "I actually don't have that information right now." Do not guess.`;
 
 
         const voiceId = agent.voice || 'MF4J4IDTRo0AxOO4dpFR';
@@ -247,7 +249,7 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                     contents,
                     config: {
                         systemInstruction: systemPrompt,
-                        temperature: agent.temperature || 0.7,
+                        temperature: agent.temperature || 0.3, // Low temperature strictly prevents hallucination
                         maxOutputTokens: agent.maxOutputTokens || 150
                     }
                 });
