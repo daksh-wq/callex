@@ -870,8 +870,8 @@ function LiveSimulationModal({ agent, onClose }) {
             const currentText = (finalTranscript + interimTranscript).trim();
             const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
 
-            // Immediate barge-in detection: Stop AI audio instantly only if actual speech (2+ words) is detected
-            if (wordCount >= 2 && speakerActiveRef.current) {
+            // Immediate barge-in detection: Stop AI audio instantly on ANY recognized speech (1+ words)
+            if (wordCount >= 1 && speakerActiveRef.current) {
                 if (audioRef.current) {
                     audioRef.current.pause();
                     audioRef.current = null;
@@ -890,7 +890,7 @@ function LiveSimulationModal({ agent, onClose }) {
             }
             
             // If it's an explicitly known conversational filler, we drop to ultra-fast 200ms.
-            const isFillerPhrase = /^(yes|no|hello|hi|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi)\.?$/i.test(currentText);
+            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi)\.?$/i.test(currentText);
             if (isFillerPhrase) {
                 dynamicPatience = 200;
             }
@@ -898,7 +898,7 @@ function LiveSimulationModal({ agent, onClose }) {
             // Custom Silence Detection (VAD) instead of waiting for isFinal delay
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             
-            if (currentText.length >= 2 || e.results[e.results.length - 1].isFinal) {
+            if (currentText.length >= 1 || e.results[e.results.length - 1].isFinal) {
                 silenceTimerRef.current = setTimeout(async () => {
                     const text = currentText;
                     if (!text) return; // Edge case: only low-confidence noise was detected and dropped
