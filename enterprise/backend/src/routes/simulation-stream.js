@@ -21,7 +21,16 @@ router.post('/agent-chat-stream', async (req, res) => {
         const langCode = agent.language || 'en-US';
         const isHindi = langCode.startsWith('hi');
         const langConstraint = isHindi ? 'Hindi (conversational/Devanagari)' : langCode;
-        const systemPrompt = `${baseSystemPrompt}\n\nIMPORTANT SYSTEM INSTRUCTIONS:\n- You MUST respond entirely in ${langConstraint}.\n- Do NOT output any markdown, emojis, asterisks, or action descriptors because your response will be synthesized directly to speech via TTS.\n- Keep your responses concise, natural, and highly conversational for a phone call.`;
+        
+        const systemPrompt = `${baseSystemPrompt}
+
+IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TTS):
+1. **Language:** Respond entirely in ${langConstraint}.
+2. **Formatting:** ABSOLUTELY NO markdown, emojis, asterisks (like *laughs*), or action descriptors.
+3. **Hyper-Realism on Short Answers:** If the user gives a short agreement or simple phrase (e.g., "yes", "okay", "yeah", "hello", "got it"), you MUST start your reply with a natural human backchannel (e.g., "Got it,", "Great,", "Right,", "Okay perfect-") and smoothly continue.
+4. **Length Constraint:** DO NOT speak in long paragraphs or essays. Speak strictly in short, human-like 1-to-3 sentence bursts. People on the phone don't monologue!
+5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.`;
+
 
         const voiceId = agent.voice || 'MF4J4IDTRo0AxOO4dpFR';
         const prosodyRate = agent.prosodyRate ?? 1.0;

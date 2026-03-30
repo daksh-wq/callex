@@ -855,6 +855,11 @@ function LiveSimulationModal({ agent, onClose }) {
             let interimTranscript = '';
             for (let i = e.resultIndex; i < e.results.length; ++i) {
                 if (e.results[i].isFinal) {
+                    // Noise Filtration: Ignore distant or staticky background voices
+                    if (e.results[i][0].confidence < 0.65) {
+                        console.log("Voice Assistant ignored low-confidence phrase:", e.results[i][0].transcript, "Confidence:", e.results[i][0].confidence);
+                        continue;
+                    }
                     finalTranscript += e.results[i][0].transcript + ' ';
                 } else {
                     interimTranscript += e.results[i][0].transcript;
@@ -874,16 +879,22 @@ function LiveSimulationModal({ agent, onClose }) {
                 setCallStatus('listening');
             }
 
+            // Dynamic VAD Patience
+            // If the user says a very common short filler/answer, trigger instantly (150ms) instead of waiting full patienceMs
+            const isShortPhrase = /^(yes|no|hello|hi|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you)\.?$/i.test(currentText);
+            const dynamicPatience = isShortPhrase ? 150 : (agent.patienceMs || 800);
+
             // Custom Silence Detection (VAD) instead of waiting for isFinal delay
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             
             if (currentText.length >= 2 || e.results[e.results.length - 1].isFinal) {
                 silenceTimerRef.current = setTimeout(async () => {
                     const text = currentText;
+                    if (!text) return; // Edge case: only low-confidence noise was detected and dropped
                     finalTranscript = ''; // Reset for next utterance
                     recognition.stop(); // Pause strictly to process turn
                     await processSpeech(text);
-                }, agent.patienceMs || 800);
+                }, dynamicPatience);
             }
         };
 
