@@ -786,6 +786,7 @@ function LiveSimulationModal({ agent, onClose }) {
     const isModalOpenRef = useRef(true);
     const audioRef = useRef(null);
     const activeReqIdRef = useRef(0);
+    const silenceTimerRef = useRef(null);
 
 
     // Call Timer
@@ -845,17 +846,21 @@ function LiveSimulationModal({ agent, onClose }) {
                 setCallStatus('listening');
             }
 
-            if (e.results[e.results.length - 1].isFinal) {
-                const text = finalTranscript.trim();
-                finalTranscript = ''; // Reset for next utterance
-                if (text.length >= 2) {
+            // Custom Silence Detection (VAD) instead of waiting for isFinal delay
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+            
+            if (currentText.length >= 2 || e.results[e.results.length - 1].isFinal) {
+                silenceTimerRef.current = setTimeout(async () => {
+                    const text = currentText;
+                    finalTranscript = ''; // Reset for next utterance
                     recognition.stop(); // Pause strictly to process turn
                     await processSpeech(text);
-                }
+                }, agent.patienceMs || 800);
             }
         };
 
         recognition.onerror = (e) => {
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             if (e.error === 'no-speech' || e.error === 'aborted') {
                 setTimeout(triggerListen, 100);
             } else {
@@ -865,6 +870,7 @@ function LiveSimulationModal({ agent, onClose }) {
         };
 
         recognition.onend = () => {
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             setTimeout(triggerListen, 100);
         };
 
@@ -876,6 +882,7 @@ function LiveSimulationModal({ agent, onClose }) {
         }, 1500);
 
         return () => {
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             isModalOpenRef.current = false;
             recognitionRef.current?.stop();
             if (audioRef.current) {
@@ -958,6 +965,7 @@ function LiveSimulationModal({ agent, onClose }) {
     };
 
     const handleEndCall = () => {
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
         isModalOpenRef.current = false;
         recognitionRef.current?.abort();
         if (audioRef.current) audioRef.current.pause();
