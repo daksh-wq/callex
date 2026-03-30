@@ -1036,6 +1036,7 @@ function LiveSimulationModal({ agent, onClose }) {
             const mediaSource = new MediaSource();
             const url = URL.createObjectURL(mediaSource);
             const audio = new Audio(url);
+            audio.playbackRate = agent.prosodyRate ?? 1.0; // Apply custom voice speed
             audioRef.current = audio;
 
             triggerListen();
