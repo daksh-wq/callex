@@ -860,14 +860,17 @@ function LiveSimulationModal({ agent, onClose }) {
                 if (e.results[i].isFinal) {
                     const segText = e.results[i][0].transcript.trim().toLowerCase();
                     const segWords = segText.split(/\s+/).filter(w => w.length > 0).length;
-                    const isFiller = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi|stop|wait|hold|pause)\.?$/i.test(segText);
+                    
+                    // Regex handles variations like "haaaa", "naa", "hmm"
+                    const isFiller = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|ha+|haan|han|ji|achha|acha|theek|sahi|na+|nahi|nahin|stop|wait|hold|pause|hmm+)[.,!?]?$/i.test(segText);
+                    const isStopWord = /^(the|and|a|an|so|like|but|or|because|as|if|when|than|then|just|with|that|this|it|is|was|are|were)[.,!?]?$/i.test(segText);
 
-                    let requiredConfidence = 0.50; // Standard 2+ word sentence confidence
-                    if (segWords === 1 && !isFiller) {
-                        // A random single word (e.g. from a TV in the background saying "and"). Requires very high confidence to accept.
-                        requiredConfidence = 0.80;
+                    let requiredConfidence = 0.50; // Standard sentence confidence
+                    if (segWords === 1 && isStopWord) {
+                        // A background TV playing often blurts out single structural stop words ("and", "so").
+                        requiredConfidence = 0.85; // Ignore completely unless very loud/confident
                     } else if (segWords === 1 && isFiller) {
-                        // Intentional short answers (often get low confidence if non-English)
+                        // Intentional short answers (often get lower confidence from Chrome if non-English)
                         requiredConfidence = 0.30;
                     }
 
@@ -884,12 +887,13 @@ function LiveSimulationModal({ agent, onClose }) {
 
             const currentText = (finalTranscript + interimTranscript).trim();
             const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
-            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|haan|han|ha|ji|achha|acha|theek|sahi|stop|wait|hold|pause)\.?$/i.test(currentText);
+            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|ha+|haan|han|ji|achha|acha|theek|sahi|na+|nahi|nahin|stop|wait|hold|pause|hmm+)[.,!?]?$/i.test(currentText);
+            const isStopText = /^(the|and|a|an|so|like|but|or|because|as|if|when|than|then|just|with|that|this|it|is|was|are|were)[.,!?]?$/i.test(currentText);
 
             // Smart Barge-In
             if (speakerActiveRef.current) {
-                // Only interrupt AI if user speaks 2+ words, OR deliberately uses a 1-word command ("stop", "haan")
-                if (wordCount >= 2 || (wordCount === 1 && isFillerPhrase)) {
+                // Barge in on any input EXCEPT tiny random TV stop-words
+                if (wordCount >= 2 || (wordCount === 1 && !isStopText)) {
                     if (audioRef.current) {
                         audioRef.current.pause();
                         audioRef.current = null;
