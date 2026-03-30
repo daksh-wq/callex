@@ -796,6 +796,34 @@ function LiveSimulationModal({ agent, onClose }) {
         return () => clearInterval(interval);
     }, [callStatus]);
 
+    // Background Ambience
+    useEffect(() => {
+        if (!agent.backgroundAmbience || agent.backgroundAmbience === 'none') return;
+        
+        const AMBIENCE_URLS = {
+            'office': 'https://actions.google.com/sounds/v1/water/rain_on_roof.ogg', 
+            'call_center': 'https://actions.google.com/sounds/v1/crowds/restaurant_chatter.ogg',
+            'static': 'https://actions.google.com/sounds/v1/alarms/white_noise.ogg'
+        };
+        
+        const src = AMBIENCE_URLS[agent.backgroundAmbience];
+        if (!src) return;
+
+        const bgAudio = new Audio(src);
+        bgAudio.loop = true;
+        bgAudio.volume = 0.05; // 5% volume - faint but realistic
+        
+        const playPromise = bgAudio.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(e => console.warn("Background audio blocked by autoplay rules:", e));
+        }
+
+        return () => {
+            bgAudio.pause();
+            bgAudio.src = ""; // Clean up memory
+        };
+    }, [agent.backgroundAmbience]);
+
     const formatTime = (secs) => `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 
     const triggerListen = () => {
