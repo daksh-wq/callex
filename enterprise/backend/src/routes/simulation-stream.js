@@ -171,11 +171,9 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
         const legacyVoiceMap = { 'alloy': 'MF4J4IDTRo0AxOO4dpFR', 'echo': '1qEiC6qsybMkmnNdVMbK', 'fable': 'qDuRKMlYmrm8trt5QyBn', 'onyx': 'LQ2auZHpAQ9h4azztqMT', 'nova': 's6cZdgI3j07hf4frz4Q8', 'shimmer': 'MF4J4IDTRo0AxOO4dpFR' };
         const resolvedVoiceId = legacyVoiceMap[voiceId] || voiceId;
 
-        // Set Headers for streaming HTTP audio response back to browser
-        res.setHeader('Content-Type', 'audio/mpeg');
+        // Set Headers for streaming HTTP response back to browser
+        res.setHeader('Content-Type', 'application/x-ndjson');
         res.setHeader('Transfer-Encoding', 'chunked');
-        // We cannot reliably set x-agent-text upfront since it's streaming, but we can set a dummy or try to append trailing headers (not supported by fetch standard easily).
-        // Let's just stream audio. The frontend simulator doesn't strictly need to display the text instantly, it's mostly for audio.
 
         const elevenApiKey = process.env.CALLEX_VOICE_API_KEY || '030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c';
         const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${resolvedVoiceId}/stream-input?model_id=eleven_multilingual_v2`;
@@ -211,8 +209,7 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
             try {
                 const msg = JSON.parse(data);
                 if (msg.audio) {
-                    const audioBuffer = Buffer.from(msg.audio, 'base64');
-                    res.write(audioBuffer);
+                    res.write(JSON.stringify({ type: 'audio', data: msg.audio }) + '\n');
                 }
                 if (msg.isFinal) {
                     elevenWs.close();
@@ -281,6 +278,9 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                 if (chunkText) {
                     fullAiText += chunkText;
                     textBuffer += chunkText;
+                    
+                    // Stream the original text immediately to the frontend so it retains context
+                    res.write(JSON.stringify({ type: 'text', data: chunkText }) + '\n');
                         
                         // Check for natural sentence/clause boundaries
                         // We use a regex match on the buffer to wait for punctuation.

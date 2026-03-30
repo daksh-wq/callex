@@ -787,6 +787,7 @@ function LiveSimulationModal({ agent, onClose }) {
     const audioRef = useRef(null);
     const activeReqIdRef = useRef(0);
     const silenceTimerRef = useRef(null);
+    const aiCurrentSentenceRef = useRef("");
 
 
     // Call Timer
@@ -914,6 +915,12 @@ function LiveSimulationModal({ agent, onClose }) {
                 // Barge in on any input EXCEPT tiny random TV stop-words
                 if (wordCount >= 2 || (wordCount === 1 && !isStopText)) {
                     if (audioRef.current) {
+                        if (aiCurrentSentenceRef.current) {
+                            historyRef.current = [...historyRef.current, { role: 'model', text: aiCurrentSentenceRef.current.trim() }];
+                            setHistory([...historyRef.current]);
+                        }
+                        aiCurrentSentenceRef.current = ""; // Reset
+
                         audioRef.current.pause();
                         audioRef.current = null;
                     }
@@ -1050,11 +1057,7 @@ function LiveSimulationModal({ agent, onClose }) {
 
             if (!res.ok) throw new Error("API Failed");
 
-            const aiText = "Audio generated."; // Stream text headers are tricky, we just use placeholder
-            historyRef.current = [...historyRef.current, { role: 'model', text: aiText }];
-            setHistory([...historyRef.current]);
-
-            // Play streaming audio via MediaSource (MSE) for ultra-low latency
+            // Play streaming audio via MediaSource (MSE) for ultra-low latency multiplexed over NDJSON
             const mediaSource = new MediaSource();
             const url = URL.createObjectURL(mediaSource);
             const audio = new Audio(url);
@@ -1068,31 +1071,76 @@ function LiveSimulationModal({ agent, onClose }) {
                     try {
                         const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
                         const reader = res.body.getReader();
+                        let textDecoder = new TextDecoder();
+                        let bufferString = "";
+                        
+                        let appendQueue = [];
+                        let isAppending = false;
+
+                        const pumpQueue = () => {
+                            if (isAppending || appendQueue.length === 0 || mediaSource.readyState !== 'open') return;
+                            isAppending = true;
+                            const bytes = appendQueue.shift();
+                            
+                            const onUpdateEnd = () => {
+                                sourceBuffer.removeEventListener('updateend', onUpdateEnd);
+                                isAppending = false;
+                                pumpQueue();
+                            };
+                            
+                            sourceBuffer.addEventListener('updateend', onUpdateEnd);
+                            try {
+                                sourceBuffer.appendBuffer(bytes);
+                            } catch (e) {
+                                console.error("MSE append error", e);
+                                isAppending = false;
+                            }
+                        };
                         
                         const pump = async () => {
                             if (activeReqIdRef.current !== reqId) return;
                             const { done, value } = await reader.read();
                             
                             if (done) {
-                                if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+                                if (bufferString.trim()) {
+                                    try {
+                                        const event = JSON.parse(bufferString.trim());
+                                        if (event.type === 'text') aiCurrentSentenceRef.current += event.data;
+                                    } catch (e) {}
+                                }
+                                
+                                const endInterval = setInterval(() => {
+                                    if (appendQueue.length === 0 && !isAppending && !sourceBuffer.updating) {
+                                        clearInterval(endInterval);
+                                        if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+                                    }
+                                }, 50);
                                 return;
                             }
                             
-                            const append = () => {
-                                if (mediaSource.readyState !== 'open') return;
-                                try {
-                                    sourceBuffer.appendBuffer(value);
-                                    sourceBuffer.addEventListener('updateend', pump, { once: true });
-                                } catch (e) {
-                                    console.error("MSE append error", e);
-                                }
-                            };
+                            bufferString += textDecoder.decode(value, { stream: true });
+                            const lines = bufferString.split('\n');
+                            bufferString = lines.pop(); // Keep incomplete line
 
-                            if (sourceBuffer.updating) {
-                                sourceBuffer.addEventListener('updateend', append, { once: true });
-                            } else {
-                                append();
+                            for (const line of lines) {
+                                if (!line.trim()) continue;
+                                try {
+                                    const event = JSON.parse(line);
+                                    if (event.type === 'text') {
+                                        aiCurrentSentenceRef.current += event.data;
+                                    } else if (event.type === 'audio') {
+                                        const binaryStr = window.atob(event.data);
+                                        const len = binaryStr.length;
+                                        const bytes = new Uint8Array(len);
+                                        for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+                                        
+                                        appendQueue.push(bytes);
+                                        pumpQueue();
+                                    }
+                                } catch (err) { }
                             }
+                            
+                            pump();
                         };
                         
                         pump();
@@ -1104,6 +1152,11 @@ function LiveSimulationModal({ agent, onClose }) {
 
                 audio.onended = () => {
                     URL.revokeObjectURL(url);
+                    if (aiCurrentSentenceRef.current) {
+                        historyRef.current = [...historyRef.current, { role: 'model', text: aiCurrentSentenceRef.current.trim() }];
+                        setHistory([...historyRef.current]);
+                    }
+                    aiCurrentSentenceRef.current = ""; // Reset
                     resolve();
                 };
                 audio.onerror = reject;
