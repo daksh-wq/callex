@@ -850,6 +850,9 @@ function LiveSimulationModal({ agent, onClose }) {
         recognition.lang = agent.language || 'en-US';
 
         let finalTranscript = '';
+        let predictiveTimer = null;
+        let lastPredictedText = '';
+        let activePredictionId = null;
 
         recognition.onresult = async (e) => {
             let interimTranscript = '';
@@ -914,12 +917,44 @@ function LiveSimulationModal({ agent, onClose }) {
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             
             if (currentText.length >= 1 || e.results[e.results.length - 1].isFinal) {
+                
+                // --- Speculative Pre-fetching ---
+                if (predictiveTimer) clearTimeout(predictiveTimer);
+                // Only predict if the user has spoken a meaningful phrase (3+ words) and we haven't already predicted it
+                if (wordCount >= 3 && currentText !== lastPredictedText) {
+                    predictiveTimer = setTimeout(async () => {
+                        try {
+                            lastPredictedText = currentText;
+                            activePredictionId = `pred_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+                            console.log("🧠 Speculative AI pre-fetch triggered for:", currentText);
+                            await api.agentChatPredictive({
+                                agentId: agent.id,
+                                history: historyRef.current,
+                                userText: currentText,
+                                agentOverride: agent,
+                                predictionId: activePredictionId
+                            });
+                        } catch (err) {
+                            console.log("Prediction failed", err);
+                        }
+                    }, 150); // Predict after mere 150ms of silence
+                }
+
+                // --- Standard Silence Detection (VAD) ---
                 silenceTimerRef.current = setTimeout(async () => {
                     const text = currentText;
                     if (!text) return; // Edge case: only low-confidence noise was detected and dropped
                     finalTranscript = ''; // Reset for next utterance
                     recognition.stop(); // Pause strictly to process turn
-                    await processSpeech(text);
+
+                    // Check if we have a valid prediction to consume!
+                    const consumeId = (text === lastPredictedText) ? activePredictionId : null;
+                    if (consumeId) console.log("🚀 CONSUMING SPECULATIVE CACHE!");
+
+                    activePredictionId = null;
+                    lastPredictedText = '';
+
+                    await processSpeech(text, consumeId);
                 }, dynamicPatience);
             }
         };
@@ -948,6 +983,7 @@ function LiveSimulationModal({ agent, onClose }) {
 
         return () => {
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+            if (predictiveTimer) clearTimeout(predictiveTimer);
             isModalOpenRef.current = false;
             recognitionRef.current?.stop();
             if (audioRef.current) {
@@ -956,7 +992,7 @@ function LiveSimulationModal({ agent, onClose }) {
         };
     }, []);
 
-    const processSpeech = async (userText) => {
+    const processSpeech = async (userText, predictionId = null) => {
         const reqId = ++activeReqIdRef.current;
 
         // Barge-in: if AI was speaking, interrupt it
@@ -980,7 +1016,8 @@ function LiveSimulationModal({ agent, onClose }) {
                 agentId: agent.id,
                 history: currentHistory,
                 userText: userText,
-                agentOverride: agent
+                agentOverride: agent,
+                predictionId: predictionId
             });
 
             if (activeReqIdRef.current !== reqId) return;

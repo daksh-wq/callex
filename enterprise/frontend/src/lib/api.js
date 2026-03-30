@@ -83,6 +83,7 @@ export const api = {
     runAdversarial: (data) => apiFetch('/simulation/adversarial', { method: 'POST', body: data }),
     agentChat: (data) => fetch(`${BASE}/simulation/agent-chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
     agentChatStream: (data) => fetch(`${BASE}/simulation-stream/agent-chat-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
+    agentChatPredictive: (data) => fetch(`${BASE}/simulation-stream/agent-chat-predictive`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(res => res.json()),
 
     // Dialer
     campaigns: () => apiFetch('/dialer/campaigns'),

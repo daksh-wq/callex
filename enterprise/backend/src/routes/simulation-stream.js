@@ -1,13 +1,114 @@
 import { Router } from 'express';
 import { db, docToObj } from '../firebase.js';
 import WebSocket from 'ws';
+import { PassThrough } from 'stream';
 
 const router = Router();
+
+const predictiveCache = new Map();
+
+// Helper to clean up old speculative cache entries
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of predictiveCache.entries()) {
+        if (now - value.timestamp > 15000) { // Keep cache for exactly 15s
+            predictiveCache.delete(key);
+        }
+    }
+}, 10000);
+
+// POST /api/simulation/agent-chat-predictive
+// Strictly queries Gemini LLM in the background without touching ElevenLabs TTS to save costs.
+router.post('/agent-chat-predictive', async (req, res) => {
+    try {
+        const { agentId, history = [], userText, agentOverride = {}, predictionId } = req.body;
+        if (!predictionId) return res.status(400).json({ error: 'Missing predictionId' });
+
+        const agentDoc = await db.collection('agents').doc(agentId).get();
+        if (!agentDoc.exists) return res.status(404).json({ error: 'Agent not found' });
+        
+        const dbAgent = docToObj(agentDoc);
+        const agent = { ...dbAgent, ...agentOverride };
+
+        let baseSystemPrompt = agent.systemPrompt || 'You are a helpful customer support agent.';
+        const langCode = agent.language || 'en-US';
+        const isHindi = langCode.startsWith('hi');
+        const langConstraint = isHindi ? 'Hindi (conversational/Devanagari)' : langCode;
+        
+        const systemPrompt = `${baseSystemPrompt}
+
+IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TTS):
+1. **Language:** Respond entirely in ${langConstraint}.
+2. **Formatting:** ABSOLUTELY NO markdown, emojis, asterisks (like *laughs*), or action descriptors.
+3. **Hyper-Realism on Short Answers:** If the user gives a short agreement or simple phrase (e.g., "yes", "okay", "yeah", "hello", "got it"), you MUST start your reply with a natural human backchannel (e.g., "Got it,", "Great,", "Right,", "Okay perfect-") and smoothly continue.
+4. **Length Constraint:** DO NOT speak in long paragraphs or essays. Speak strictly in short, human-like 1-to-3 sentence bursts. People on the phone don't monologue!
+5. **Fillers:** Use natural conversational filler words ("Well,", "Actually,", "So,") occasionally to sound completely human.`;
+
+        let contents = [];
+        if (history.length > 0 && (history[0].role === 'model' || history[0].role === 'assistant')) {
+            contents.push({ role: 'user', parts: [{ text: "Call connected." }] });
+        }
+        history.forEach(msg => {
+            const mappedRole = msg.role === 'assistant' || msg.role === 'model' ? 'model' : 'user';
+            if (contents.length > 0 && contents[contents.length - 1].role === mappedRole) {
+                contents[contents.length - 1].parts[0].text += `\n${msg.text}`;
+            } else {
+                contents.push({ role: mappedRole, parts: [{ text: msg.text }] });
+            }
+        });
+        if (userText) {
+            if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+                contents[contents.length - 1].parts[0].text += `\n${userText}`;
+            } else {
+                contents.push({ role: 'user', parts: [{ text: userText }] });
+            }
+        }
+
+        const pass = new PassThrough({ objectMode: true });
+        predictiveCache.set(predictionId, { timestamp: Date.now(), pass });
+
+        // Instantly return success to the browser so it keeps listening
+        res.json({ success: true, predictionId });
+
+        const geminiKey = process.env.GEMINI_API_KEY;
+        if (geminiKey && geminiKey !== 'MISSING_KEY') {
+            const { GoogleGenAI } = await import('@google/genai');
+            const ai = new GoogleGenAI({ apiKey: geminiKey });
+            
+            try {
+                const responseStream = await ai.models.generateContentStream({
+                    model: 'gemini-2.5-flash',
+                    contents,
+                    config: {
+                        systemInstruction: systemPrompt,
+                        temperature: agent.temperature || 0.7,
+                        maxOutputTokens: agent.maxOutputTokens || 150
+                    }
+                });
+                
+                for await (const chunk of responseStream) {
+                    if (chunk.text && predictiveCache.has(predictionId)) {
+                        pass.write(chunk.text);
+                    }
+                }
+                pass.end();
+            } catch (e) {
+                console.error("Gemini predictive error:", e);
+                pass.end(); 
+            }
+        } else {
+            pass.write("Training module will be completed soon.");
+            pass.end();
+        }
+    } catch (e) {
+        console.error("Predictive stream error:", e);
+    }
+});
 
 // POST /api/simulation/agent-chat-stream
 router.post('/agent-chat-stream', async (req, res) => {
     try {
-        const { agentId, history = [], userText, agentOverride = {} } = req.body;
+        const { agentId, history = [], userText, agentOverride = {}, predictionId } = req.body;
 
         const agentDoc = await db.collection('agents').doc(agentId).get();
         if (!agentDoc.exists) {
@@ -133,7 +234,13 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
 
         // ── Connect to Gemini via Stream ──
         const geminiKey = process.env.GEMINI_API_KEY || 'MISSING_KEY';
-        if (geminiKey && geminiKey !== 'MISSING_KEY') {
+        
+        let responseIterator;
+        if (predictionId && predictiveCache.has(predictionId)) {
+            console.log("⚡ SPECULATIVE CACHE HIT:", predictionId);
+            responseIterator = predictiveCache.get(predictionId).pass;
+            predictiveCache.delete(predictionId);
+        } else if (geminiKey && geminiKey !== 'MISSING_KEY') {
             const { GoogleGenAI } = await import('@google/genai');
             const ai = new GoogleGenAI({ apiKey: geminiKey });
             
@@ -148,14 +255,32 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                     }
                 });
 
-                let textBuffer = '';
-                let isFirstFlush = true;
+                // Wrap responseStream into an iterator of strings
+                responseIterator = (async function*() {
+                    for await (const chunk of responseStream) {
+                        if (chunk.text) yield chunk.text;
+                    }
+                })();
+            } catch (e) {
+                console.error("Gemini Streaming Error:", e);
+                if (isWsOpen) elevenWs.send(JSON.stringify({ text: "" }));
+                return res.end();
+            }
+        } else {
+            // Fallback
+            responseIterator = (async function*() {
+                yield "Training module will be completed soon.";
+            })();
+        }
 
-                for await (const chunk of responseStream) {
-                    const chunkText = chunk.text;
-                    if (chunkText) {
-                        fullAiText += chunkText;
-                        textBuffer += chunkText;
+        try {
+            let textBuffer = '';
+            let isFirstFlush = true;
+
+            for await (const chunkText of responseIterator) {
+                if (chunkText) {
+                    fullAiText += chunkText;
+                    textBuffer += chunkText;
                         
                         // Check for natural sentence/clause boundaries
                         // We use a regex match on the buffer to wait for punctuation.
@@ -187,8 +312,8 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                                 pendingTextChunks.push(clause);
                             }
                         }
-                    }
-                }
+                    } // close if (chunkText)
+                } // close for await
 
                 // Stream is done, send remaining buffer
                 if (textBuffer.trim().length > 0) {
@@ -207,21 +332,9 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                 }
 
             } catch (e) {
-                console.error("Gemini Streaming Error:", e);
+                console.error("Stream parsing error:", e);
                 if (isWsOpen) elevenWs.send(JSON.stringify({ text: "" }));
             }
-        } else {
-            // Fallback if no Gemini key
-            const fallback = "Training module will be completed soon.";
-            fullAiText = fallback;
-            if (isWsOpen) {
-                elevenWs.send(JSON.stringify({ text: fallback, try_trigger_generation: true }));
-                elevenWs.send(JSON.stringify({ text: "" }));
-            } else {
-                pendingTextChunks.push(fallback);
-                pendingTextChunks.push("");
-            }
-        }
 
     } catch (e) {
         console.error("Simulation Stream Error:", e);
