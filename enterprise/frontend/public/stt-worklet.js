@@ -7,7 +7,7 @@ class STTProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
         this._buffer = [];
-        this._bufferSize = 4096; // Flush every 4096 samples at 16kHz (~256ms chunks)
+        this._bufferSize = 2048; // Flush every 2048 samples at 16kHz (~128ms chunks) - fast enough for single short words
     }
 
     process(inputs, outputs, parameters) {

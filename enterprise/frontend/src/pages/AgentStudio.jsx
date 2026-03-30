@@ -866,19 +866,26 @@ function LiveSimulationModal({ agent, onClose }) {
                 await audioContext.audioWorklet.addModule('/stt-worklet.js');
                 const source = audioContext.createMediaStreamSource(micStream);
 
-                // Step 2.5: HIGH-PASS WIND NOISE FILTER
-                // Wind/bike noise lives below 300Hz. Human voice sits at 300Hz-3400Hz.
-                // This physically strips out wind rumble before audio reaches Sarvam AI.
+                // Step 2.5: VOICE BANDPASS FILTER (300Hz - 3400Hz)
+                // Human voice sits at 300Hz-3400Hz. Everything outside is noise.
+                // High-pass removes: wind, bike engine, road rumble (below 300Hz)
+                // Low-pass removes: AC hiss, phone static, TV treble (above 3400Hz)
                 const highPassFilter = audioContext.createBiquadFilter();
                 highPassFilter.type = 'highpass';
-                highPassFilter.frequency.value = 300; // Cut everything below 300Hz (wind, engine, road noise)
-                highPassFilter.Q.value = 0.7; // Gentle rolloff to avoid voice distortion
+                highPassFilter.frequency.value = 300;
+                highPassFilter.Q.value = 0.7;
+
+                const lowPassFilter = audioContext.createBiquadFilter();
+                lowPassFilter.type = 'lowpass';
+                lowPassFilter.frequency.value = 3400; // Cut everything above 3400Hz
+                lowPassFilter.Q.value = 0.7;
 
                 const workletNode = new AudioWorkletNode(audioContext, 'stt-processor');
-                source.connect(highPassFilter); // Mic -> Wind Filter
-                highPassFilter.connect(workletNode); // Wind Filter -> PCM Downsampler
-                workletNode.connect(audioContext.destination); // Required to keep worklet alive (silent output)
-                console.log("🌬️ 300Hz High-Pass Wind Noise Filter Active.");
+                source.connect(highPassFilter);      // Mic → Wind Filter
+                highPassFilter.connect(lowPassFilter); // Wind Filter → Hiss Filter  
+                lowPassFilter.connect(workletNode);    // Hiss Filter → PCM Downsampler
+                workletNode.connect(audioContext.destination);
+                console.log("🔇 Voice Bandpass Filter Active (300Hz-3400Hz).");
 
                 // Step 3: Connect to backend WebSocket proxy -> Sarvam AI
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
