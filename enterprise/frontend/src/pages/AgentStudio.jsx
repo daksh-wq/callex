@@ -837,175 +837,169 @@ function LiveSimulationModal({ agent, onClose }) {
         } catch (e) { /* already started */ }
     }
 
-    // Initialize Web Speech API & Hardware DSP
+    // Initialize Sarvam AI STT via AudioWorklet + WebSocket Pipeline
     useEffect(() => {
-        let hardwareStream = null;
-
-        // Force hardware-level noise suppression and echo cancellation actively
-        const initHardwareDSP = async () => {
-            try {
-                hardwareStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        noiseSuppression: true,
-                        echoCancellation: true,
-                        autoGainControl: true
-                    }
-                });
-                console.log("Hardware DSP Noise Suppression Activated.");
-            } catch (err) {
-                console.warn("Could not activate Hardware DSP (browser may fallback to software VAD):", err);
-            }
-        };
-        initHardwareDSP();
-
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            setCallStatus('error');
-            return;
-        }
-
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true; // Stay on for continuous interruption
-        recognition.interimResults = true; // Allow instant barge-in detection
-        recognition.maxAlternatives = 1; // Force strict STT accuracy mapping
-        recognition.lang = agent.language || 'en-IN'; // Default to Indian English architecture to vastly improve accuracy
-
-        let finalTranscript = '';
+        let micStream = null;
+        let audioContext = null;
+        let sttWs = null;
         let predictiveTimer = null;
         let lastPredictedText = '';
         let activePredictionId = null;
+        let finalTranscript = '';
+        let interimTranscript = '';
 
-        recognition.onresult = async (e) => {
-            let interimTranscript = '';
-            for (let i = e.resultIndex; i < e.results.length; ++i) {
-                if (e.results[i].isFinal) {
-                    const segText = e.results[i][0].transcript.trim().toLowerCase();
-                    const segWords = segText.split(/\s+/).filter(w => w.length > 0).length;
-                    
-                    // Regex handles variations like "haaaa", "naa", "hmm"
-                    const isFiller = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|ha+|haan|han|ji|achha|acha|theek|sahi|na+|nahi|nahin|stop|wait|hold|pause|hmm+)[.,!?]?$/i.test(segText);
-                    const isStopWord = /^(the|and|a|an|so|like|but|or|because|as|if|when|than|then|just|with|that|this|it|is|was|are|were)[.,!?]?$/i.test(segText);
-
-                    let requiredConfidence = 0.50; // Standard sentence confidence
-                    if (segWords === 1 && isStopWord) {
-                        // A background TV playing often blurts out single structural stop words ("and", "so").
-                        requiredConfidence = 0.85; // Ignore completely unless very loud/confident
-                    } else if (segWords === 1 && isFiller) {
-                        // Intentional short answers (often get lower confidence from Chrome if non-English)
-                        requiredConfidence = 0.30;
+        const initSarvamSTT = async () => {
+            try {
+                // Step 1: Get microphone with hardware DSP noise suppression
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        noiseSuppression: true,
+                        echoCancellation: true,
+                        autoGainControl: true,
+                        sampleRate: { ideal: 16000 }
                     }
+                });
+                console.log("🎤 Microphone acquired with Hardware DSP.");
 
-                    if (e.results[i][0].confidence < requiredConfidence) {
-                        console.log("Voice Assistant blocked background noise:", segText, "Confidence:", e.results[i][0].confidence, "Required:", requiredConfidence);
-                        continue;
-                    }
-                    
-                    finalTranscript += e.results[i][0].transcript + ' ';
-                } else {
-                    interimTranscript += e.results[i][0].transcript;
-                }
-            }
+                // Step 2: Set up AudioContext & AudioWorklet for 16kHz PCM downsampling
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                await audioContext.audioWorklet.addModule('/stt-worklet.js');
+                const source = audioContext.createMediaStreamSource(micStream);
+                const workletNode = new AudioWorkletNode(audioContext, 'stt-processor');
+                source.connect(workletNode);
+                workletNode.connect(audioContext.destination); // Required to keep worklet alive (silent output)
 
-            const currentText = (finalTranscript + interimTranscript).trim();
-            const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
-            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|ha+|haan|han|ji|achha|acha|theek|sahi|na+|nahi|nahin|stop|wait|hold|pause|hmm+)[.,!?]?$/i.test(currentText);
-            const isStopText = /^(the|and|a|an|so|like|but|or|because|as|if|when|than|then|just|with|that|this|it|is|was|are|were)[.,!?]?$/i.test(currentText);
+                // Step 3: Connect to backend WebSocket proxy -> Sarvam AI
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                const wsHost = window.location.host;
+                const langCode = agent.language || 'hi-IN';
+                sttWs = new WebSocket(`${wsProtocol}://${wsHost}/?type=stt&lang=${langCode}`);
 
-            // Smart Barge-In
-            if (speakerActiveRef.current) {
-                // Barge in on any input EXCEPT tiny random TV stop-words
-                if (wordCount >= 2 || (wordCount === 1 && !isStopText)) {
-                    if (audioRef.current) {
-                        if (aiCurrentSentenceRef.current) {
-                            historyRef.current = [...historyRef.current, { role: 'model', text: aiCurrentSentenceRef.current.trim() }];
-                            setHistory([...historyRef.current]);
-                        }
-                        aiCurrentSentenceRef.current = ""; // Reset
-
-                        audioRef.current.pause();
-                        audioRef.current = null;
-                    }
-                    speakerActiveRef.current = false;
+                sttWs.onopen = () => {
+                    console.log("🔗 Sarvam STT WebSocket connected.");
                     setCallStatus('listening');
-                }
-            }
+                };
 
-            // Dynamic VAD Patience
-            let dynamicPatience = agent.patienceMs || 800;
-            
-            if (wordCount > 0 && wordCount <= 3) {
-                // For ANY universal short answer (like "Ahmedabad", "My name is John"), 
-                // we drop latency to 400ms to make it delightfully fast.
-                dynamicPatience = 400;
-            }
-            
-            // If it's an explicitly known conversational filler, we drop to ultra-fast 200ms.
-            if (isFillerPhrase) {
-                dynamicPatience = 200;
-            }
-
-            // Custom Silence Detection (VAD) instead of waiting for isFinal delay
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            
-            if (currentText.length >= 1 || e.results[e.results.length - 1].isFinal) {
-                
-                // --- Speculative Pre-fetching ---
-                if (predictiveTimer) clearTimeout(predictiveTimer);
-                // Only predict if the user has spoken a meaningful phrase (3+ words) and we haven't already predicted it
-                if (wordCount >= 3 && currentText !== lastPredictedText) {
-                    predictiveTimer = setTimeout(async () => {
-                        try {
-                            lastPredictedText = currentText;
-                            activePredictionId = `pred_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-                            console.log("🧠 Speculative AI pre-fetch triggered for:", currentText);
-                            await api.agentChatPredictive({
-                                agentId: agent.id,
-                                history: historyRef.current,
-                                userText: currentText,
-                                agentOverride: agent,
-                                predictionId: activePredictionId
-                            });
-                        } catch (err) {
-                            console.log("Prediction failed", err);
+                // Step 4: Pipe AudioWorklet PCM chunks as base64 to backend
+                workletNode.port.onmessage = (event) => {
+                    if (event.data.type === 'audio' && sttWs && sttWs.readyState === WebSocket.OPEN) {
+                        const int16Array = new Int16Array(event.data.samples);
+                        // Convert Int16Array to base64
+                        const uint8 = new Uint8Array(int16Array.buffer);
+                        let binaryStr = '';
+                        for (let i = 0; i < uint8.length; i++) {
+                            binaryStr += String.fromCharCode(uint8[i]);
                         }
-                    }, 150); // Predict after mere 150ms of silence
-                }
+                        const base64Chunk = window.btoa(binaryStr);
+                        sttWs.send(JSON.stringify({ type: 'audio', chunk: base64Chunk }));
+                    }
+                };
 
-                // --- Standard Silence Detection (VAD) ---
-                silenceTimerRef.current = setTimeout(async () => {
-                    const text = currentText;
-                    if (!text) return; // Edge case: only low-confidence noise was detected and dropped
-                    finalTranscript = ''; // Reset for next utterance
-                    recognition.stop(); // Pause strictly to process turn
+                // Step 5: Handle transcription results from Sarvam via backend proxy
+                sttWs.onmessage = (event) => {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'transcript' && msg.text) {
+                            const transcriptText = msg.text.trim();
+                            if (!transcriptText) return;
 
-                    // Check if we have a valid prediction to consume!
-                    const consumeId = (text === lastPredictedText) ? activePredictionId : null;
-                    if (consumeId) console.log("🚀 CONSUMING SPECULATIVE CACHE!");
+                            if (msg.isFinal) {
+                                finalTranscript += transcriptText + ' ';
+                                interimTranscript = '';
+                            } else {
+                                interimTranscript = transcriptText;
+                            }
 
-                    activePredictionId = null;
-                    lastPredictedText = '';
+                            const currentText = (finalTranscript + interimTranscript).trim();
+                            const wordCount = currentText.split(/\s+/).filter(w => w.length > 0).length;
+                            const isFillerPhrase = /^(yes|no|hello|hi|hey|yeah|yep|yup|okay|ok|uh huh|got it|sure|alright|right|correct|thanks|thank you|ha+|haan|han|ji|achha|acha|theek|sahi|na+|nahi|nahin|stop|wait|hold|pause|hmm+)[.,!?]?$/i.test(currentText);
+                            const isStopText = /^(the|and|a|an|so|like|but|or|because|as|if|when|than|then|just|with|that|this|it|is|was|are|were)[.,!?]?$/i.test(currentText);
 
-                    await processSpeech(text, consumeId);
-                }, dynamicPatience);
-            }
-        };
+                            // Smart Barge-In
+                            if (speakerActiveRef.current) {
+                                if (wordCount >= 2 || (wordCount === 1 && !isStopText)) {
+                                    if (audioRef.current) {
+                                        if (aiCurrentSentenceRef.current) {
+                                            historyRef.current = [...historyRef.current, { role: 'model', text: aiCurrentSentenceRef.current.trim() }];
+                                            setHistory([...historyRef.current]);
+                                        }
+                                        aiCurrentSentenceRef.current = "";
+                                        audioRef.current.pause();
+                                        audioRef.current = null;
+                                    }
+                                    speakerActiveRef.current = false;
+                                    setCallStatus('listening');
+                                }
+                            }
 
-        recognition.onerror = (e) => {
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            if (e.error === 'no-speech' || e.error === 'aborted') {
-                setTimeout(triggerListen, 100);
-            } else {
-                console.error("Speech reco error:", e);
+                            // Dynamic VAD Patience
+                            let dynamicPatience = agent.patienceMs || 800;
+                            if (wordCount > 0 && wordCount <= 3) dynamicPatience = 400;
+                            if (isFillerPhrase) dynamicPatience = 200;
+
+                            // Custom Silence Detection (VAD)
+                            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+                            if (currentText.length >= 1) {
+                                // Speculative Pre-fetching
+                                if (predictiveTimer) clearTimeout(predictiveTimer);
+                                if (wordCount >= 3 && currentText !== lastPredictedText) {
+                                    predictiveTimer = setTimeout(async () => {
+                                        try {
+                                            lastPredictedText = currentText;
+                                            activePredictionId = `pred_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+                                            console.log("🧠 Speculative AI pre-fetch triggered for:", currentText);
+                                            await api.agentChatPredictive({
+                                                agentId: agent.id,
+                                                history: historyRef.current,
+                                                userText: currentText,
+                                                agentOverride: agent,
+                                                predictionId: activePredictionId
+                                            });
+                                        } catch (err) {
+                                            console.log("Prediction failed", err);
+                                        }
+                                    }, 150);
+                                }
+
+                                // Standard Silence Detection (VAD)
+                                silenceTimerRef.current = setTimeout(async () => {
+                                    const text = currentText;
+                                    if (!text) return;
+                                    finalTranscript = '';
+                                    interimTranscript = '';
+
+                                    const consumeId = (text === lastPredictedText) ? activePredictionId : null;
+                                    if (consumeId) console.log("🚀 CONSUMING SPECULATIVE CACHE!");
+                                    activePredictionId = null;
+                                    lastPredictedText = '';
+
+                                    await processSpeech(text, consumeId);
+                                }, dynamicPatience);
+                            }
+                        } else if (msg.type === 'error') {
+                            console.error("Sarvam STT Error:", msg.message);
+                        }
+                    } catch (e) {
+                        console.error("STT WS message parse error:", e);
+                    }
+                };
+
+                sttWs.onerror = (err) => {
+                    console.error("STT WebSocket Error:", err);
+                };
+
+                sttWs.onclose = () => {
+                    console.log("STT WebSocket closed.");
+                };
+
+            } catch (err) {
+                console.error("Failed to initialize Sarvam STT:", err);
                 setCallStatus('error');
             }
         };
 
-        recognition.onend = () => {
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            setTimeout(triggerListen, 100);
-        };
-
-        recognitionRef.current = recognition;
+        initSarvamSTT();
 
         // Simulated ring delay before outbound greeting starts
         setTimeout(() => {
@@ -1016,12 +1010,17 @@ function LiveSimulationModal({ agent, onClose }) {
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             if (predictiveTimer) clearTimeout(predictiveTimer);
             isModalOpenRef.current = false;
-            recognitionRef.current?.stop();
             if (audioRef.current) {
                 audioRef.current.pause();
             }
-            if (hardwareStream) {
-                hardwareStream.getTracks().forEach(t => t.stop());
+            if (sttWs && sttWs.readyState === WebSocket.OPEN) {
+                sttWs.close();
+            }
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+            }
+            if (micStream) {
+                micStream.getTracks().forEach(t => t.stop());
             }
         };
     }, []);

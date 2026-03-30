@@ -36,6 +36,7 @@ import followupsRouter from './routes/followups.js';
 // WS handlers
 import { setupSupervisorWS } from './ws/supervisor.js';
 import { setupDashboardWS } from './ws/dashboard.js';
+import { setupSarvamWS } from './ws/sarvam.js';
 
 dotenv.config();
 
@@ -108,6 +109,9 @@ wss.on('connection', (ws, req) => {
         ws.on('message', (msg) => {
             ws.send(JSON.stringify({ type: 'transcript', text: '[STT simulation active]', ts: Date.now() }));
         });
+    } else if (type === 'stt') {
+        const langCode = url.searchParams.get('lang') || 'hi-IN';
+        setupSarvamWS(ws, { languageCode: langCode });
     }
 });
 
