@@ -31,6 +31,7 @@ from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
 from app.audio.speaker_verifier import SpeakerVerifier
 from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
+from pyrnnoise import RNNoise
 
 # Force unbuffered output for PM2/Systemd logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -1489,6 +1490,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     if not classifier:
         print("[Noise Filter] ⚠️ YAMNet not available, noise classification disabled")
 
+    # Initialize PyRNNoise Deep Learning Voice Isolation Model
+    print(f"[Noise Filter] 🧠 Initializing PyRNNoise AI (Sample Rate: {SAMPLE_RATE}Hz)")
+    rnnoise_filter = RNNoise(sample_rate=SAMPLE_RATE)
+
     speaker_verifier = SpeakerVerifier(
         sample_rate=SAMPLE_RATE,
         enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
@@ -1675,11 +1680,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     break
 
                 if "bytes" in msg:
-                    recorder.write_customer_audio(msg["bytes"])
+                    # 1. Convert to Int16 Numpy Array
                     pcm = np.frombuffer(msg["bytes"], dtype=np.int16)
                     if pcm.size == 0:
                         continue
-                    chunk = pcm.astype(np.float32) / 32768.0
+                        
+                    # 2. RUN NEURAL NETWORK: RNNoise AI strips out all background noise
+                    speech_prob, clean_pcm = rnnoise_filter.filter_frame(pcm)
+                    
+                    # 3. Save the CLEAN audio to the recording, not the noisy one
+                    recorder.write_customer_audio(clean_pcm.tobytes())
+                    
+                    # 4. Convert the clean audio to Float32 for the rest of our DSP pipeline
+                    chunk = clean_pcm.astype(np.float32) / 32768.0
                     filtered_chunk, is_valid_speech = noise_filter.process(chunk)
                     
                     if len(filtered_chunk) == 0:
