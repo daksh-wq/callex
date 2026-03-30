@@ -867,7 +867,8 @@ function LiveSimulationModal({ agent, onClose }) {
         const recognition = new SpeechRecognition();
         recognition.continuous = true; // Stay on for continuous interruption
         recognition.interimResults = true; // Allow instant barge-in detection
-        recognition.lang = agent.language || 'en-US';
+        recognition.maxAlternatives = 1; // Force strict STT accuracy mapping
+        recognition.lang = agent.language || 'en-IN'; // Default to Indian English architecture to vastly improve accuracy
 
         let finalTranscript = '';
         let predictiveTimer = null;
