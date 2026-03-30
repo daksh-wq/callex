@@ -97,8 +97,10 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
             elevenWs.send(JSON.stringify(configMsg));
 
             // Flush any pending text chunks that Gemini produced before WS opened
+            let isFirst = true;
             for (const chunk of pendingTextChunks) {
-                elevenWs.send(JSON.stringify({ text: chunk, try_trigger_generation: true }));
+                elevenWs.send(JSON.stringify({ text: chunk, flush: isFirst }));
+                isFirst = false;
             }
             pendingTextChunks = [];
         });
@@ -146,15 +148,54 @@ IMPORTANT CONVERSATIONAL PSYCHOLOGY INSTRUCTIONS (STRICT COMPLIANCE FOR VOICE TT
                     }
                 });
 
+                let textBuffer = '';
+                let isFirstFlush = true;
+
                 for await (const chunk of responseStream) {
                     const chunkText = chunk.text;
                     if (chunkText) {
                         fullAiText += chunkText;
-                        if (isWsOpen) {
-                            elevenWs.send(JSON.stringify({ text: chunkText, try_trigger_generation: true }));
-                        } else {
-                            pendingTextChunks.push(chunkText);
+                        textBuffer += chunkText;
+                        
+                        // Check for natural sentence/clause boundaries
+                        // We use a regex match on the buffer to wait for punctuation.
+                        let match;
+                        while ((match = textBuffer.match(/^(.*?[.,:;!?\n-])\s*(.*)$/s))) {
+                            const clause = match[1] + " "; // Add a space for natural pause
+                            textBuffer = match[2]; // Keep remainder
+                            
+                            if (isWsOpen) {
+                                elevenWs.send(JSON.stringify({ 
+                                    text: clause, 
+                                    flush: isFirstFlush // Only force flush the first clause to drop TTFB instantly!
+                                }));
+                                isFirstFlush = false;
+                            } else {
+                                pendingTextChunks.push(clause);
+                            }
                         }
+
+                        // Fallback: If buffer gets too large without punctuation (e.g., >80 chars), flush a word boundary
+                        if (textBuffer.length > 80 && textBuffer.includes(" ")) {
+                            const lastSpace = textBuffer.lastIndexOf(" ");
+                            const clause = textBuffer.substring(0, lastSpace) + " ";
+                            textBuffer = textBuffer.substring(lastSpace + 1);
+                            
+                            if (isWsOpen) {
+                                elevenWs.send(JSON.stringify({ text: clause }));
+                            } else {
+                                pendingTextChunks.push(clause);
+                            }
+                        }
+                    }
+                }
+
+                // Stream is done, send remaining buffer
+                if (textBuffer.trim().length > 0) {
+                    if (isWsOpen) {
+                        elevenWs.send(JSON.stringify({ text: textBuffer }));
+                    } else {
+                        pendingTextChunks.push(textBuffer);
                     }
                 }
 
