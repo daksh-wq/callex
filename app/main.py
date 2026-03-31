@@ -1736,6 +1736,78 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
         asyncio.create_task(enable_barge_in_delayed(playback_duration))
 
+        # ── No-Response Monitor ─────────────────────────────────────────────────
+        # After the opener ends, if no human voice is detected for 6 seconds,
+        # the bot issues a realistic check-in prompt. Repeats every 6s of silence.
+        # Resets instantly the moment real speech is detected.
+        async def no_response_monitor():
+            nonlocal ws_alive, first_line_complete, bot_speaking, speaking, last_voice
+
+            NO_RESPONSE_TIMEOUT = 6.0  # seconds of human silence before check-in
+
+            # Realistic rotating check-in messages — sounds human, not robotic
+            check_in_prompts = [
+                "Kya aapko meri awaaz aa rahi hai?",
+                "Hello? Main aapki baat sun raha hoon.",
+                "Kya aap mujhe sun pa rahe hain? Please kuch boliye.",
+                "Main still line par hoon. Kya aap theek hain?",
+            ]
+            prompt_index = 0
+
+            # Wait for opener to finish before starting the monitor
+            while ws_alive and not first_line_complete:
+                await asyncio.sleep(0.3)
+
+            if not ws_alive:
+                return
+
+            # Anchor point: opener just finished, start counting from NOW
+            last_activity_time = time.time()
+
+            while ws_alive:
+                await asyncio.sleep(0.5)
+
+                now = time.time()
+
+                # While bot is speaking or customer is currently speaking — reset clock
+                if bot_speaking or speaking:
+                    last_activity_time = now
+                    continue
+
+                # Update activity clock whenever real human voice was recently heard
+                if last_voice > last_activity_time:
+                    last_activity_time = last_voice
+
+                silence_duration = now - last_activity_time
+
+                if silence_duration < NO_RESPONSE_TIMEOUT:
+                    continue  # Still within tolerance — keep waiting
+
+                # ── 6 seconds of no human voice — fire check-in ──
+                msg = check_in_prompts[prompt_index % len(check_in_prompts)]
+                prompt_index += 1
+                print(f"[NO-RESPONSE] 🔔 {silence_duration:.1f}s silence → '{msg}'")
+
+                bot_speaking = True
+                try:
+                    async for audio_chunk in tts_stream_generate(
+                        client, msg, voice_id=agent_config['voice']
+                    ):
+                        # Abort playback if customer starts speaking mid-check-in
+                        if not ws_alive or speaking:
+                            break
+                        await send_audio_safe(audio_chunk)
+                except Exception as e:
+                    print(f"[NO-RESPONSE] TTS error: {e}")
+                finally:
+                    bot_speaking = False
+
+                # Reset anchor to NOW so the next 6s window starts fresh
+                last_activity_time = time.time()
+
+        asyncio.create_task(no_response_monitor())
+
+
         try:
             while ws_alive:
                 try:
