@@ -584,7 +584,7 @@ class NoiseFilter:
         if not is_valid and rejection_reason:
             pass # Silenced the explicit print because WebRTC triggers it constantly for background noise
             
-        return filtered, is_valid
+        return cleaned_audio, filtered, is_valid
 
 
 # ───────── HELPERS ─────────
@@ -1700,7 +1700,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     
                     # 4. Convert the clean audio to Float32 for the rest of our DSP pipeline
                     chunk = clean_pcm.astype(np.float32) / 32768.0
-                    filtered_chunk, is_valid_speech = noise_filter.process(chunk)
+                    unfiltered_clean, filtered_chunk, is_valid_speech = noise_filter.process(chunk)
                     
                     if len(filtered_chunk) == 0:
                         continue
@@ -1757,7 +1757,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if not is_valid_speech:
                         barge_in_confirm_start = None  # Reset confirmation buffer on silence
                         if speaking:
-                            buffer.extend(chunk)
+                            buffer.extend(unfiltered_clean)
                         continue
 
                     vad_confidence = 1.0  # Fallback
@@ -1765,7 +1765,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         is_speech, vad_confidence = silero_vad.is_speech(filtered_chunk)
                         if not is_speech or vad_confidence < SILERO_CONFIDENCE_THRESHOLD:
                             if speaking:
-                                buffer.extend(chunk)
+                                buffer.extend(unfiltered_clean)
                             continue
 
                     # Feed confirmed speech to speaker enrollment
@@ -1775,7 +1775,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     # Feed every valid speech chunk to verification buffer (for reliable comparison)
                     speaker_verifier.feed_verify_buffer(filtered_chunk)
 
-                    buffer.extend(chunk)
+                    buffer.extend(unfiltered_clean)
                     vad_buffer.extend(filtered_chunk)
                     last_voice = now  # Keep silence timer fresh while customer speaks
 
@@ -1811,7 +1811,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             
                             if elapsed_ms < BARGE_IN_CONFIRM_MS or confidence < 0.70:
                                 # Still verifying the caller. Not enough confidence or duration yet!
-                                buffer.extend(chunk)
+                                buffer.extend(unfiltered_clean)
                                 vad_buffer.extend(filtered_chunk)
                                 last_voice = now
                                 continue
