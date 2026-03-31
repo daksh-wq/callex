@@ -31,7 +31,7 @@ from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
 from app.audio.speaker_verifier import SpeakerVerifier
 from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
-from pyrnnoise import RNNoise
+from app.audio.deepfilter_denoiser import load_deepfilter_model, DeepFilterDenoiser
 
 # Force unbuffered output for PM2/Systemd logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -175,7 +175,7 @@ MAX_BUFFER_SECONDS = 5
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-SILENCE_TIMEOUT = max(2.0, bot_config.vad.silence_timeout)
+SILENCE_TIMEOUT = max(2.5, bot_config.vad.silence_timeout)
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -195,7 +195,7 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
-BARGE_IN_SILENCE_TIMEOUT = 1.5  # seconds of silence after barge-in before committing (was 1.0, too fast for short phrases)
+BARGE_IN_SILENCE_TIMEOUT = 2.0  # seconds of silence after barge-in before committing (was 1.5, too fast for short phrases)
 
 SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
 
@@ -425,11 +425,12 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
 # ───────── GLOBAL MODEL INSTANCES (Pre-loaded at startup) ─────────
 GLOBAL_SILERO_VAD: Optional['SileroVADFilter'] = None
 GLOBAL_YAMNET_CLASSIFIER: Optional['SoundEventClassifier'] = None
+GLOBAL_DEEPFILTER_LOADED: bool = False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global GLOBAL_SILERO_VAD, GLOBAL_YAMNET_CLASSIFIER
+    global GLOBAL_SILERO_VAD, GLOBAL_YAMNET_CLASSIFIER, GLOBAL_DEEPFILTER_LOADED
 
     await ensure_opener_cache()  # No-op on startup, agents cached per-call
 
@@ -438,6 +439,16 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
 
     startup_start = time.time()
+
+    # Load DeepFilterNet3 — must be first (heaviest model, sets SNR baseline)
+    try:
+        print("[STARTUP] Loading DeepFilterNet3 traffic noise suppressor...")
+        GLOBAL_DEEPFILTER_LOADED = load_deepfilter_model()
+        if not GLOBAL_DEEPFILTER_LOADED:
+            print("[STARTUP] ⚠️ DeepFilterNet3 failed — calls will use raw audio passthrough")
+    except Exception as e:
+        print(f"[STARTUP] ⚠️ DeepFilterNet3 error: {e}")
+        GLOBAL_DEEPFILTER_LOADED = False
 
     try:
         print("[STARTUP] Loading YAMNet sound classifier...")
@@ -539,15 +550,10 @@ class NoiseFilter:
             frame = bytes(self.pcm_buffer[processed_bytes:processed_bytes+FRAME_SIZE])
             processed_bytes += FRAME_SIZE
             
-            try:
-                # If WebRTC says it's noise, we ZERO it out.
-                if self.vad.is_speech(frame, self.sample_rate):
-                    clean_pcm.extend(frame)
-                else:
-                    clean_pcm.extend(b'\x00' * FRAME_SIZE)
-            except Exception as e:
-                # Fallback if frame is somehow invalid
-                clean_pcm.extend(frame)
+            # Since PyRNNoise already removes background hum/noise effectively, 
+            # WebRTC VAD zeroing causes destructive dropouts of quiet trailing consonants.
+            # We preserve the pristine PyRNNoise frame intact for ASR.
+            clean_pcm.extend(frame)
                 
         # Keep remaining bytes for the next incoming chunk
         self.pcm_buffer = self.pcm_buffer[processed_bytes:]
@@ -1490,9 +1496,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     if not classifier:
         print("[Noise Filter] ⚠️ YAMNet not available, noise classification disabled")
 
-    # Initialize PyRNNoise Deep Learning Voice Isolation Model
-    print(f"[Noise Filter] 🧠 Initializing PyRNNoise AI (Sample Rate: {SAMPLE_RATE}Hz)")
-    rnnoise_filter = RNNoise(sample_rate=SAMPLE_RATE)
+    # Initialize DeepFilterNet3 — production traffic noise suppressor
+    print(f"[Noise Filter] 🧠 Initializing DeepFilterNet3 (Sample Rate: {SAMPLE_RATE}Hz)")
+    deepfilter = DeepFilterDenoiser(call_sample_rate=SAMPLE_RATE)
 
     speaker_verifier = SpeakerVerifier(
         sample_rate=SAMPLE_RATE,
@@ -1685,21 +1691,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if pcm.size == 0:
                         continue
                         
-                    # 2. RUN NEURAL NETWORK: RNNoise AI strips out all background noise
-                    clean_chunks = []
-                    for _prob, _frame in rnnoise_filter.denoise_chunk(pcm):
-                        clean_chunks.append(_frame)
+                    # 2. RUN NEURAL NETWORK: DeepFilterNet3 strips traffic/crowd/wind noise
+                    enhanced_float32 = deepfilter.process(pcm)
 
-                    if not clean_chunks:
+                    # If buffer not yet full, enhanced_float32 will be empty — skip this chunk
+                    if len(enhanced_float32) == 0:
                         continue
-                        
-                    clean_pcm = np.concatenate(clean_chunks, axis=clean_chunks[0].ndim - 1).flatten()
+
+                    # 3. Save CLEAN audio to the recording
+                    clean_int16 = (enhanced_float32 * 32767.0).astype(np.int16)
+                    recorder.write_customer_audio(clean_int16.tobytes())
                     
-                    # 3. Save the CLEAN audio to the recording, not the noisy one
-                    recorder.write_customer_audio(clean_pcm.tobytes())
-                    
-                    # 4. Convert the clean audio to Float32 for the rest of our DSP pipeline
-                    chunk = clean_pcm.astype(np.float32) / 32768.0
+                    # 4. enhanced_float32 is already float32 — feed into DSP pipeline
+                    chunk = enhanced_float32
                     unfiltered_clean, filtered_chunk, is_valid_speech = noise_filter.process(chunk)
                     
                     if len(filtered_chunk) == 0:
