@@ -1568,6 +1568,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         partial_transcript: Optional[str] = None
         last_rolling_asr_time: float = 0.0
         llm_warmup_task: Optional[asyncio.Task] = None
+        is_processing_audio: bool = False
 
         async def _rolling_asr(audio_snapshot: np.ndarray):
             """Fire a background Sarvam ASR request while customer is still speaking.
@@ -1607,7 +1608,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 pass  # Warmup failure is non-critical, real request will still work
 
         async def process_audio(samples: np.ndarray):
-            nonlocal history, ws_alive, bot_speaking, partial_transcript
+            nonlocal history, ws_alive, bot_speaking, partial_transcript, is_processing_audio
+            is_processing_audio = True
             try:
                 t0 = time.time()
                 # ── Use cached rolling ASR result if available (saves ~250ms) ──
@@ -1679,6 +1681,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if not await send_audio_safe(audio_chunk): break
                     except Exception as fallback_error:
                         print(f"[Fallback Error]: {fallback_error}")
+            finally:
+                is_processing_audio = False
 
         # Send opener
         opener_text = agent_config['openingLine']
@@ -1769,8 +1773,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                 now = time.time()
 
-                # While bot is speaking or customer is currently speaking — reset clock
-                if bot_speaking or speaking:
+                # While bot is speaking, customer is currently speaking, OR we are generating a response — reset clock
+                if bot_speaking or speaking or is_processing_audio:
                     last_activity_time = now
                     continue
 
