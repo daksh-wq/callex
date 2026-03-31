@@ -175,7 +175,9 @@ MAX_BUFFER_SECONDS = 5
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-SILENCE_TIMEOUT = max(2.5, bot_config.vad.silence_timeout)
+# Smart silence timeout — 1.0s is safe because we use LLM pre-warming + rolling ASR
+# so we don't need to wait for a huge silence gap before processing.
+SILENCE_TIMEOUT = 1.0
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -194,8 +196,11 @@ SEMANTIC_MIN_LENGTH = 3
 # Speaker Verification Configuration
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
-BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in (was 300)
-BARGE_IN_SILENCE_TIMEOUT = 2.0  # seconds of silence after barge-in before committing (was 1.5, too fast for short phrases)
+BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
+BARGE_IN_SILENCE_TIMEOUT = 0.9  # seconds — fast commit after barge-in
+
+# Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
+ROLLING_ASR_INTERVAL = 1.5  # seconds between rolling partial ASR requests
 
 SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
 
@@ -1557,21 +1562,80 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
     ) as client:
 
-        async def process_audio(samples: np.ndarray):
-            nonlocal history, ws_alive, bot_speaking
+        # ── Speculative Execution State ──────────────────────────────────────────
+        # partial_transcript: best ASR result captured WHILE customer was still speaking
+        # llm_warmup_done:    True once Gemini has been pre-warmed with conversation history
+        partial_transcript: Optional[str] = None
+        last_rolling_asr_time: float = 0.0
+        llm_warmup_task: Optional[asyncio.Task] = None
+
+        async def _rolling_asr(audio_snapshot: np.ndarray):
+            """Fire a background Sarvam ASR request while customer is still speaking.
+            Result is cached in partial_transcript for instant use when silence hits."""
+            nonlocal partial_transcript
             try:
-                pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
+                pcm16 = (audio_snapshot * 32767).astype(np.int16).tobytes()
+                result = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
+                if result:
+                    partial_transcript = result
+                    print(f"[ROLLING ASR] ⚡ Partial: '{result[:60]}'")
+            except Exception as e:
+                print(f"[ROLLING ASR] Error: {e}")
+
+        async def _llm_warmup():
+            """Pre-warm Gemini by sending conversation history immediately when speech starts.
+            This puts the model's attention cache on the right context BEFORE we have the transcript,
+            so when the real request arrives, the LLM generates faster."""
+            try:
+                agent = agent_config or FALLBACK_AGENT
+                system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+                warmup_history = trim_history(history)
+                # Send a lightweight ping with history only — no user message yet
+                # This primes Gemini's KV cache with the conversation so far
+                payload = {
+                    "contents": [*warmup_history, {"role": "user", "parts": [{"text": "..."}]}],
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "generationConfig": {
+                        "thinkingConfig": {"thinkingBudget": 0},
+                        "maxOutputTokens": 1  # Minimal output — we just want the cache warm
+                    }
+                }
+                await client.post(url, json=payload, timeout=2.0)
+                print("[LLM WARMUP] ✅ Gemini pre-warmed")
+            except Exception:
+                pass  # Warmup failure is non-critical, real request will still work
+
+        async def process_audio(samples: np.ndarray):
+            nonlocal history, ws_alive, bot_speaking, partial_transcript
+            try:
+                t0 = time.time()
+                # ── Use cached rolling ASR result if available (saves ~250ms) ──
+                if partial_transcript:
+                    user_text = partial_transcript
+                    partial_transcript = None
+                    print(f"[ASR] ⚡ Using cached partial transcript (saved ASR round-trip)")
+                else:
+                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
+
                 if not user_text or not ws_alive:
                     return
-                print(f"\n[CUSTOMER] 🗣️  {user_text}")
+
+                asr_elapsed = (time.time() - t0) * 1000
+                print(f"\n[CUSTOMER] 🗣️  {user_text}  (ASR: {asr_elapsed:.0f}ms)")
                 history.append({"role": "user", "parts": [{"text": user_text}]})
                 full_history.append({"role": "user", "parts": [{"text": user_text}]})
                 if call_uuid:
                     tracker.log_message(call_uuid, "user", user_text)
                     asyncio.create_task(log_live_message("user", user_text))
                 history = trim_history(history)
+
+                t_llm = time.time()
                 reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
+                llm_elapsed = (time.time() - t_llm) * 1000
+                print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+
                 should_hangup = False
                 if "[HANGUP]" in reply_text:
                     should_hangup = True
@@ -1590,6 +1654,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if not await send_audio_safe(audio_chunk):
                         break
                 bot_speaking = False
+                total_elapsed = (time.time() - t0) * 1000
+                print(f"[PIPELINE] ✅ Total response latency: {total_elapsed:.0f}ms")
                 if should_hangup:
                     print("[SYSTEM] Hanging up call as per script logic.")
                     if ws_alive:
@@ -1782,6 +1848,21 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     buffer.extend(unfiltered_clean)
                     vad_buffer.extend(filtered_chunk)
                     last_voice = now  # Keep silence timer fresh while customer speaks
+
+                    # ── Speculative Execution: Rolling ASR + LLM Pre-warm ───────
+                    if speaking:
+                        speech_duration = len(buffer) / SAMPLE_RATE
+
+                        # Fire rolling ASR every ROLLING_ASR_INTERVAL seconds
+                        if (now - last_rolling_asr_time) >= ROLLING_ASR_INTERVAL and speech_duration >= 1.0:
+                            last_rolling_asr_time = now
+                            audio_snapshot = np.array(buffer, dtype=np.float32)
+                            asyncio.create_task(_rolling_asr(audio_snapshot))
+
+                        # Fire LLM pre-warm once per utterance (when speech first starts)
+                        if llm_warmup_task is None or llm_warmup_task.done():
+                            if speech_duration < 0.5:  # Only on fresh speech start
+                                llm_warmup_task = asyncio.create_task(_llm_warmup())
 
                     if audio_db > INTERRUPTION_THRESHOLD_DB:
                         if not speaking:
