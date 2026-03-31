@@ -1686,7 +1686,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         continue
                         
                     # 2. RUN NEURAL NETWORK: RNNoise AI strips out all background noise
-                    speech_prob, clean_pcm = rnnoise_filter.denoise_frame(pcm)
+                    clean_chunks = []
+                    for _prob, _frame in rnnoise_filter.denoise_chunk(pcm):
+                        clean_chunks.append(_frame)
+
+                    if not clean_chunks:
+                        continue
+                        
+                    clean_pcm = np.concatenate(clean_chunks, axis=clean_chunks[0].ndim - 1).flatten()
                     
                     # 3. Save the CLEAN audio to the recording, not the noisy one
                     recorder.write_customer_audio(clean_pcm.tobytes())
