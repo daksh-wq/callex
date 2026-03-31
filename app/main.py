@@ -1476,6 +1476,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     speaking = False
     last_voice = 0.0
     ws_alive = True
+    bot_audio_expected_end = 0.0
     current_task: asyncio.Task | None = None
     task_lock = asyncio.Lock()
     first_line_complete = False
@@ -1540,9 +1541,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             print(f"[LIVE TRANSCRIPT ERROR] {e}")
 
     async def send_audio_safe(audio_chunk: bytes) -> bool:
+        nonlocal ws_alive, bot_speaking, bot_audio_expected_end
         if not ws_alive:
             return False
         try:
+            # Track actual playback duration using byte length (16000Hz * 2 bytes = 32000 bytes/sec)
+            now = time.time()
+            if bot_audio_expected_end < now:
+                bot_audio_expected_end = now
+            bot_audio_expected_end += len(audio_chunk) / 32000.0
+
             if bot_speaking:
                 recorder.write_bot_audio(audio_chunk)
             await ws.send_json({
@@ -1766,16 +1774,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 return
 
             # Anchor point: opener just finished, start counting from NOW
-            last_activity_time = time.time()
+            last_activity_time = max(time.time(), bot_audio_expected_end)
 
             while ws_alive:
                 await asyncio.sleep(0.5)
 
                 now = time.time()
 
-                # While bot is speaking, customer is currently speaking, OR we are generating a response — reset clock
-                if bot_speaking or speaking or is_processing_audio:
-                    last_activity_time = now
+                # While bot's audio is currently playing, customer is currently speaking, OR we are generating a response — reset clock
+                if time.time() < bot_audio_expected_end or speaking or is_processing_audio:
+                    last_activity_time = max(now, bot_audio_expected_end)
                     continue
 
                 # Update activity clock whenever real human voice was recently heard
@@ -1806,8 +1814,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 finally:
                     bot_speaking = False
 
-                # Reset anchor to NOW so the next 6s window starts fresh
-                last_activity_time = time.time()
+                # Reset anchor to the future end of the check-in audio so the next 6s window starts fresh then
+                last_activity_time = max(time.time(), bot_audio_expected_end)
 
         asyncio.create_task(no_response_monitor())
 
