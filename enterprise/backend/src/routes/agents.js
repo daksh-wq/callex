@@ -72,7 +72,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
         piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
         complianceScript, dynamicCodeSwitching, dncLitigatorScrub, callBlending, costCapTokens,
-        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions, speechSpeed
+        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions
     } = req.body;
 
     const data = {
@@ -82,7 +82,6 @@ router.post('/', upload.single('file'), async (req, res) => {
         llmModel: llmModel || 'callex-1.3',
         fillerPhrases: typeof fillerPhrases === 'string' ? fillerPhrases : JSON.stringify(fillerPhrases || ['Let me check...', 'One moment...']),
         prosodyRate: parseNum(prosodyRate, 1.0), prosodyPitch: parseNum(prosodyPitch, 1.0),
-        speechSpeed: parseNum(speechSpeed, 1.2),
         ipaLexicon: typeof ipaLexicon === 'string' ? ipaLexicon : JSON.stringify(ipaLexicon || {}),
         tools: typeof tools === 'string' ? tools : JSON.stringify(tools || []),
         topK: parseNum(topK, 5), similarityThresh: parseNum(similarityThresh, 0.75),
@@ -253,7 +252,7 @@ router.patch('/:id', upload.single('file'), async (req, res) => {
     }
 
     // Numbers
-    const numFields = ['prosodyRate', 'prosodyPitch', 'speechSpeed', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
+    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
     for (const f of numFields) {
         if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
     }

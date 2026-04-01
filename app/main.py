@@ -177,7 +177,7 @@ MAX_BUFFER_SECONDS = 5
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 # Smart silence timeout — 1.0s is safe because we use LLM pre-warming + rolling ASR
 # so we don't need to wait for a huge silence gap before processing.
-SILENCE_TIMEOUT = 0.8
+SILENCE_TIMEOUT = 1.0
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -383,12 +383,11 @@ class LocalRecorder:
         return None
 
 
-def _opener_cache_path(agent_id: str, opener_text: str, speech_speed: float = 1.2) -> str:
+def _opener_cache_path(agent_id: str, opener_text: str) -> str:
     """Build a content-hash based cache path so edits to the opener auto-invalidate."""
     import hashlib
     safe_id = str(agent_id).replace('-', '_')[:32]
-    content = f"{opener_text}_speed_{speech_speed}"
-    text_hash = hashlib.md5(content.encode('utf-8')).hexdigest()[:10]
+    text_hash = hashlib.md5(opener_text.encode('utf-8')).hexdigest()[:10]
     return os.path.join(CACHE_DIR, f"{safe_id}_opener_{text_hash}.pcm")
 
 def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
@@ -403,7 +402,7 @@ def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
     except Exception:
         pass
 
-async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None, speech_speed: float = 1.2):
+async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None):
     """Ensure opener audio is cached for an agent (content-hash invalidated)."""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
@@ -412,7 +411,7 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
         print("[CACHE] No agent/opener provided, skipping cache")
         return
 
-    filepath = _opener_cache_path(agent_id, opener_text, speech_speed)
+    filepath = _opener_cache_path(agent_id, opener_text)
 
     if os.path.exists(filepath):
         print(f"[CACHE] Opener found: {filepath}")
@@ -422,7 +421,7 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
     print(f"[CACHE] Generating opener for agent {agent_id} (text changed)...")
     async with httpx.AsyncClient() as client:
         with open(filepath, "wb") as f:
-            async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id, speech_speed=speech_speed):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id):
                 f.write(chunk)
     _cleanup_old_opener_caches(agent_id, filepath)
     print(f"[CACHE] Opener saved to {filepath}")
@@ -654,7 +653,7 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Opt
         }
         data = {
             "model": "saaras:v3",
-            "language_code": "hi-IN",  # Forces native high-speed transliteration (prevents massive 2s+ auto-detect delay)
+            "language_code": "hi-IN",
             "mode": "transcribe",
         }
         r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
@@ -1170,7 +1169,7 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
 
 # ───────── TTS (Text-to-Speech) Streaming ─────────
 
-async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False, speech_speed: float = 1.2) -> AsyncGenerator[bytes, None]:
+async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False) -> AsyncGenerator[bytes, None]:
     """Stream TTS audio with automatic key-pool failover.
     
     Uses voice_key_manager to cycle through healthy API keys.
@@ -1210,7 +1209,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": float(speech_speed) if speech_speed else 1.2
+            "speed": 1.2
         }
     }
 
@@ -1240,7 +1239,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
                     # All keys exhausted — try voice fallback as last resort
                     if not is_fallback and GENARTML_VOICE_ID:
                         print(f"[Callex Voice Engine] 🔄 All keys failed. Trying fallback voice...")
-                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
+                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
                             yield fallback_chunk
                         return
                     else:
@@ -1274,7 +1273,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             if attempt < len(keys_to_try) - 1:
                 continue
             if not is_fallback:
-                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
                     yield fallback_chunk
                 return
         except Exception as e:
@@ -1282,7 +1281,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             if attempt < len(keys_to_try) - 1:
                 continue
             if not is_fallback:
-                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
                     yield fallback_chunk
                 return
     
@@ -1701,7 +1700,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         asyncio.create_task(log_live_message("model", opener_text))
 
         # Cache path uses content-hash so edits to opening line auto-invalidate
-        cache_path = _opener_cache_path(agent_config['id'], opener_text, agent_config.get('speechSpeed', 1.2))
+        cache_path = _opener_cache_path(agent_config['id'], opener_text)
         total_opener_bytes = 0
         bot_speaking = True
 
@@ -1720,7 +1719,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     await asyncio.sleep(0.02)
         else:
             print(f"[CACHE] Generating opener on the fly for agent {agent_config['id']}")
-            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice'], speech_speed=agent_config.get('speechSpeed', 1.2)):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice']):
                 if await send_audio_safe(chunk):
                     total_opener_bytes += len(chunk)
                 else:
