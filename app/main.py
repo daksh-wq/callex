@@ -383,11 +383,12 @@ class LocalRecorder:
         return None
 
 
-def _opener_cache_path(agent_id: str, opener_text: str) -> str:
+def _opener_cache_path(agent_id: str, opener_text: str, speech_speed: float = 1.2) -> str:
     """Build a content-hash based cache path so edits to the opener auto-invalidate."""
     import hashlib
     safe_id = str(agent_id).replace('-', '_')[:32]
-    text_hash = hashlib.md5(opener_text.encode('utf-8')).hexdigest()[:10]
+    content = f"{opener_text}_speed_{speech_speed}"
+    text_hash = hashlib.md5(content.encode('utf-8')).hexdigest()[:10]
     return os.path.join(CACHE_DIR, f"{safe_id}_opener_{text_hash}.pcm")
 
 def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
@@ -402,7 +403,7 @@ def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
     except Exception:
         pass
 
-async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None):
+async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voice_id: str = None, speech_speed: float = 1.2):
     """Ensure opener audio is cached for an agent (content-hash invalidated)."""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
@@ -411,7 +412,7 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
         print("[CACHE] No agent/opener provided, skipping cache")
         return
 
-    filepath = _opener_cache_path(agent_id, opener_text)
+    filepath = _opener_cache_path(agent_id, opener_text, speech_speed)
 
     if os.path.exists(filepath):
         print(f"[CACHE] Opener found: {filepath}")
@@ -421,7 +422,7 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
     print(f"[CACHE] Generating opener for agent {agent_id} (text changed)...")
     async with httpx.AsyncClient() as client:
         with open(filepath, "wb") as f:
-            async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=voice_id, speech_speed=speech_speed):
                 f.write(chunk)
     _cleanup_old_opener_caches(agent_id, filepath)
     print(f"[CACHE] Opener saved to {filepath}")
@@ -1169,7 +1170,7 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
 
 # ───────── TTS (Text-to-Speech) Streaming ─────────
 
-async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False) -> AsyncGenerator[bytes, None]:
+async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False, speech_speed: float = 1.2) -> AsyncGenerator[bytes, None]:
     """Stream TTS audio with automatic key-pool failover.
     
     Uses voice_key_manager to cycle through healthy API keys.
@@ -1209,7 +1210,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": 1.2
+            "speed": float(speech_speed) if speech_speed else 1.2
         }
     }
 
@@ -1239,7 +1240,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
                     # All keys exhausted — try voice fallback as last resort
                     if not is_fallback and GENARTML_VOICE_ID:
                         print(f"[Callex Voice Engine] 🔄 All keys failed. Trying fallback voice...")
-                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
                             yield fallback_chunk
                         return
                     else:
@@ -1273,7 +1274,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             if attempt < len(keys_to_try) - 1:
                 continue
             if not is_fallback:
-                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
                     yield fallback_chunk
                 return
         except Exception as e:
@@ -1281,7 +1282,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             if attempt < len(keys_to_try) - 1:
                 continue
             if not is_fallback:
-                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True, speech_speed=speech_speed):
                     yield fallback_chunk
                 return
     
@@ -1700,7 +1701,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         asyncio.create_task(log_live_message("model", opener_text))
 
         # Cache path uses content-hash so edits to opening line auto-invalidate
-        cache_path = _opener_cache_path(agent_config['id'], opener_text)
+        cache_path = _opener_cache_path(agent_config['id'], opener_text, agent_config.get('speechSpeed', 1.2))
         total_opener_bytes = 0
         bot_speaking = True
 
@@ -1719,7 +1720,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     await asyncio.sleep(0.02)
         else:
             print(f"[CACHE] Generating opener on the fly for agent {agent_config['id']}")
-            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice']):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice'], speech_speed=agent_config.get('speechSpeed', 1.2)):
                 if await send_audio_safe(chunk):
                     total_opener_bytes += len(chunk)
                 else:
