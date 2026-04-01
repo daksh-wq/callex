@@ -177,7 +177,7 @@ MAX_BUFFER_SECONDS = 5
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 # Smart silence timeout — 1.0s is safe because we use LLM pre-warming + rolling ASR
 # so we don't need to wait for a huge silence gap before processing.
-SILENCE_TIMEOUT = 1.3
+SILENCE_TIMEOUT = 0.8
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -654,7 +654,7 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Opt
         }
         data = {
             "model": "saaras:v3",
-            "language_code": "unknown",  # "unknown" enables pure auto-detection (Hinglish + exact script dictation)
+            "language_code": "hi-IN",  # Forces native high-speed transliteration (prevents massive 2s+ auto-detect delay)
             "mode": "transcribe",
         }
         r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
