@@ -1470,6 +1470,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
     buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     vad_buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
+    pre_speech_buffer = deque(maxlen=int(SAMPLE_RATE * 0.3)) # 300ms pre-speech history
     history: List[Dict] = []
     full_history: List[Dict] = []
 
@@ -1480,8 +1481,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     current_task: asyncio.Task | None = None
     task_lock = asyncio.Lock()
     first_line_complete = False
-    bot_speaking = False
     barge_in_confirm_start = None  # Timestamp when continuous caller speech started
+    barge_in_pause_start = None    # Timestamp when micro-pause started during confirmation
     was_barge_in = False  # Track if current speech started as a barge-in
 
     recorder = LocalRecorder(call_uuid)
@@ -1859,12 +1860,24 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if len(filtered_chunk) == 0:
                         continue
                         
+                    if not speaking:
+                        pre_speech_buffer.extend(unfiltered_clean)
+                        
                     energy = np.sqrt(np.mean(filtered_chunk * filtered_chunk))
                     audio_db = 20 * np.log10(energy + 1e-9)
                     now = time.time()
 
-                    # Use shorter silence timeout after barge-in for faster reply
-                    active_silence_timeout = BARGE_IN_SILENCE_TIMEOUT if was_barge_in else SILENCE_TIMEOUT
+                    # Adaptive Silence Timeout
+                    # If duration < 1.0s (e.g., short interjection), use shorter 0.8s timeout
+                    # If long sentence (duration >= 1.0s), wait 1.5s to prevent cutting off thought
+                    current_duration = len(buffer) / SAMPLE_RATE
+                    if was_barge_in:
+                        active_silence_timeout = BARGE_IN_SILENCE_TIMEOUT
+                    elif current_duration < 1.0:
+                        active_silence_timeout = 0.8
+                    else:
+                        active_silence_timeout = 1.5
+
                     if speaking and now - last_voice > active_silence_timeout:
                         speaking = False
                         was_barge_in = False  # Reset barge-in flag
@@ -1909,10 +1922,17 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             speaker_verifier.clear_verify_buffer()
 
                     if not is_valid_speech:
-                        barge_in_confirm_start = None  # Reset confirmation buffer on silence
+                        if barge_in_confirm_start is not None:
+                            if barge_in_pause_start is None:
+                                barge_in_pause_start = now
+                            elif now - barge_in_pause_start > 0.2:
+                                barge_in_confirm_start = None  # 200ms grace period exceeded
+                                barge_in_pause_start = None
                         if speaking:
                             buffer.extend(unfiltered_clean)
                         continue
+                    else:
+                        barge_in_pause_start = None  # Reset pause tracker on valid speech
 
                     vad_confidence = 1.0  # Fallback
                     if use_silero and silero_vad:
@@ -1958,6 +1978,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
                                 if not is_caller:
                                     barge_in_confirm_start = None
+                                    barge_in_pause_start = None
                                     buffer.clear()
                                     vad_buffer.clear()
                                     speaker_verifier.clear_verify_buffer()
@@ -1987,6 +2008,11 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                             # ✅ Interruption Pass confirmed!
                             barge_in_confirm_start = None
+                            barge_in_pause_start = None
+
+                            # Inject pre-speech buffer to catch the very first clipped syllable
+                            if not speaking:
+                                buffer.extendleft(reversed(pre_speech_buffer))
 
                             # Skip YAMNet during barge-in for speed (Silero + energy is enough)
                             if not bot_speaking and len(vad_buffer) > 4000 and classifier:
@@ -2011,8 +2037,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         last_voice = now
                         await cancel_current()
                     else:
-                        # Audio below threshold — reset confirmation buffer
-                        barge_in_confirm_start = None
+                        # Audio below threshold — allow 200ms micro-pauses
+                        if barge_in_confirm_start is not None:
+                            if barge_in_pause_start is None:
+                                barge_in_pause_start = now
+                            elif now - barge_in_pause_start > 0.2:
+                                barge_in_confirm_start = None
+                                barge_in_pause_start = None
 
                 elif "text" in msg:
                     try:
