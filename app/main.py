@@ -639,7 +639,7 @@ def trim_history(history: List[Dict]) -> List[Dict]:
 
 # ───────── ASR (Speech-to-Text) ─────────
 
-async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
+async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt: str = "") -> Optional[str]:
     """Transcribe audio using Sarvam AI Saaras v3 (best Hindi accuracy, ~250ms)."""
     import io
     url = "https://api.sarvam.ai/speech-to-text"
@@ -656,6 +656,9 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Opt
             "language_code": "hi-IN",
             "mode": "transcribe",
         }
+        if prompt:
+            # Provide conversation context to drastically improve STT accuracy for domains like loans
+            data["prompt"] = prompt[:400]
         r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
         if r.status_code != 200:
             print(f"[SARVAM] HTTP {r.status_code}: {r.text[:300]}")
@@ -773,7 +776,7 @@ async def _gemini_transcribe(client: httpx.AsyncClient, trimmed_pcm: bytes) -> O
     return None
 
 
-async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None) -> Optional[str]:
+async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None, history: list = None) -> Optional[str]:
     print(f"[ASR] Sending {len(pcm16)} bytes…")
     start_time = time.time()
     trimmed_pcm = trim_audio(pcm16)
@@ -790,7 +793,16 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     # Priority: Sarvam AI (best Hindi) → Deepgram (fast) → Gemini (fallback)
     if SARVAM_API_KEY:
         print(f"[ASR] Using Sarvam AI Saaras v3...")
-        text = await _sarvam_transcribe(client, wav_bytes)
+        
+        # Build prompt from previous conversation context to immensely improve STT accuracy
+        prompt_context = ""
+        if history:
+            for msg in reversed(history[-3:]):
+                parts = msg.get("parts", [])
+                if parts and "text" in parts[0]:
+                    prompt_context = parts[0]["text"] + " " + prompt_context
+                    
+        text = await _sarvam_transcribe(client, wav_bytes, prompt=prompt_context.strip())
         if text:
             elapsed = time.time() - start_time
             print(f"[ASR] ⚡ Sarvam result in {elapsed:.2f}s")
@@ -1584,7 +1596,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             nonlocal partial_transcript
             try:
                 pcm16 = (audio_snapshot * 32767).astype(np.int16).tobytes()
-                result = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
+                result = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
                 if result:
                     partial_transcript = result
                     print(f"[ROLLING ASR] ⚡ Partial: '{result[:60]}'")
@@ -1627,7 +1639,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     print(f"[ASR] ⚡ Using cached partial transcript (saved ASR round-trip)")
                 else:
                     pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter)
+                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
 
                 if not user_text or not ws_alive:
                     return
