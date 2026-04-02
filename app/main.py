@@ -19,6 +19,7 @@ from scipy.fft import rfft, rfftfreq
 import os
 import sys
 import shutil
+import gc
 import boto3
 from botocore.exceptions import NoCredentialsError
 import webrtcvad
@@ -221,6 +222,21 @@ MAX_HISTORY_LENGTH = 12
 # Retry Configuration
 MAX_RETRIES = 2
 RETRY_DELAY = 0.3
+
+# ── Firestore Prompt Cache (prevents redundant network reads) ──
+_prompt_cache: dict = {}  # {agent_id: {"prompt": str, "ts": float}}
+PROMPT_CACHE_TTL = 30.0  # seconds — re-read from Firestore every 30s max
+
+def _get_cached_prompt(agent_id: str) -> Optional[str]:
+    """Return cached systemPrompt if fresh, else None."""
+    entry = _prompt_cache.get(agent_id)
+    if entry and (time.time() - entry["ts"]) < PROMPT_CACHE_TTL:
+        return entry["prompt"]
+    return None
+
+def _set_cached_prompt(agent_id: str, prompt: str):
+    """Cache a systemPrompt with current timestamp."""
+    _prompt_cache[agent_id] = {"prompt": prompt, "ts": time.time()}
 
 # FreeSWITCH ESL Configuration
 ESL_HOST = "127.0.0.1"
@@ -984,28 +1000,34 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     temperature = agent.get('temperature', 0.7)
     max_tokens = agent.get('maxTokens', 250)
 
-    # ── ALWAYS re-read systemPrompt directly from Firestore (nuclear fix) ──
-    # This guarantees the absolute latest prompt is used, even if agent_config
-    # was loaded at call start and edited mid-call.
+    # ── Read systemPrompt with 30s TTL cache (prevents latency creep) ──
+    # Cache eliminates ~50-150ms Firestore read on every single turn.
+    # Auto-refreshes every 30s, so prompt edits in dashboard still work quickly.
     system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
     agent_id = agent.get('id')
     if agent_id and agent_id != 'fallback':
-        try:
-            import firebase_admin
-            from firebase_admin import firestore as _fs
-            _db = _fs.client()
-            _doc = _db.collection('agents').document(str(agent_id)).get()
-            if _doc.exists:
-                fresh_prompt = _doc.to_dict().get('systemPrompt')
-                if fresh_prompt:
-                    system_prompt = fresh_prompt
-                    print(f"[LLM] ✅ Fresh systemPrompt from Firestore (first 200 chars): {system_prompt[:200]}")
+        cached = _get_cached_prompt(agent_id)
+        if cached:
+            system_prompt = cached
+            # Silent — no log spam on cache hits to keep logs clean
+        else:
+            try:
+                import firebase_admin
+                from firebase_admin import firestore as _fs
+                _db = _fs.client()
+                _doc = _db.collection('agents').document(str(agent_id)).get()
+                if _doc.exists:
+                    fresh_prompt = _doc.to_dict().get('systemPrompt')
+                    if fresh_prompt:
+                        system_prompt = fresh_prompt
+                        _set_cached_prompt(agent_id, fresh_prompt)
+                        print(f"[LLM] ✅ Fresh systemPrompt from Firestore (cached for {PROMPT_CACHE_TTL}s)")
+                    else:
+                        print(f"[LLM] ⚠️ Firestore agent has no systemPrompt, using agent_config fallback")
                 else:
-                    print(f"[LLM] ⚠️ Firestore agent has no systemPrompt, using agent_config fallback")
-            else:
-                print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore, using agent_config fallback")
-        except Exception as e:
-            print(f"[LLM] ⚠️ Firestore re-read failed ({e}), using agent_config fallback")
+                    print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore, using agent_config fallback")
+            except Exception as e:
+                print(f"[LLM] ⚠️ Firestore re-read failed ({e}), using agent_config fallback")
     else:
         print(f"[LLM] Using fallback agent systemPrompt")
 
@@ -1679,7 +1701,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             return False
 
     async with httpx.AsyncClient(
-        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        limits=httpx.Limits(max_connections=15, max_keepalive_connections=8),
+        timeout=httpx.Timeout(10.0, connect=3.0, read=8.0, write=3.0)
     ) as client:
 
         # ── Speculative Execution State ──────────────────────────────────────────
@@ -2176,6 +2199,11 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         finally:
             ws_alive = False
             await cancel_current()
+
+            # ── Force cleanup to prevent memory creep across calls ──
+            partial_transcript = None
+            llm_warmup_task = None
+
             if 'db' in locals():
                 db.close()
 
@@ -2301,6 +2329,15 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             print("\n" + "=" * 50)
             print("[CALL] 📴 CALL ENDED")
             print("=" * 50 + "\n")
+
+            # ── Force garbage collection to prevent memory creep ──
+            # Large audio buffers, NumPy arrays, and conversation histories
+            # accumulate across calls. Without explicit GC, Python's generational
+            # collector may not reclaim them fast enough, causing swap pressure
+            # and latency spikes after 50-100+ calls.
+            collected = gc.collect()
+            if collected > 50:
+                print(f"[GC] 🧹 Reclaimed {collected} objects after call cleanup")
 
 
 # ───────── AGENT LISTING ENDPOINT ─────────
