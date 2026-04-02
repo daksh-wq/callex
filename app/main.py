@@ -1611,8 +1611,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             chunk = BG_NOISE_PCM[bg_noise_pos:end_pos]
             bg_noise_pos = end_pos
         
-        # Apply volume reduction (5% volume — subtle call center ambiance)
-        return (chunk * 0.05).astype(np.int16)
+        # Apply volume reduction (9% volume — subtle call center ambiance)
+        return (chunk * 0.09).astype(np.int16)
     
     # ── FireStore Live Call Creation ──
     try:
@@ -1928,27 +1928,26 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     break
         bot_speaking = False
 
-        playback_duration = total_opener_bytes / 32000.0
-        if playback_duration < 3.0:
-            print(f"[SYSTEM] Warning: Calculated duration very short ({playback_duration:.2f}s). Setting minimum 3s.")
-            playback_duration = 3.0
+        print(f"[SYSTEM] Opener generation complete, waiting for FreeSWITCH play buffer to drain...")
 
-        print(f"[SYSTEM] Opener playback protection: {playback_duration:.2f}s\")")
-
-        async def enable_barge_in_delayed(delay: float):
+        async def enable_barge_in_delayed():
             try:
-                safe_delay = delay + 0.3
-                print(f"[SYSTEM] Locking barge-in for {safe_delay:.2f}s...")
-                await asyncio.sleep(safe_delay)
+                # Wait exactly until the absolute timestamp when the opening line audio finishes playing (+ 0.3s safe grace period)
+                while True:
+                    remaining = (bot_audio_expected_end + 0.3) - time.time()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(remaining, 0.5))
+                
                 nonlocal first_line_complete
                 first_line_complete = True
                 if silero_vad:
                     silero_vad.finalize_noise_profile()
-                print("[SYSTEM] Opener playback complete - barge-in now enabled")
+                print("[SYSTEM] Opener playback complete - barge-in now enabled (customer can speak!)")
             except Exception as e:
                 print(f"[SYSTEM] Timer error: {e}")
 
-        asyncio.create_task(enable_barge_in_delayed(playback_duration))
+        asyncio.create_task(enable_barge_in_delayed())
 
         # ── No-Response Monitor ─────────────────────────────────────────────────
         # After the opener ends, if no human voice is detected for 6 seconds,
