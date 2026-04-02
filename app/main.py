@@ -1594,8 +1594,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     safe_agent_id = str(agent_config['id']).replace('-', '_')[:32]
 
     print(f"[DB] Creating call record for {call_uuid}")
-    
-    print(f"[DB] Creating call record for {call_uuid}")
     tracker.start_call(call_uuid, phone_number)
     
     # --- BACKGROUND AUDIO STREAMER STATE ---
@@ -1614,8 +1612,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             chunk = BG_NOISE_PCM[bg_noise_pos:end_pos]
             bg_noise_pos = end_pos
         
-        # Apply volume reduction (10% volume)
-        return (chunk * 0.1).astype(np.int16)
+        # Apply volume reduction (5% volume — subtle call center ambiance)
+        return (chunk * 0.05).astype(np.int16)
     
     # ── FireStore Live Call Creation ──
     try:
@@ -1743,19 +1741,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             bot_audio_expected_end += len(audio_chunk) / 32000.0
 
             if bot_speaking:
-                recorder.write_bot_audio(audio_chunk)  # Record original unmixed bot audio
-                
-            # Mix background noise seamlessly (Dynamic Python Software Mixing)
-            bot_pcm = np.frombuffer(audio_chunk, dtype=np.int16)
-            bg_chunk = get_bg_chunk(len(bot_pcm))
-            mixed_audio = np.clip(bot_pcm.astype(np.int32) + bg_chunk.astype(np.int32), -32768, 32767).astype(np.int16).tobytes()
-            
+                recorder.write_bot_audio(audio_chunk)
             await ws.send_json({
                 "type": "streamAudio",
                 "data": {
                     "audioDataType": "raw",
                     "sampleRate": SAMPLE_RATE,
-                    "audioData": base64.b64encode(mixed_audio).decode()
+                    "audioData": base64.b64encode(audio_chunk).decode()
                 }
             })
             return True
@@ -2017,6 +2009,32 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
         asyncio.create_task(no_response_monitor())
 
+        # ─── Independent Background Noise Streamer (non-blocking) ───
+        async def bg_noise_streamer():
+            """Pushes low-volume call center ambiance at a steady 100ms cadence.
+            Runs completely independently from the audio processing pipeline.
+            Only active when BG_NOISE_PCM is loaded and bot is NOT speaking."""
+            BG_CHUNK_SAMPLES = 1600  # 100ms at 16kHz
+            while ws_alive:
+                try:
+                    if not bot_speaking and BG_NOISE_PCM is not None:
+                        bg_chunk = get_bg_chunk(BG_CHUNK_SAMPLES)
+                        await ws.send_json({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioDataType": "raw",
+                                "sampleRate": 16000,
+                                "audioData": base64.b64encode(bg_chunk.tobytes()).decode()
+                            }
+                        })
+                    await asyncio.sleep(0.1)  # 100ms cadence
+                except Exception:
+                    await asyncio.sleep(0.5)  # Back off on error
+
+        if BG_NOISE_PCM is not None:
+            asyncio.create_task(bg_noise_streamer())
+            print("[SYSTEM] 🎵 Background noise streamer started (100ms cadence, 5% vol)")
+
 
         try:
             while ws_alive:
@@ -2039,22 +2057,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if pcm.size == 0:
                         continue
                     
-                    # ─── Push continuous background noise mathematically synchronized to inbound clock ───
-                    if not bot_speaking and BG_NOISE_PCM is not None:
-                        try:
-                            # Extract exactly the reciprocal length from the noise buffer and echo it back!
-                            bg_chunk = get_bg_chunk(len(pcm))
-                            await ws.send_json({
-                                "type": "streamAudio",
-                                "data": {
-                                    "audioDataType": "raw",
-                                    "sampleRate": 16000,
-                                    "audioData": base64.b64encode(bg_chunk.tobytes()).decode()
-                                }
-                            })
-                        except Exception as e:
-                            print(f"[WS] Bg noise push failed: {e}")
-                        
+                    
                     # 2. RUN NEURAL NETWORK: DeepFilterNet3 strips traffic/crowd/wind noise
                     enhanced_float32 = deepfilter.process(pcm)
 
