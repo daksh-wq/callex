@@ -1700,9 +1700,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD
     )
 
-    # Lock to serialize ALL WebSocket writes — prevents concurrent send conflicts
-    ws_write_lock = asyncio.Lock()
-
     async def cancel_current():
         nonlocal current_task, bot_speaking
         async with task_lock:
@@ -1757,15 +1754,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             else:
                 outbound_audio = audio_chunk
 
-            async with ws_write_lock:
-                await ws.send_json({
-                    "type": "streamAudio",
-                    "data": {
-                        "audioDataType": "raw",
-                        "sampleRate": SAMPLE_RATE,
-                        "audioData": base64.b64encode(outbound_audio).decode()
-                    }
-                })
+            await ws.send_json({
+                "type": "streamAudio",
+                "data": {
+                    "audioDataType": "raw",
+                    "sampleRate": SAMPLE_RATE,
+                    "audioData": base64.b64encode(outbound_audio).decode()
+                }
+            })
             return True
         except Exception as e:
             print(f"[WS] Send failed: {e}")
@@ -2025,36 +2021,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
         asyncio.create_task(no_response_monitor())
 
-        # ─── Continuous Background Noise (lock-protected, non-blocking) ───
-        async def bg_noise_streamer():
-            """Sends ambient noise during silence periods at 50ms intervals.
-            During bot speech, send_audio_safe handles mixing instead.
-            All writes go through ws_write_lock to prevent conflicts."""
-            BG_SAMPLES = 800  # 50ms at 16kHz
-            while ws_alive:
-                try:
-                    # Only send separate noise when bot is NOT speaking
-                    # (during speech, send_audio_safe already mixes noise in)
-                    if not bot_speaking:
-                        bg_chunk = get_bg_chunk(BG_SAMPLES)
-                        async with ws_write_lock:
-                            await ws.send_json({
-                                "type": "streamAudio",
-                                "data": {
-                                    "audioDataType": "raw",
-                                    "sampleRate": 16000,
-                                    "audioData": base64.b64encode(bg_chunk.tobytes()).decode()
-                                }
-                            })
-                    await asyncio.sleep(0.05)  # 50ms cadence
-                except Exception:
-                    if not ws_alive:
-                        break
-                    await asyncio.sleep(0.2)
-
         if BG_NOISE_PCM is not None:
-            asyncio.create_task(bg_noise_streamer())
-            print("[SYSTEM] 🎵 Background noise active (continuous, 5% vol, lock-protected)")
+            print("[SYSTEM] 🎵 Background noise active (mixed into bot speech at 5% vol)")
 
         try:
             while ws_alive:
@@ -2063,8 +2031,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 except asyncio.TimeoutError:
                     print("[WS] Receive timeout, sending keepalive...")
                     try:
-                        async with ws_write_lock:
-                            await ws.send_json({"type": "keepalive"})
+                        await ws.send_json({"type": "keepalive"})
                     except:
                         break
                     continue
