@@ -635,16 +635,14 @@ def trim_audio(pcm_bytes: bytes) -> bytes:
     if len(arr) == 0:
         return pcm_bytes
     energy = np.abs(arr)
-    threshold = 32768 * 0.02
+    # Drastically loosened threshold to prevent cutting off quiet endings/beginnings
+    threshold = 32768 * 0.002
     mask = energy > threshold
     if not np.any(mask):
         return pcm_bytes
     start = np.argmax(mask)
     end = len(mask) - np.argmax(mask[::-1])
     trimmed = arr[start:end].tobytes()
-    min_samples = int(SAMPLE_RATE * 0.1)
-    if len(trimmed) // 2 < min_samples:
-        return pcm_bytes
     return trimmed
 
 
@@ -801,7 +799,8 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     trimmed_pcm = trim_audio(pcm16)
     print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
 
-    MIN_ASR_BYTES = SAMPLE_RATE * 1
+    # Allow short words ("ok", "yes", "haan", "hello") by lowering min bytes to 150ms 
+    MIN_ASR_BYTES = int(SAMPLE_RATE * 2 * 0.15)
     if len(trimmed_pcm) < MIN_ASR_BYTES:
         print(f"[ASR] Audio too short ({len(trimmed_pcm)} bytes < {MIN_ASR_BYTES}), skipping")
         return None
