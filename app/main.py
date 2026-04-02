@@ -681,8 +681,10 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt
 
 
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
-    """Transcribe audio using Deepgram Nova-2 (~250ms for Hindi)."""
-    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true"
+    """Transcribe audio using Deepgram Nova-2 (production-grade, ~150ms for Hindi)."""
+    # Production params: nova-2 (best model), Hindi, smart formatting, punctuation,
+    # endpointing=false (we handle our own VAD), utterances for full sentence capture
+    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&utterances=true&encoding=linear16&sample_rate=16000"
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "audio/wav",
@@ -1633,14 +1635,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             is_processing_audio = True
             try:
                 t0 = time.time()
-                # ── Use cached rolling ASR result if available (saves ~250ms) ──
-                if partial_transcript:
-                    user_text = partial_transcript
-                    partial_transcript = None
-                    print(f"[ASR] ⚡ Using cached partial transcript (saved ASR round-trip)")
-                else:
-                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+                # ── ALWAYS transcribe the FULL final buffer for accuracy ──
+                # Rolling ASR partials are only mid-sentence snapshots and will miss
+                # the tail end of what the customer said. We must send the complete
+                # audio to get the full sentence.
+                pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+                # Clear stale partial since we just did a full transcription
+                partial_transcript = None
 
                 if not user_text or not ws_alive:
                     return
