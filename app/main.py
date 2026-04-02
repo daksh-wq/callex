@@ -1612,7 +1612,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             bg_noise_pos = end_pos
         
         # Apply volume reduction (9% volume — subtle call center ambiance)
-        return (chunk * 0.09).astype(np.int16)
+        return (chunk * 0.20).astype(np.int16)
     
     # ── FireStore Live Call Creation ──
     try:
