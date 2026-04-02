@@ -173,13 +173,13 @@ if not DEEPGRAM_API_KEY and not SARVAM_API_KEY:
 
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16kHz (High Quality)
-MAX_BUFFER_SECONDS = 5
+MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 # Smart silence timeout — 1.0s is safe because we use LLM pre-warming + rolling ASR
 # so we don't need to wait for a huge silence gap before processing.
-SILENCE_TIMEOUT = 1.0
+SILENCE_TIMEOUT = 1.2
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -199,7 +199,7 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
-BARGE_IN_SILENCE_TIMEOUT = 0.9  # seconds — fast commit after barge-in
+BARGE_IN_SILENCE_TIMEOUT = 1.0  # seconds — fast commit after barge-in
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
 ROLLING_ASR_INTERVAL = 1.5  # seconds between rolling partial ASR requests
@@ -2141,6 +2141,15 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         speaking = True
                         was_barge_in = True  # Mark as barge-in for faster silence timeout
                         last_voice = now
+                        
+                        # Only keep the 1.0s of audio right before the barge-in threshold was breached,
+                        # discarding any long background noise that accumulated before they spoke.
+                        keep_samples = SAMPLE_RATE * 1
+                        if len(buffer) > keep_samples:
+                            buffer = deque(list(buffer)[-keep_samples:], maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
+                        if len(vad_buffer) > keep_samples:
+                            vad_buffer = deque(list(vad_buffer)[-keep_samples:], maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
+                            
                         await cancel_current()
                     else:
                         # Audio below threshold — reset confirmation buffer
