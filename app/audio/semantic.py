@@ -73,9 +73,8 @@ class SemanticFilter:
         # Clean text
         text_clean = text.strip().lower()
         
-        # Rule 1: Length check (skip if the text contains digits, e.g. "10", "1")
-        has_digits = any(char.isdigit() for char in text_clean)
-        if not has_digits and len(text_clean) < self.min_length:
+        # Rule 1: Length check
+        if len(text_clean) < self.min_length:
             return False
         
         # Rule 2: Exact filler word match
@@ -137,8 +136,7 @@ class SemanticFilter:
         
         text_clean = text.strip().lower()
         
-        has_digits = any(char.isdigit() for char in text_clean)
-        if not has_digits and len(text_clean) < self.min_length:
+        if len(text_clean) < self.min_length:
             return f"Too short ({len(text_clean)} chars)"
         
         if text_clean in self.filler_words:
@@ -184,8 +182,6 @@ if __name__ == "__main__":
         ("मैं आज रिचार्ज करूँगा", True, "Full sentence"),
         ("", False, "Empty"),
         ("हाँ ठीक है समझ गया", True, "Filler + meaningful"),
-        ("10", True, "Short but contains digits"),
-        ("5", True, "Single digit"),
     ]
     
     passed = 0
