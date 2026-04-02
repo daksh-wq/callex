@@ -313,31 +313,6 @@ async def freeswitch_command(cmd: str):
         print(f"[ESL Error] Command failed ({cmd}): {e}")
         return None
 
-async def freeswitch_play_background_noise(uuid: str, audio_path: str, volume: int = -12):
-    """Mixes a background MP3/WAV seamlessly into the call at a very low volume without affecting AI"""
-    try:
-        reader, writer = await asyncio.open_connection(ESL_HOST, ESL_PORT)
-        await reader.readuntil(b"Content-Type: auth/request\n\n")
-        writer.write(f"auth {ESL_PASSWORD}\n\n".encode())
-        await writer.drain()
-        auth_response = await reader.readuntil(b"\n\n")
-        if b"+OK" not in auth_response:
-            writer.close()
-            await writer.wait_closed()
-            return
-        
-        # Displace the audio natively using FreeSWITCH. mux = mix audio. ml-12 = lower volume by 12 levels.
-        cmd = f"api uuid_displace {uuid} start {audio_path} mux ml{volume}\n\n"
-        writer.write(cmd.encode())
-        await writer.drain()
-        await reader.readuntil(b"\n\n")
-        
-        writer.close()
-        await writer.wait_closed()
-        print(f"[SYSTEM] 🎵 Background noise started seamlessly on FreeSWITCH (Vol: {volume})")
-    except Exception as e:
-        print(f"[ESL Error] Background noise failed: {e}")
-
 
 def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]:
     """Upload a file to Firebase Storage and return the public URL"""
@@ -552,6 +527,44 @@ if not os.path.exists(RECORDINGS_DIR):
     print(f"[SYSTEM] Created recordings directory: {RECORDINGS_DIR}")
 else:
     print(f"[SYSTEM] Using recordings directory: {RECORDINGS_DIR}")
+
+
+# ───────── BACKGROUND CALL CENTER NOISE ─────────
+
+import subprocess
+
+BG_NOISE_PCM = None
+
+def load_bg_noise():
+    global BG_NOISE_PCM
+    mp3_path = os.path.join(PROJECT_ROOT, "background_noise.mp3")
+    wav_path = os.path.join(PROJECT_ROOT, "background_noise.wav")
+    
+    active_path = None
+    if os.path.exists(mp3_path):
+        active_path = mp3_path
+    elif os.path.exists(wav_path):
+        active_path = wav_path
+        
+    if not active_path:
+        return
+        
+    try:
+        # Convert to 16kHz mono PCM using ffmpeg in-memory (doesn't write any temp files)
+        proc = subprocess.run([
+            "ffmpeg", "-y", "-i", active_path, 
+            "-f", "s16le", "-acodec", "pcm_s16le", 
+            "-ar", "16000", "-ac", "1", "pipe:1"
+        ], capture_output=True)
+        if proc.returncode == 0 and proc.stdout:
+            BG_NOISE_PCM = np.frombuffer(proc.stdout, dtype=np.int16)
+            print(f"[SYSTEM] 🎵 Loaded background noise into memory ({len(BG_NOISE_PCM) // 16000}s length)")
+        else:
+            print(f"[SYSTEM] ⚠️ Failed to load background noise via ffmpeg: {proc.stderr.decode()}")
+    except Exception as e:
+        print(f"[SYSTEM] ⚠️ Failed to load background noise: {e}")
+
+load_bg_noise()
 
 
 # ───────── NOISE SUPPRESSION (PRODUCTION LEVEL) ─────────
@@ -1582,16 +1595,27 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
     print(f"[DB] Creating call record for {call_uuid}")
     
-    # Mix background noise if the file exists on the server
-    if call_uuid:
-        bg_noise_path_mp3 = os.path.join(PROJECT_ROOT, "background_noise.mp3")
-        bg_noise_path_wav = os.path.join(PROJECT_ROOT, "background_noise.wav")
-        if os.path.exists(bg_noise_path_mp3):
-            asyncio.create_task(freeswitch_play_background_noise(call_uuid, bg_noise_path_mp3, volume=-12))
-        elif os.path.exists(bg_noise_path_wav):
-            asyncio.create_task(freeswitch_play_background_noise(call_uuid, bg_noise_path_wav, volume=-12))
-            
+    print(f"[DB] Creating call record for {call_uuid}")
     tracker.start_call(call_uuid, phone_number)
+    
+    # --- BACKGROUND AUDIO STREAMER STATE ---
+    bg_noise_pos = 0
+
+    def get_bg_chunk(samples: int) -> np.ndarray:
+        nonlocal bg_noise_pos
+        if BG_NOISE_PCM is None or len(BG_NOISE_PCM) == 0 or samples == 0:
+            return np.zeros(samples, dtype=np.int16)
+        
+        end_pos = bg_noise_pos + samples
+        if end_pos > len(BG_NOISE_PCM):
+            chunk = np.concatenate([BG_NOISE_PCM[bg_noise_pos:], BG_NOISE_PCM[:end_pos - len(BG_NOISE_PCM)]])
+            bg_noise_pos = end_pos - len(BG_NOISE_PCM)
+        else:
+            chunk = BG_NOISE_PCM[bg_noise_pos:end_pos]
+            bg_noise_pos = end_pos
+        
+        # Apply volume reduction (10% volume)
+        return (chunk * 0.1).astype(np.int16)
     
     # ── FireStore Live Call Creation ──
     try:
@@ -1719,13 +1743,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             bot_audio_expected_end += len(audio_chunk) / 32000.0
 
             if bot_speaking:
-                recorder.write_bot_audio(audio_chunk)
+                recorder.write_bot_audio(audio_chunk)  # Record original unmixed bot audio
+                
+            # Mix background noise seamlessly (Dynamic Python Software Mixing)
+            bot_pcm = np.frombuffer(audio_chunk, dtype=np.int16)
+            bg_chunk = get_bg_chunk(len(bot_pcm))
+            mixed_audio = np.clip(bot_pcm.astype(np.int32) + bg_chunk.astype(np.int32), -32768, 32767).astype(np.int16).tobytes()
+            
             await ws.send_json({
                 "type": "streamAudio",
                 "data": {
                     "audioDataType": "raw",
                     "sampleRate": SAMPLE_RATE,
-                    "audioData": base64.b64encode(audio_chunk).decode()
+                    "audioData": base64.b64encode(mixed_audio).decode()
                 }
             })
             return True
@@ -2008,6 +2038,22 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     pcm = np.frombuffer(msg["bytes"], dtype=np.int16)
                     if pcm.size == 0:
                         continue
+                    
+                    # ─── Push continuous background noise mathematically synchronized to inbound clock ───
+                    if not bot_speaking and BG_NOISE_PCM is not None:
+                        try:
+                            # Extract exactly the reciprocal length from the noise buffer and echo it back!
+                            bg_chunk = get_bg_chunk(len(pcm))
+                            await ws.send_json({
+                                "type": "streamAudio",
+                                "data": {
+                                    "audioDataType": "raw",
+                                    "sampleRate": 16000,
+                                    "audioData": base64.b64encode(bg_chunk.tobytes()).decode()
+                                }
+                            })
+                        except Exception as e:
+                            print(f"[WS] Bg noise push failed: {e}")
                         
                     # 2. RUN NEURAL NETWORK: DeepFilterNet3 strips traffic/crowd/wind noise
                     enhanced_float32 = deepfilter.process(pcm)
