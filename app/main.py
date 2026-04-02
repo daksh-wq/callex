@@ -308,9 +308,35 @@ async def freeswitch_command(cmd: str):
         writer.close()
         await writer.wait_closed()
         return response.decode().strip()
+        return response.decode().strip()
     except Exception as e:
         print(f"[ESL Error] Command failed ({cmd}): {e}")
         return None
+
+async def freeswitch_play_background_noise(uuid: str, audio_path: str, volume: int = -12):
+    """Mixes a background MP3/WAV seamlessly into the call at a very low volume without affecting AI"""
+    try:
+        reader, writer = await asyncio.open_connection(ESL_HOST, ESL_PORT)
+        await reader.readuntil(b"Content-Type: auth/request\n\n")
+        writer.write(f"auth {ESL_PASSWORD}\n\n".encode())
+        await writer.drain()
+        auth_response = await reader.readuntil(b"\n\n")
+        if b"+OK" not in auth_response:
+            writer.close()
+            await writer.wait_closed()
+            return
+        
+        # Displace the audio natively using FreeSWITCH. mux = mix audio. ml-12 = lower volume by 12 levels.
+        cmd = f"api uuid_displace {uuid} start {audio_path} mux ml{volume}\n\n"
+        writer.write(cmd.encode())
+        await writer.drain()
+        await reader.readuntil(b"\n\n")
+        
+        writer.close()
+        await writer.wait_closed()
+        print(f"[SYSTEM] 🎵 Background noise started seamlessly on FreeSWITCH (Vol: {volume})")
+    except Exception as e:
+        print(f"[ESL Error] Background noise failed: {e}")
 
 
 def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]:
@@ -1555,6 +1581,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     safe_agent_id = str(agent_config['id']).replace('-', '_')[:32]
 
     print(f"[DB] Creating call record for {call_uuid}")
+    
+    # Mix background noise if the file exists on the server
+    if call_uuid:
+        bg_noise_path_mp3 = os.path.join(PROJECT_ROOT, "background_noise.mp3")
+        bg_noise_path_wav = os.path.join(PROJECT_ROOT, "background_noise.wav")
+        if os.path.exists(bg_noise_path_mp3):
+            asyncio.create_task(freeswitch_play_background_noise(call_uuid, bg_noise_path_mp3, volume=-12))
+        elif os.path.exists(bg_noise_path_wav):
+            asyncio.create_task(freeswitch_play_background_noise(call_uuid, bg_noise_path_wav, volume=-12))
+            
     tracker.start_call(call_uuid, phone_number)
     
     # ── FireStore Live Call Creation ──
