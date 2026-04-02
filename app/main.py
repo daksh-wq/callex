@@ -161,12 +161,13 @@ voice_key_manager = CallexVoiceKeyManager(_voice_keys)
 
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "22db3ee228e1031835b9d09ebcfa44fdbabc2c79")
+
+if DEEPGRAM_API_KEY:
+    print(f"[CONFIG] ⚡ Deepgram ASR enabled (Nova-2 Primary, ~150ms latency)")
 if SARVAM_API_KEY:
-    print(f"[CONFIG] ⚡ Sarvam AI ASR enabled (Saaras v3, best Hindi accuracy)")
-elif DEEPGRAM_API_KEY:
-    print(f"[CONFIG] ⚡ Deepgram ASR enabled (Nova-2, ~250ms latency)")
-else:
+    print(f"[CONFIG] ⚡ Sarvam AI ASR enabled (Saaras v3 Fallback, best Hindi accuracy)")
+if not DEEPGRAM_API_KEY and not SARVAM_API_KEY:
     print(f"[CONFIG] ⚠️ No STT API key set, using Gemini Flash ASR (slower, 1-3s)")
 
 # Audio Configuration
