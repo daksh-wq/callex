@@ -790,9 +790,16 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     wav_bytes = wav_header(trimmed_pcm)
     text = None
 
-    # Priority: Sarvam AI (best Hindi) → Deepgram (fast) → Gemini (fallback)
-    if SARVAM_API_KEY:
-        print(f"[ASR] Using Sarvam AI Saaras v3...")
+    # Priority: Deepgram Nova-2 (best production speed/accuracy) → Sarvam AI (fallback) → Gemini
+    if DEEPGRAM_API_KEY:
+        print(f"[ASR] Using Deepgram Nova-2...")
+        text = await _deepgram_transcribe(client, wav_bytes)
+        if text:
+            elapsed = time.time() - start_time
+            print(f"[ASR] ⚡ Deepgram result in {elapsed:.2f}s")
+
+    if not text and SARVAM_API_KEY:
+        print(f"[ASR] Trying Sarvam AI Saaras v3 fallback...")
         
         # Build prompt from previous conversation context to immensely improve STT accuracy
         prompt_context = ""
@@ -806,13 +813,6 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
         if text:
             elapsed = time.time() - start_time
             print(f"[ASR] ⚡ Sarvam result in {elapsed:.2f}s")
-    
-    if not text and DEEPGRAM_API_KEY:
-        print(f"[ASR] Trying Deepgram Nova-2...")
-        text = await _deepgram_transcribe(client, wav_bytes)
-        if text:
-            elapsed = time.time() - start_time
-            print(f"[ASR] ⚡ Deepgram result in {elapsed:.2f}s")
     
     if not text:
         print(f"[ASR] Falling back to Gemini Flash...")
