@@ -699,8 +699,8 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
     """Transcribe audio using Deepgram Nova-2 (production-grade, ~150ms for Hindi)."""
     # Production params: nova-2 (best model), Hindi, smart formatting, punctuation,
-    # endpointing=false (we handle our own VAD), utterances for full sentence capture
-    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&utterances=true&encoding=linear16&sample_rate=16000"
+    # utterances for full sentence capture. Audio is WAV-wrapped by caller.
+    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&utterances=true"
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "audio/wav",
@@ -1117,9 +1117,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
         "generationConfig": {
             "thinkingConfig": {"thinkingBudget": 0},
             "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-            "frequencyPenalty": 0.4,
-            "presencePenalty": 0.3
+            "maxOutputTokens": max_tokens
         }
     }
     for attempt in range(MAX_RETRIES + 1):
