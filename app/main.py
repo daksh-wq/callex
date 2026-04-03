@@ -732,123 +732,220 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt
         return None
 
 
+# ─── Dynamic ASR Strategy Manager (Global, shared across all calls) ───────────
+# Tracks real-time success/failure per Deepgram model+language combo.
+# Dynamically reorders strategies so the best-performing one is tried first.
+# Circuit-breaker pattern: if a strategy fails N times in a row, skip it temporarily.
+
+class _ASRStrategy:
+    """Single ASR strategy with health tracking."""
+    CIRCUIT_BREAKER_THRESHOLD = 5      # consecutive failures before circuit opens
+    CIRCUIT_BREAKER_COOLDOWN = 60.0    # seconds to wait before retrying a broken circuit
+
+    def __init__(self, name: str, url: str, max_retries: int = 1):
+        self.name = name
+        self.url = url
+        self.max_retries = max_retries
+        self._successes = 0
+        self._failures = 0
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        self._total_latency_ms = 0.0
+        self._total_requests = 0
+
+    @property
+    def is_circuit_open(self) -> bool:
+        if self._circuit_open_until == 0.0:
+            return False
+        if time.time() >= self._circuit_open_until:
+            self._circuit_open_until = 0.0
+            self._consecutive_failures = 0
+            print(f"[ASR STRATEGY] 🔄 Circuit closed for '{self.name}' — retrying")
+            return False
+        return True
+
+    @property
+    def success_rate(self) -> float:
+        total = self._successes + self._failures
+        if total == 0:
+            return 0.5  # Unknown — neutral priority
+        return self._successes / total
+
+    @property
+    def avg_latency_ms(self) -> float:
+        if self._total_requests == 0:
+            return 500.0
+        return self._total_latency_ms / self._total_requests
+
+    def record_success(self, latency_ms: float):
+        self._successes += 1
+        self._consecutive_failures = 0
+        self._total_latency_ms += latency_ms
+        self._total_requests += 1
+
+    def record_failure(self, is_model_error: bool = False):
+        self._failures += 1
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.CIRCUIT_BREAKER_THRESHOLD:
+            self._circuit_open_until = time.time() + self.CIRCUIT_BREAKER_COOLDOWN
+            print(f"[ASR STRATEGY] ⚡ Circuit OPENED for '{self.name}' — {self._consecutive_failures} consecutive failures")
+        if is_model_error:
+            self._circuit_open_until = time.time() + 300.0  # 5 min cooldown for plan-level issues
+            print(f"[ASR STRATEGY] 🚫 Model error on '{self.name}' — disabled for 5 minutes")
+
+
+class _ASRStrategyManager:
+    """Global manager that dynamically orders ASR strategies by performance."""
+
+    def __init__(self):
+        self.strategies = [
+            _ASRStrategy(
+                "Nova-3 Hindi",
+                "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=1,
+            ),
+            _ASRStrategy(
+                "Nova-2 Hindi",
+                "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=1,
+            ),
+            _ASRStrategy(
+                "Nova-3 Multi",
+                "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=0,
+            ),
+            _ASRStrategy(
+                "Nova-2 Phonecall",
+                "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=0,
+            ),
+        ]
+        print(f"[ASR STRATEGY] ✅ Initialized {len(self.strategies)} Deepgram strategies (dynamic ordering)")
+
+    def get_ordered(self) -> list:
+        available = [s for s in self.strategies if not s.is_circuit_open]
+        if not available:
+            print("[ASR STRATEGY] ⚠️ All circuits open! Force-closing best performer")
+            best = max(self.strategies, key=lambda s: s.success_rate)
+            best._circuit_open_until = 0.0
+            best._consecutive_failures = 0
+            available = [best]
+        available.sort(key=lambda s: (-s.success_rate, s.avg_latency_ms))
+        return available
+
+    def log_status(self):
+        parts = [f"{s.name}({s.success_rate:.0%})" for s in self.strategies]
+        print(f"[ASR STRATEGY] Status: {' | '.join(parts)}")
+
+
+# Global instance — shared across ALL concurrent calls for learning
+_deepgram_strategies = _ASRStrategyManager()
+
+
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
-    """Production-grade Deepgram STT: Nova-3 multilingual with retry + fallback strategies.
-    
-    Key design decisions:
-    - Nova-3 (latest model) with language=multi for Hindi+English code-switching
-    - numerals=true so spoken digits are captured as "9 8 7" not garbled text
-    - smart_format for proper punctuation and casing
-    - Retry with backoff on transient failures (429, 500, 502, 503)
-    - Falls back to nova-2-phonecall on Nova-3 failure (different model, different failure mode)
+    """Dynamic production-grade Deepgram STT with adaptive strategy selection.
+
+    - Tries strategies in order of real-time success rate (best performer first)
+    - Circuit breaker: strategies that fail repeatedly are temporarily skipped
+    - If Nova-3 isn't on the plan (400/404), auto-disables it for 5 minutes
+    - numerals=true for proper digit capture in Hindi
+    - Retries transient errors (429, 500, 502, 503) with backoff
     """
-    
-    # Strategy order: Hindi-first (90%+ callers speak Hindi), then multilingual fallback
-    STRATEGIES = [
-        {
-            "name": "Nova-3 Hindi",
-            "url": "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
-            "retries": 1,
-        },
-        {
-            "name": "Nova-3 Multi",
-            "url": "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&punctuate=true&numerals=true",
-            "retries": 0,
-        },
-        {
-            "name": "Nova-2 Phonecall Hindi",
-            "url": "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
-            "retries": 0,
-        },
-    ]
-    
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "audio/wav",
     }
-    
-    audio_duration_s = len(wav_bytes) / (SAMPLE_RATE * 2 + 44)  # rough estimate
-    
-    for strategy in STRATEGIES:
-        for attempt in range(strategy["retries"] + 1):
+
+    audio_duration_s = len(wav_bytes) / (SAMPLE_RATE * 2 + 44)
+    ordered = _deepgram_strategies.get_ordered()
+
+    for strategy in ordered:
+        for attempt in range(strategy.max_retries + 1):
             try:
                 t0 = time.time()
                 r = await client.post(
-                    strategy["url"], 
-                    content=wav_bytes, 
-                    headers=headers, 
-                    timeout=5.0
+                    strategy.url,
+                    content=wav_bytes,
+                    headers=headers,
+                    timeout=6.0
                 )
                 latency_ms = (time.time() - t0) * 1000
-                
+
+                if r.status_code in (400, 404):
+                    error_text = r.text[:200]
+                    print(f"[DEEPGRAM] ❌ Model/plan error ({r.status_code}) on {strategy.name}: {error_text}")
+                    strategy.record_failure(is_model_error=True)
+                    break
+
                 if r.status_code == 429:
-                    # Rate limited — wait and retry
-                    print(f"[DEEPGRAM] ⚠️ Rate limited (429) on {strategy['name']}, attempt {attempt+1}")
-                    if attempt < strategy["retries"]:
+                    print(f"[DEEPGRAM] ⚠️ Rate limited on {strategy.name}, attempt {attempt+1}")
+                    strategy.record_failure()
+                    if attempt < strategy.max_retries:
                         await asyncio.sleep(0.5 * (attempt + 1))
                         continue
-                    break  # Move to next strategy
-                    
+                    break
+
                 if r.status_code in (500, 502, 503):
-                    # Server error — retry
-                    print(f"[DEEPGRAM] ⚠️ Server error ({r.status_code}) on {strategy['name']}, attempt {attempt+1}")
-                    if attempt < strategy["retries"]:
+                    print(f"[DEEPGRAM] ⚠️ Server error ({r.status_code}) on {strategy.name}, attempt {attempt+1}")
+                    strategy.record_failure()
+                    if attempt < strategy.max_retries:
                         await asyncio.sleep(0.3)
                         continue
-                    break  # Move to next strategy
-                    
+                    break
+
                 if r.status_code != 200:
-                    error_text = r.text[:300]
-                    print(f"[DEEPGRAM] ❌ HTTP {r.status_code} on {strategy['name']}: {error_text}")
-                    break  # Non-retryable error, move to next strategy
-                
+                    print(f"[DEEPGRAM] ❌ HTTP {r.status_code} on {strategy.name}: {r.text[:200]}")
+                    strategy.record_failure()
+                    break
+
                 data = r.json()
-                
-                # Extract transcript from response
                 channels = data.get("results", {}).get("channels", [])
                 if not channels:
-                    print(f"[DEEPGRAM] ⚠️ No channels in response ({strategy['name']})")
+                    strategy.record_failure()
                     break
-                    
+
                 alternatives = channels[0].get("alternatives", [])
                 if not alternatives:
-                    print(f"[DEEPGRAM] ⚠️ No alternatives in response ({strategy['name']})")
+                    strategy.record_failure()
                     break
-                
+
                 best = alternatives[0]
                 transcript = best.get("transcript", "").strip()
                 confidence = best.get("confidence", 0)
-                
-                # Extract detected language if available
-                detected_lang = data.get("results", {}).get("channels", [{}])[0].get("detected_language", "")
-                
+                detected_lang = channels[0].get("detected_language", "")
+
                 if not transcript:
-                    print(f"[DEEPGRAM] Empty transcript ({strategy['name']}, conf={confidence:.2f}, {latency_ms:.0f}ms)")
-                    break  # Empty transcript — try next strategy
-                
-                if confidence < 0.15:
-                    # Extremely low confidence — likely pure noise
-                    print(f"[DEEPGRAM] ⚠️ Rejected noise (conf={confidence:.2f}): '{transcript[:50]}' ({strategy['name']})")
+                    print(f"[DEEPGRAM] Empty transcript ({strategy.name}, {latency_ms:.0f}ms)")
+                    strategy.record_failure()
                     break
-                
-                # Success!
+
+                if confidence < 0.15:
+                    print(f"[DEEPGRAM] ⚠️ Noise rejected (conf={confidence:.2f}): '{transcript[:50]}'")
+                    strategy.record_failure()
+                    break
+
+                # ✅ Success
+                strategy.record_success(latency_ms)
                 lang_info = f", lang={detected_lang}" if detected_lang else ""
-                print(f"[DEEPGRAM] ✅ [{strategy['name']}] '{transcript[:80]}' (conf={confidence:.2f}{lang_info}, {latency_ms:.0f}ms)")
+                print(f"[DEEPGRAM] ✅ [{strategy.name}] '{transcript[:80]}' (conf={confidence:.2f}{lang_info}, {latency_ms:.0f}ms)")
                 return transcript
-                
+
             except asyncio.TimeoutError:
-                print(f"[DEEPGRAM] ⏱️ Timeout on {strategy['name']} (attempt {attempt+1}, audio={audio_duration_s:.1f}s)")
-                if attempt < strategy["retries"]:
+                print(f"[DEEPGRAM] ⏱️ Timeout {strategy.name} (attempt {attempt+1}, {audio_duration_s:.1f}s audio)")
+                strategy.record_failure()
+                if attempt < strategy.max_retries:
                     continue
-                break  # Move to next strategy
-            except httpx.ConnectError as e:
-                print(f"[DEEPGRAM] 🔌 Connection error on {strategy['name']}: {e}")
-                break  # Network issue — next strategy won't help either, but try anyway
-            except Exception as e:
-                print(f"[DEEPGRAM] ❌ Error on {strategy['name']}: {type(e).__name__}: {e}")
                 break
-    
-    print(f"[DEEPGRAM] ❌ All strategies exhausted")
+            except httpx.ConnectError as e:
+                print(f"[DEEPGRAM] 🔌 Connection error {strategy.name}: {e}")
+                strategy.record_failure()
+                break
+            except Exception as e:
+                print(f"[DEEPGRAM] ❌ {strategy.name}: {type(e).__name__}: {e}")
+                strategy.record_failure()
+                break
+
+    _deepgram_strategies.log_status()
     return None
 
 
@@ -1862,8 +1959,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             return False
 
     async with httpx.AsyncClient(
-        limits=httpx.Limits(max_connections=15, max_keepalive_connections=8),
-        timeout=httpx.Timeout(10.0, connect=3.0, read=8.0, write=3.0)
+        limits=httpx.Limits(max_connections=30, max_keepalive_connections=15),
+        timeout=httpx.Timeout(12.0, connect=3.0, read=10.0, write=3.0)
     ) as client:
 
         # ── Speculative Execution State ──────────────────────────────────────────
