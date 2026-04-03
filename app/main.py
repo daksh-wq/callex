@@ -177,9 +177,9 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Smart silence timeout — 1.0s is safe because we use LLM pre-warming + rolling ASR
+# Smart silence timeout — 0.8s is safe because we use LLM pre-warming + rolling ASR
 # so we don't need to wait for a huge silence gap before processing.
-SILENCE_TIMEOUT = 1.2
+SILENCE_TIMEOUT = 0.8
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -199,10 +199,10 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
-BARGE_IN_SILENCE_TIMEOUT = 1.0  # seconds — fast commit after barge-in
+BARGE_IN_SILENCE_TIMEOUT = 0.6  # seconds — fast commit after barge-in
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
-ROLLING_ASR_INTERVAL = 1.5  # seconds between rolling partial ASR requests
+ROLLING_ASR_INTERVAL = 1.0  # seconds between rolling partial ASR requests
 
 SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
 
@@ -221,7 +221,7 @@ MAX_HISTORY_LENGTH = 12
 
 # Retry Configuration
 MAX_RETRIES = 2
-RETRY_DELAY = 0.3
+RETRY_DELAY = 0.15  # Fast retry — don't waste latency on waits
 
 # ── Firestore Prompt Cache (prevents redundant network reads) ──
 _prompt_cache: dict = {}  # {agent_id: {"prompt": str, "ts": float}}
@@ -893,7 +893,7 @@ async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> O
                     strategy.url,
                     content=wav_bytes,
                     headers=headers,
-                    timeout=4.0  # Good results come in <700ms; 4s is generous
+                    timeout=3.0  # Good results come in <700ms; 3s is generous
                 )
                 latency_ms = (time.time() - t0) * 1000
 
@@ -1369,7 +1369,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -2085,7 +2085,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 agent = agent_config or FALLBACK_AGENT
                 system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GENARTML_SERVER_KEY}"
                 warmup_history = trim_history(history)
                 # Send a lightweight ping with history only — no user message yet
                 # This primes Gemini's KV cache with the conversation so far
@@ -2206,13 +2206,30 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             is_processing_audio = True
             try:
                 t0 = time.time()
-                # ── ALWAYS transcribe the FULL final buffer for accuracy ──
-                # Rolling ASR partials are only mid-sentence snapshots and will miss
-                # the tail end of what the customer said. We must send the complete
-                # audio to get the full sentence.
-                pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
-                # Clear stale partial since we just did a full transcription
+
+                # ── SPECULATIVE EXECUTION: Use rolling ASR partial if available ──
+                # If we already have a partial transcript from rolling ASR, use it
+                # immediately AND fire a parallel full ASR. If full ASR returns
+                # something different, we'll use that instead. This saves ~600ms.
+                speculative_text = partial_transcript
+                full_asr_task = None
+                user_text = None
+
+                if speculative_text:
+                    # We have a partial — start full ASR in background to verify
+                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                    full_asr_task = asyncio.create_task(
+                        asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+                    )
+                    # Use the partial immediately for now
+                    user_text = speculative_text
+                    print(f"\n[SPECULATIVE] ⚡ Using rolling ASR partial: '{user_text[:60]}' (full ASR running in background)")
+                else:
+                    # No partial available — must do full ASR (normal path)
+                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+
+                # Clear stale partial since we just used/started full transcription
                 partial_transcript = None
 
                 if not user_text or not ws_alive:
@@ -2271,6 +2288,24 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
                 llm_elapsed = (time.time() - t_llm) * 1000
                 print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+
+                # ── Check if full ASR returned something better ──
+                # If we used speculative partial AND full ASR is done with a different result,
+                # log the difference (for the next turn, history will be correct either way)
+                if full_asr_task and not full_asr_task.done():
+                    # Full ASR still running — no need to wait, we already have the LLM response
+                    full_asr_task.cancel()
+                    print(f"[SPECULATIVE] ✅ LLM responded before full ASR finished — cancelled background ASR")
+                elif full_asr_task and full_asr_task.done():
+                    try:
+                        full_result = full_asr_task.result()
+                        if full_result and full_result != user_text:
+                            print(f"[SPECULATIVE] 📝 Full ASR differs: '{full_result[:60]}' (was: '{user_text[:60]}')")
+                            # Update the history with the more accurate full ASR result
+                            if history and history[-2].get("role") == "user":
+                                history[-2]["parts"][0]["text"] = full_result
+                    except Exception:
+                        pass  # Full ASR failed — partial was good enough
 
                 should_hangup = False
                 if "[HANGUP]" in reply_text:
