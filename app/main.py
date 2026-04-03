@@ -798,29 +798,27 @@ class _ASRStrategyManager:
     """Global manager that dynamically orders ASR strategies by performance."""
 
     def __init__(self):
+        # IMPORTANT: All strategies use language=hi (Hindi-locked).
+        # language=multi was removed because it misdetects Hindi as Spanish/English.
+        # Nova-2 Hindi is primary (proven fast + accurate in production).
         self.strategies = [
-            _ASRStrategy(
-                "Nova-3 Hindi",
-                "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=1,
-            ),
             _ASRStrategy(
                 "Nova-2 Hindi",
                 "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&numerals=true",
                 max_retries=1,
             ),
             _ASRStrategy(
-                "Nova-3 Multi",
-                "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=0,
-            ),
-            _ASRStrategy(
                 "Nova-2 Phonecall",
                 "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=1,
+            ),
+            _ASRStrategy(
+                "Nova-3 Hindi",
+                "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
                 max_retries=0,
             ),
         ]
-        print(f"[ASR STRATEGY] ✅ Initialized {len(self.strategies)} Deepgram strategies (dynamic ordering)")
+        print(f"[ASR STRATEGY] ✅ Initialized {len(self.strategies)} strategies: {', '.join(s.name for s in self.strategies)}")
 
     def get_ordered(self) -> list:
         available = [s for s in self.strategies if not s.is_circuit_open]
@@ -842,13 +840,41 @@ class _ASRStrategyManager:
 _deepgram_strategies = _ASRStrategyManager()
 
 
+# Hindi script detection regex — catches garbage transcripts in Spanish/French/etc.
+_NON_HINDI_LATIN_PATTERN = re.compile(
+    r'\b(la|el|está|estoy|verdad|ahorita|nous|avec|vous|dans|pour|les|une|des|est|que|qui|sur|par|mais|très|aussi|cette|avec|sont|été|fait|leur|lui|ils|ces|même|tout|peu|notre|votre|noch|und|der|die|das|ein|sich|von|mit|dem|nicht|ist|auf|für|als|auch|nach|wie|über|aus|bei|oder|nur|aber|sie|bis|los|por|más|como|del|fin|todo|hay|con|sin|nos|van|uno)\b',
+    re.IGNORECASE
+)
+
+def _is_valid_hindi_transcript(text: str) -> bool:
+    """Reject transcripts that are clearly NOT Hindi/English/Hinglish.
+    If Deepgram mistakenly detects Hindi speech as Spanish/French/German, the transcript
+    will contain Romance/Germanic-only words with no Hindi content. Reject those."""
+    if not text:
+        return False
+    # If text contains Devanagari script, it's valid Hindi
+    if any('\u0900' <= c <= '\u097F' for c in text):
+        return True
+    # Count foreign-language words
+    foreign_matches = _NON_HINDI_LATIN_PATTERN.findall(text)
+    words = text.split()
+    if len(words) == 0:
+        return False
+    foreign_ratio = len(foreign_matches) / len(words)
+    # If >40% of words are clearly foreign (Spanish/French/German), reject
+    if foreign_ratio > 0.4:
+        print(f"[DEEPGRAM] 🛡️ Rejected foreign transcript ({foreign_ratio:.0%} foreign words): '{text[:60]}'")
+        return False
+    return True
+
+
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
     """Dynamic production-grade Deepgram STT with adaptive strategy selection.
 
-    - Tries strategies in order of real-time success rate (best performer first)
-    - Circuit breaker: strategies that fail repeatedly are temporarily skipped
-    - If Nova-3 isn't on the plan (400/404), auto-disables it for 5 minutes
-    - numerals=true for proper digit capture in Hindi
+    - All strategies locked to language=hi (Hindi) — no multi/auto-detect
+    - Nova-2 Hindi primary (proven in production), Nova-3 Hindi as fallback
+    - Circuit breaker skips failing strategies automatically
+    - Rejects garbage transcripts (Spanish/French misdetection)
     - Retries transient errors (429, 500, 502, 503) with backoff
     """
     headers = {
@@ -867,7 +893,7 @@ async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> O
                     strategy.url,
                     content=wav_bytes,
                     headers=headers,
-                    timeout=6.0
+                    timeout=4.0  # Good results come in <700ms; 4s is generous
                 )
                 latency_ms = (time.time() - t0) * 1000
 
@@ -923,6 +949,11 @@ async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> O
                     print(f"[DEEPGRAM] ⚠️ Noise rejected (conf={confidence:.2f}): '{transcript[:50]}'")
                     strategy.record_failure()
                     break
+
+                # ── Validate transcript is actually Hindi/English (not Spanish/French garbage) ──
+                if not _is_valid_hindi_transcript(transcript):
+                    strategy.record_failure()
+                    break  # Try next strategy
 
                 # ✅ Success
                 strategy.record_success(latency_ms)
@@ -1026,9 +1057,9 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     wav_bytes = wav_header(trimmed_pcm)
     text = None
 
-    # Priority: Deepgram Nova-3 (best production speed/accuracy) → Sarvam AI (fallback) → Gemini
+    # Priority: Deepgram (dynamic strategy) → Sarvam AI (fallback) → Gemini
     if DEEPGRAM_API_KEY:
-        print(f"[ASR] Using Deepgram Nova-3 Multi...")
+        print(f"[ASR] Using Deepgram (dynamic)...")
         text = await _deepgram_transcribe(client, wav_bytes)
         if text:
             elapsed = time.time() - start_time
