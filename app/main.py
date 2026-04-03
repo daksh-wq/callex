@@ -733,42 +733,123 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt
 
 
 async def _deepgram_transcribe(client: httpx.AsyncClient, wav_bytes: bytes) -> Optional[str]:
-    """Transcribe audio using Deepgram Nova-2 (production-grade, ~150ms for Hindi)."""
-    # Production params: nova-2 (best model), Hindi, smart formatting, punctuation,
-    # utterances for full sentence capture. Audio is WAV-wrapped by caller.
-    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&utterances=true"
+    """Production-grade Deepgram STT: Nova-3 multilingual with retry + fallback strategies.
+    
+    Key design decisions:
+    - Nova-3 (latest model) with language=multi for Hindi+English code-switching
+    - numerals=true so spoken digits are captured as "9 8 7" not garbled text
+    - smart_format for proper punctuation and casing
+    - Retry with backoff on transient failures (429, 500, 502, 503)
+    - Falls back to nova-2-phonecall on Nova-3 failure (different model, different failure mode)
+    """
+    
+    # Strategy order: Hindi-first (90%+ callers speak Hindi), then multilingual fallback
+    STRATEGIES = [
+        {
+            "name": "Nova-3 Hindi",
+            "url": "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
+            "retries": 1,
+        },
+        {
+            "name": "Nova-3 Multi",
+            "url": "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&punctuate=true&numerals=true",
+            "retries": 0,
+        },
+        {
+            "name": "Nova-2 Phonecall Hindi",
+            "url": "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
+            "retries": 0,
+        },
+    ]
+    
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "audio/wav",
     }
-    try:
-        r = await client.post(url, content=wav_bytes, headers=headers, timeout=4.0)
-        if r.status_code != 200:
-            print(f"[DEEPGRAM] HTTP {r.status_code}: {r.text[:200]}")
-            return None
-        data = r.json()
-        transcript = (
-            data.get("results", {})
-            .get("channels", [{}])[0]
-            .get("alternatives", [{}])[0]
-            .get("transcript", "")
-        ).strip()
-        confidence = (
-            data.get("results", {})
-            .get("channels", [{}])[0]
-            .get("alternatives", [{}])[0]
-            .get("confidence", 0)
-        )
-        if transcript and confidence > 0.3:
-            return transcript
-        print(f"[DEEPGRAM] Low confidence ({confidence:.2f}) or empty transcript")
-        return None
-    except asyncio.TimeoutError:
-        print("[DEEPGRAM] Timeout")
-        return None
-    except Exception as e:
-        print(f"[DEEPGRAM Error] {e}")
-        return None
+    
+    audio_duration_s = len(wav_bytes) / (SAMPLE_RATE * 2 + 44)  # rough estimate
+    
+    for strategy in STRATEGIES:
+        for attempt in range(strategy["retries"] + 1):
+            try:
+                t0 = time.time()
+                r = await client.post(
+                    strategy["url"], 
+                    content=wav_bytes, 
+                    headers=headers, 
+                    timeout=5.0
+                )
+                latency_ms = (time.time() - t0) * 1000
+                
+                if r.status_code == 429:
+                    # Rate limited — wait and retry
+                    print(f"[DEEPGRAM] ⚠️ Rate limited (429) on {strategy['name']}, attempt {attempt+1}")
+                    if attempt < strategy["retries"]:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    break  # Move to next strategy
+                    
+                if r.status_code in (500, 502, 503):
+                    # Server error — retry
+                    print(f"[DEEPGRAM] ⚠️ Server error ({r.status_code}) on {strategy['name']}, attempt {attempt+1}")
+                    if attempt < strategy["retries"]:
+                        await asyncio.sleep(0.3)
+                        continue
+                    break  # Move to next strategy
+                    
+                if r.status_code != 200:
+                    error_text = r.text[:300]
+                    print(f"[DEEPGRAM] ❌ HTTP {r.status_code} on {strategy['name']}: {error_text}")
+                    break  # Non-retryable error, move to next strategy
+                
+                data = r.json()
+                
+                # Extract transcript from response
+                channels = data.get("results", {}).get("channels", [])
+                if not channels:
+                    print(f"[DEEPGRAM] ⚠️ No channels in response ({strategy['name']})")
+                    break
+                    
+                alternatives = channels[0].get("alternatives", [])
+                if not alternatives:
+                    print(f"[DEEPGRAM] ⚠️ No alternatives in response ({strategy['name']})")
+                    break
+                
+                best = alternatives[0]
+                transcript = best.get("transcript", "").strip()
+                confidence = best.get("confidence", 0)
+                
+                # Extract detected language if available
+                detected_lang = data.get("results", {}).get("channels", [{}])[0].get("detected_language", "")
+                
+                if not transcript:
+                    print(f"[DEEPGRAM] Empty transcript ({strategy['name']}, conf={confidence:.2f}, {latency_ms:.0f}ms)")
+                    break  # Empty transcript — try next strategy
+                
+                if confidence < 0.15:
+                    # Extremely low confidence — likely pure noise
+                    print(f"[DEEPGRAM] ⚠️ Rejected noise (conf={confidence:.2f}): '{transcript[:50]}' ({strategy['name']})")
+                    break
+                
+                # Success!
+                lang_info = f", lang={detected_lang}" if detected_lang else ""
+                print(f"[DEEPGRAM] ✅ [{strategy['name']}] '{transcript[:80]}' (conf={confidence:.2f}{lang_info}, {latency_ms:.0f}ms)")
+                return transcript
+                
+            except asyncio.TimeoutError:
+                print(f"[DEEPGRAM] ⏱️ Timeout on {strategy['name']} (attempt {attempt+1}, audio={audio_duration_s:.1f}s)")
+                if attempt < strategy["retries"]:
+                    continue
+                break  # Move to next strategy
+            except httpx.ConnectError as e:
+                print(f"[DEEPGRAM] 🔌 Connection error on {strategy['name']}: {e}")
+                break  # Network issue — next strategy won't help either, but try anyway
+            except Exception as e:
+                print(f"[DEEPGRAM] ❌ Error on {strategy['name']}: {type(e).__name__}: {e}")
+                break
+    
+    print(f"[DEEPGRAM] ❌ All strategies exhausted")
+    return None
 
 
 async def _gemini_transcribe(client: httpx.AsyncClient, trimmed_pcm: bytes) -> Optional[str]:
@@ -832,10 +913,12 @@ async def _gemini_transcribe(client: httpx.AsyncClient, trimmed_pcm: bytes) -> O
 
 
 async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None, history: list = None) -> Optional[str]:
-    print(f"[ASR] Sending {len(pcm16)} bytes…")
+    audio_duration_ms = len(pcm16) / (SAMPLE_RATE * 2) * 1000
+    print(f"[ASR] Sending {len(pcm16)} bytes ({audio_duration_ms:.0f}ms audio)…")
     start_time = time.time()
     trimmed_pcm = trim_audio(pcm16)
-    print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes")
+    trim_ratio = len(trimmed_pcm) / max(len(pcm16), 1) * 100
+    print(f"[ASR] Trimmed to {len(trimmed_pcm)} bytes ({trim_ratio:.0f}% kept)")
 
     # Allow short words ("ok", "yes", "haan", "hello") by lowering min bytes to 150ms 
     MIN_ASR_BYTES = int(SAMPLE_RATE * 2 * 0.15)
@@ -846,9 +929,9 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     wav_bytes = wav_header(trimmed_pcm)
     text = None
 
-    # Priority: Deepgram Nova-2 (best production speed/accuracy) → Sarvam AI (fallback) → Gemini
+    # Priority: Deepgram Nova-3 (best production speed/accuracy) → Sarvam AI (fallback) → Gemini
     if DEEPGRAM_API_KEY:
-        print(f"[ASR] Using Deepgram Nova-2...")
+        print(f"[ASR] Using Deepgram Nova-3 Multi...")
         text = await _deepgram_transcribe(client, wav_bytes)
         if text:
             elapsed = time.time() - start_time
