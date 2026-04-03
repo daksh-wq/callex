@@ -1089,6 +1089,17 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     system_prompt += "7. Dates must be spoken: '15/03/2025' → 'fifteenth March twenty twenty five'.\n"
     system_prompt += "8. This is the MOST IMPORTANT rule. If you output even ONE digit, the call will sound robotic and the customer will hang up.\n\n"
 
+    # --- CHUNKED NUMBER INPUT HANDLING ---
+    system_prompt += "[CHUNKED NUMBER INPUT - CRITICAL RULE]:\n"
+    system_prompt += "When the customer dictates a phone number, Aadhaar number, account number, or any long number, they may speak it in chunks across multiple messages.\n"
+    system_prompt += "For example, a 10-digit phone number may arrive as: 'nine eight seven' then 'six five four' then 'three two one zero' — or as '9 8 7 6 5 4 3 2 1 0' in one message.\n"
+    system_prompt += "RULES for handling chunked numbers:\n"
+    system_prompt += "1. If the customer says digits/numbers and it seems incomplete (less than expected digits), DO NOT say 'samajh nahi paayi' or ask them to repeat. Instead acknowledge what you received so far and ask them to continue.\n"
+    system_prompt += "2. If you see a complete number (e.g., 10 digits for a phone number, 12 digits for Aadhaar), confirm the FULL number back to the customer by reading it digit by digit.\n"
+    system_prompt += "3. ACCUMULATE numbers across consecutive messages. If previous messages contained partial digits, combine them with the current message to form the complete number.\n"
+    system_prompt += "4. When confirming a number back, speak each digit individually: 'nine eight seven six five four three two one zero' — NEVER say the number as a whole word.\n"
+    system_prompt += "5. If you asked for a number and the customer's response contains ONLY digits/number words, treat it as the answer to your question — do NOT change topic or ask an unrelated question.\n\n"
+
     # --- INTELLIGENT CALL COMPLETION ---
     system_prompt += "[CALL COMPLETION RULES - WHEN TO END THE CALL]:\n"
     system_prompt += "You are an intelligent AI on a live phone call. You MUST detect when the conversation is naturally over and end the call gracefully.\n\n"
@@ -1780,6 +1791,69 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         llm_warmup_task: Optional[asyncio.Task] = None
         is_processing_audio: bool = False
 
+        # ── Number Chunk Accumulator ─────────────────────────────────────────────
+        # When customer dictates numbers in chunks (e.g., "9 8 7" pause "6 5 4" pause "3 2 1 0"),
+        # we accumulate the digit chunks and wait for a longer pause before processing.
+        number_accumulator: list = []         # List of digit-chunk strings
+        number_accumulator_timer: Optional[asyncio.Task] = None  # Timer task for flushing
+        NUMBER_ACCUMULATOR_WAIT = 2.5         # seconds to wait for more digit chunks
+        number_accumulator_samples: Optional[np.ndarray] = None  # Last audio samples (for fallback)
+
+        def _is_digit_chunk(text: str) -> bool:
+            """Check if text is primarily composed of digits/number words.
+            Returns True if the user is dictating numbers."""
+            if not text:
+                return False
+            cleaned = text.strip().lower()
+            # Remove common filler words that may appear alongside digits
+            cleaned = re.sub(r'\b(और|and|or|ya|aur)\b', '', cleaned, flags=re.IGNORECASE).strip()
+            # Hindi and English digit words
+            digit_words = {
+                'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+                'sunya', 'ek', 'do', 'teen', 'char', 'paanch', 'panch', 'chhah', 'chhe', 'saat', 'aath', 'nau', 'das',
+                'शून्य', 'एक', 'दो', 'तीन', 'चार', 'पांच', 'पाँच', 'छह', 'छे', 'सात', 'आठ', 'नौ', 'दस',
+                'double', 'triple', 'dubbal', 'tripal',
+                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            }
+            words = cleaned.split()
+            if not words:
+                return False
+            # Consider it a digit chunk if 70%+ of words are digit-related
+            digit_count = sum(1 for w in words if w in digit_words or w.isdigit())
+            ratio = digit_count / len(words)
+            return ratio >= 0.7
+
+        def _extract_digit_count(text: str) -> int:
+            """Count how many individual digits are represented in the text."""
+            if not text:
+                return 0
+            cleaned = text.strip().lower()
+            count = 0
+            digit_singles = {
+                'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+                'sunya', 'ek', 'do', 'teen', 'char', 'paanch', 'panch', 'chhah', 'chhe', 'saat', 'aath', 'nau',
+                'शून्य', 'एक', 'दो', 'तीन', 'चार', 'पांच', 'पाँच', 'छह', 'छे', 'सात', 'आठ', 'नौ',
+                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            }
+            double_words = {'double', 'dubbal'}
+            triple_words = {'triple', 'tripal'}
+            words = cleaned.split()
+            i = 0
+            while i < len(words):
+                w = words[i]
+                if w in double_words and i + 1 < len(words) and words[i+1] in digit_singles:
+                    count += 2
+                    i += 2
+                elif w in triple_words and i + 1 < len(words) and words[i+1] in digit_singles:
+                    count += 3
+                    i += 2
+                elif w in digit_singles:
+                    count += 1
+                    i += 1
+                else:
+                    i += 1
+            return count
+
         async def _rolling_asr(audio_snapshot: np.ndarray):
             """Fire a background Sarvam ASR request while customer is still speaking.
             Result is cached in partial_transcript for instant use when silence hits."""
@@ -1817,8 +1891,107 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             except Exception:
                 pass  # Warmup failure is non-critical, real request will still work
 
+        async def _flush_number_accumulator():
+            """Flush accumulated digit chunks → combine into one user message and send to LLM."""
+            nonlocal number_accumulator, number_accumulator_timer, number_accumulator_samples
+            nonlocal history, ws_alive, bot_speaking, is_processing_audio
+
+            if not number_accumulator:
+                return
+
+            combined_text = ' '.join(number_accumulator)
+            total_digits = sum(_extract_digit_count(chunk) for chunk in number_accumulator)
+            chunk_count = len(number_accumulator)
+            number_accumulator = []
+            number_accumulator_timer = None
+            number_accumulator_samples = None
+
+            print(f"\n[NUMBER ACCUMULATOR] 🔢 Flushing {chunk_count} chunks → '{combined_text}' ({total_digits} digits)")
+
+            is_processing_audio = True
+            try:
+                t0 = time.time()
+
+                # Add combined text to history as a single user message
+                history.append({"role": "user", "parts": [{"text": combined_text}]})
+                full_history.append({"role": "user", "parts": [{"text": combined_text}]})
+                if call_uuid:
+                    tracker.log_message(call_uuid, "user", combined_text)
+                    asyncio.create_task(log_live_message("user", combined_text))
+                history = trim_history(history)
+
+                t_llm = time.time()
+                reply_text = await generate_response(client, combined_text, history, agent_config=agent_config)
+                llm_elapsed = (time.time() - t_llm) * 1000
+                print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+
+                should_hangup = False
+                if "[HANGUP]" in reply_text:
+                    should_hangup = True
+                    reply_text = reply_text.replace("[HANGUP]", "").strip()
+                print(f"[BOT] 🤖 {reply_text}")
+                history.append({"role": "model", "parts": [{"text": reply_text}]})
+                full_history.append({"role": "model", "parts": [{"text": reply_text}]})
+                if call_uuid:
+                    tracker.log_message(call_uuid, "model", reply_text)
+                    asyncio.create_task(log_live_message("model", reply_text))
+                history = trim_history(history)
+                bot_speaking = True
+                async for audio_chunk in tts_stream_generate(client, reply_text, voice_id=agent_config['voice']):
+                    if not ws_alive:
+                        break
+                    if not await send_audio_safe(audio_chunk):
+                        break
+                bot_speaking = False
+                total_elapsed = (time.time() - t0) * 1000
+                print(f"[PIPELINE] ✅ Total response latency (accumulated): {total_elapsed:.0f}ms")
+                if should_hangup:
+                    print("[SYSTEM] Hanging up call as per script logic.")
+                    if ws_alive:
+                        await ws.send_json({"type": "BROADCAST_STOPPED", "status": "success"})
+                    await asyncio.sleep(0.5)
+                    if call_uuid:
+                        await freeswitch_hangup(call_uuid)
+                    if ws_alive:
+                        await ws.send_json({"type": "hangup"})
+                        ws_alive = False
+            except asyncio.CancelledError:
+                print("[SYSTEM] Number accumulator task cancelled")
+                raise
+            except Exception as e:
+                print(f"[Process Error in accumulator]: {e}")
+            finally:
+                is_processing_audio = False
+
+        async def _number_accumulator_countdown():
+            """Wait NUMBER_ACCUMULATOR_WAIT seconds, then flush. Resets every time a new digit chunk arrives."""
+            nonlocal number_accumulator_timer
+            try:
+                await asyncio.sleep(NUMBER_ACCUMULATOR_WAIT)
+                # Timer expired — customer stopped dictating digits
+                print(f"[NUMBER ACCUMULATOR] ⏰ {NUMBER_ACCUMULATOR_WAIT}s elapsed, flushing accumulated digits")
+                await _flush_number_accumulator()
+            except asyncio.CancelledError:
+                # Timer was reset because a new digit chunk arrived — this is expected
+                pass
+
+        def _check_expecting_number(hist: list) -> bool:
+            """Check if the bot's last message was asking for a number (phone, aadhaar, account, etc.)."""
+            for msg in reversed(hist):
+                if msg.get("role") == "model":
+                    text = msg.get("parts", [{}])[0].get("text", "").lower()
+                    if any(kw in text for kw in [
+                        'number', 'phone', 'mobile', 'aadhaar', 'aadhar', 'account',
+                        'नंबर', 'फोन', 'मोबाइल', 'आधार', 'अकाउंट', 'खाता',
+                        'namba', 'nambar', 'fone', 'mobail',
+                    ]):
+                        return True
+                    break  # Only check the last bot message
+            return False
+
         async def process_audio(samples: np.ndarray):
             nonlocal history, ws_alive, bot_speaking, partial_transcript, is_processing_audio
+            nonlocal number_accumulator, number_accumulator_timer, number_accumulator_samples
             is_processing_audio = True
             try:
                 t0 = time.time()
@@ -1836,6 +2009,46 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                 asr_elapsed = (time.time() - t0) * 1000
                 print(f"\n[CUSTOMER] 🗣️  {user_text}  (ASR: {asr_elapsed:.0f}ms)")
+
+                # ── NUMBER CHUNK ACCUMULATION LOGIC ──
+                # Detect if this chunk is primarily digits and the bot was asking for a number.
+                # If so, buffer it instead of sending to LLM immediately.
+                is_digits = _is_digit_chunk(user_text)
+                digit_count_so_far = sum(_extract_digit_count(c) for c in number_accumulator) if number_accumulator else 0
+                current_digit_count = _extract_digit_count(user_text)
+                expecting_number = _check_expecting_number(history) or len(number_accumulator) > 0
+
+                if is_digits and expecting_number:
+                    total_digits = digit_count_so_far + current_digit_count
+                    number_accumulator.append(user_text)
+                    number_accumulator_samples = samples
+                    print(f"[NUMBER ACCUMULATOR] 📥 Buffered chunk #{len(number_accumulator)}: '{user_text}' (total digits so far: {total_digits})")
+
+                    # If we've accumulated enough digits for a complete number (10+ for phone),
+                    # flush immediately without waiting for the timer
+                    if total_digits >= 10:
+                        print(f"[NUMBER ACCUMULATOR] ✅ Complete number detected ({total_digits} digits), flushing immediately")
+                        if number_accumulator_timer and not number_accumulator_timer.done():
+                            number_accumulator_timer.cancel()
+                        number_accumulator_timer = None
+                        await _flush_number_accumulator()
+                        return
+
+                    # Otherwise, (re)start the countdown timer — wait for more chunks
+                    if number_accumulator_timer and not number_accumulator_timer.done():
+                        number_accumulator_timer.cancel()
+                    number_accumulator_timer = asyncio.create_task(_number_accumulator_countdown())
+                    return  # Don't process this chunk yet — wait for more
+
+                # If we have accumulated digits and this new chunk is NOT digits,
+                # flush the accumulator first, then process the new non-digit chunk normally
+                if number_accumulator and not is_digits:
+                    print(f"[NUMBER ACCUMULATOR] 🔄 Non-digit chunk arrived, flushing {len(number_accumulator)} accumulated chunks first")
+                    if number_accumulator_timer and not number_accumulator_timer.done():
+                        number_accumulator_timer.cancel()
+                    await _flush_number_accumulator()
+
+                # ── Normal (non-digit) processing path ──
                 history.append({"role": "user", "parts": [{"text": user_text}]})
                 full_history.append({"role": "user", "parts": [{"text": user_text}]})
                 if call_uuid:
@@ -2276,6 +2489,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         finally:
             ws_alive = False
             await cancel_current()
+
+            # ── Flush any pending number accumulator on disconnect ──
+            if number_accumulator:
+                print(f"[NUMBER ACCUMULATOR] 🔄 Call ending — flushing {len(number_accumulator)} pending digit chunks")
+                if number_accumulator_timer and not number_accumulator_timer.done():
+                    number_accumulator_timer.cancel()
+                # Don't await flush on disconnect — just log the accumulated digits
+                combined = ' '.join(number_accumulator)
+                print(f"[NUMBER ACCUMULATOR] Unflushed digits: '{combined}'")
+                number_accumulator = []
 
             # ── Force cleanup to prevent memory creep across calls ──
             partial_transcript = None
