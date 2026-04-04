@@ -177,9 +177,9 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Smart silence timeout — 0.8s is safe because we use LLM pre-warming + rolling ASR
-# so we don't need to wait for a huge silence gap before processing.
-SILENCE_TIMEOUT = 0.8
+# Smart silence timeout — 1.0s prevents the VAD from chopping speech prematurely
+# if the customer pauses slightly to think mid-sentence.
+SILENCE_TIMEOUT = 1.0
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -199,7 +199,7 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
-BARGE_IN_SILENCE_TIMEOUT = 0.6  # seconds — fast commit after barge-in
+BARGE_IN_SILENCE_TIMEOUT = 0.8  # seconds — slightly faster commit after a confirmed barge-in
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
 ROLLING_ASR_INTERVAL = 1.0  # seconds between rolling partial ASR requests
@@ -2253,29 +2253,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 t0 = time.time()
 
-                # ── SPECULATIVE EXECUTION: Use rolling ASR partial if available ──
-                # If we already have a partial transcript from rolling ASR, use it
-                # immediately AND fire a parallel full ASR. If full ASR returns
-                # something different, we'll use that instead. This saves ~600ms.
-                speculative_text = partial_transcript
-                full_asr_task = None
-                user_text = None
+                # ── ALWAYS transcribe the FULL final buffer for accuracy ──
+                # We previously used rolling ASR partials speculatively, but it caused
+                # transcripts to be chopped off (e.g., showing only 2 words) if the 
+                # customer continued speaking. We must send the complete audio.
+                pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
 
-                if speculative_text:
-                    # We have a partial — start full ASR in background to verify
-                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                    full_asr_task = asyncio.create_task(
-                        asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
-                    )
-                    # Use the partial immediately for now
-                    user_text = speculative_text
-                    print(f"\n[SPECULATIVE] ⚡ Using rolling ASR partial: '{user_text[:60]}' (full ASR running in background)")
-                else:
-                    # No partial available — must do full ASR (normal path)
-                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
-
-                # Clear stale partial since we just used/started full transcription
+                # Clear stale partial since we just did a full transcription
                 partial_transcript = None
 
                 if not user_text or not ws_alive:
@@ -2323,18 +2308,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     await _flush_number_accumulator()
 
                 # ── Normal (non-digit) processing path ──
-                # If using speculative partial, we log to history NOW with the partial text
-                # but wait for full ASR to log the proper transcript to live view
-                is_speculative = full_asr_task is not None
                 history.append({"role": "user", "parts": [{"text": user_text}]})
                 full_history.append({"role": "user", "parts": [{"text": user_text}]})
 
-                if not is_speculative:
-                    # Normal path (no speculative) — log immediately
-                    if call_uuid:
-                        tracker.log_message(call_uuid, "user", user_text)
-                        asyncio.create_task(log_live_message("user", user_text))
-                # If speculative: we'll log the transcript AFTER full ASR returns the full sentence
+                if call_uuid:
+                    tracker.log_message(call_uuid, "user", user_text)
+                    asyncio.create_task(log_live_message("user", user_text))
 
                 history = trim_history(history)
 
@@ -2342,49 +2321,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
                 llm_elapsed = (time.time() - t_llm) * 1000
                 print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
-
-                # ── Reconcile speculative partial with full ASR result ──
-                # The live transcript MUST show the full sentence, not the 2-word partial
-                if is_speculative and full_asr_task:
-                    final_transcript = user_text  # default to partial if full ASR fails
-                    if not full_asr_task.done():
-                        # Full ASR still running — wait briefly (up to 500ms) for it to finish
-                        try:
-                            full_result = await asyncio.wait_for(asyncio.shield(full_asr_task), timeout=0.5)
-                            if full_result:
-                                final_transcript = full_result
-                                print(f"[SPECULATIVE] 📝 Full ASR arrived: '{full_result[:60]}'")
-                        except asyncio.TimeoutError:
-                            # Full ASR too slow — cancel it and use partial
-                            full_asr_task.cancel()
-                            print(f"[SPECULATIVE] ✅ Full ASR too slow — using partial for transcript")
-                        except Exception:
-                            full_asr_task.cancel()
-                    else:
-                        try:
-                            full_result = full_asr_task.result()
-                            if full_result:
-                                final_transcript = full_result
-                                print(f"[SPECULATIVE] 📝 Full ASR result: '{full_result[:60]}'")
-                        except Exception:
-                            pass
-
-                    # Update history with the full (accurate) transcript
-                    if final_transcript != user_text:
-                        # Find the user message we just added and update it
-                        for msg in reversed(history):
-                            if msg.get("role") == "user":
-                                msg["parts"][0]["text"] = final_transcript
-                                break
-                        for msg in reversed(full_history):
-                            if msg.get("role") == "user":
-                                msg["parts"][0]["text"] = final_transcript
-                                break
-
-                    # NOW log the full transcript to live view and tracker
-                    if call_uuid:
-                        tracker.log_message(call_uuid, "user", final_transcript)
-                        asyncio.create_task(log_live_message("user", final_transcript))
 
                 should_hangup = False
                 if "[HANGUP]" in reply_text:
