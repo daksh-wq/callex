@@ -161,15 +161,29 @@ _voice_keys = [
 voice_key_manager = CallexVoiceKeyManager(_voice_keys)
 
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "22db3ee228e1031835b9d09ebcfa44fdbabc2c79")
+# To avoid rate limits and hallucinations on high concurrency, we load balance across multiple keys
+_raw_sarvam_keys = [
+    os.getenv("SARVAM_API_KEY_1", os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")),
+    os.getenv("SARVAM_API_KEY_2", ""),
+    os.getenv("SARVAM_API_KEY_3", ""),
+    os.getenv("SARVAM_API_KEY_4", ""),
+    os.getenv("SARVAM_API_KEY_5", ""),
+]
+SARVAM_KEYS = [k.strip() for k in _raw_sarvam_keys if k and k.strip()]
+_sarvam_key_idx = 0
+_sarvam_key_lock = asyncio.Lock()
 
-if DEEPGRAM_API_KEY:
-    print(f"[CONFIG] ⚡ Deepgram ASR enabled (Nova-2 Primary, ~150ms latency)")
-if SARVAM_API_KEY:
-    print(f"[CONFIG] ⚡ Sarvam AI ASR enabled (Saaras v3 Fallback, best Hindi accuracy)")
-if not DEEPGRAM_API_KEY and not SARVAM_API_KEY:
-    print(f"[CONFIG] ⚠️ No STT API key set, using Gemini Flash ASR (slower, 1-3s)")
+async def get_sarvam_key() -> str:
+    global _sarvam_key_idx
+    if not SARVAM_KEYS:
+        return ""
+    async with _sarvam_key_lock:
+        key = SARVAM_KEYS[_sarvam_key_idx]
+        _sarvam_key_idx = (_sarvam_key_idx + 1) % len(SARVAM_KEYS)
+    return key
+
+
+print(f"[CONFIG] ⚡ Sarvam AI ASR Pool initialized with {len(SARVAM_KEYS)} keys")
 
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16kHz (High Quality)
@@ -691,12 +705,12 @@ def trim_history(history: List[Dict]) -> List[Dict]:
 
 # ───────── ASR (Speech-to-Text) ─────────
 
-async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt: str = "") -> Optional[str]:
+async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, api_key: str, prompt: str = "") -> Optional[str]:
     """Transcribe audio using Sarvam AI Saaras v3 (best Hindi accuracy, ~250ms)."""
     import io
     url = "https://api.sarvam.ai/speech-to-text"
     headers = {
-        "api-subscription-key": SARVAM_API_KEY,
+        "api-subscription-key": api_key,
     }
     try:
         # Sarvam uses multipart form upload
@@ -812,21 +826,23 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
     text = None
 
     # Priority: Sarvam AI (Primary) → Gemini (Fallback)
-    if SARVAM_API_KEY:
-        print(f"[ASR] Using Sarvam AI Saaras v3...")
-        
-        # Build prompt from previous conversation context to immensely improve STT accuracy
-        prompt_context = ""
-        if history:
-            for msg in reversed(history[-3:]):
-                parts = msg.get("parts", [])
-                if parts and "text" in parts[0]:
-                    prompt_context = parts[0]["text"] + " " + prompt_context
-                    
-        text = await _sarvam_transcribe(client, wav_bytes, prompt=prompt_context.strip())
-        if text:
-            elapsed = time.time() - start_time
-            print(f"[ASR] ⚡ Sarvam result in {elapsed:.2f}s")
+    if SARVAM_KEYS:
+        sarvam_key = await get_sarvam_key()
+        if sarvam_key:
+            print(f"[ASR] Using Sarvam AI Saaras v3...")
+            
+            # Build prompt from previous conversation context to immensely improve STT accuracy
+            prompt_context = ""
+            if history:
+                for msg in reversed(history[-3:]):
+                    parts = msg.get("parts", [])
+                    if parts and "text" in parts[0]:
+                        prompt_context = parts[0]["text"] + " " + prompt_context
+                        
+            text = await _sarvam_transcribe(client, wav_bytes, api_key=sarvam_key, prompt=prompt_context.strip())
+            if text:
+                elapsed = time.time() - start_time
+                print(f"[ASR] ⚡ Sarvam result in {elapsed:.2f}s")
     
     if not text:
         print(f"[ASR] Falling back to Gemini Flash...")
