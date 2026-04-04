@@ -800,7 +800,8 @@ class _ASRStrategyManager:
     def __init__(self):
         # IMPORTANT: All strategies use language=hi (Hindi-locked).
         # language=multi was removed because it misdetects Hindi as Spanish/English.
-        # Nova-2 Hindi is primary (proven fast + accurate in production).
+        # Nova-2 Hindi is primary (proven best: 98% conf, 782ms in production).
+        # Nova-2 Phonecall REMOVED — Deepgram returns 400 (no hi+phonecall combo).
         self.strategies = [
             _ASRStrategy(
                 "Nova-2 Hindi",
@@ -808,14 +809,9 @@ class _ASRStrategyManager:
                 max_retries=1,
             ),
             _ASRStrategy(
-                "Nova-2 Phonecall",
-                "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=1,
-            ),
-            _ASRStrategy(
                 "Nova-3 Hindi",
                 "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=0,
+                max_retries=1,
             ),
         ]
         print(f"[ASR STRATEGY] ✅ Initialized {len(self.strategies)} strategies: {', '.join(s.name for s in self.strategies)}")
@@ -1237,6 +1233,9 @@ def _anti_hallucination_filter(reply: str, last_bot_reply: str) -> str:
 
 # ───────── LLM Response Generation ─────────
 
+# Global cache of deprecated/unavailable Gemini models — skip them after first 404
+_dead_llm_models: set = set()
+
 async def generate_response(client: httpx.AsyncClient, user_text: str, history: List[Dict], agent_config: Dict = None) -> str:
     if not user_text:
         return "..."
@@ -1369,7 +1368,17 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    # ── Dynamic LLM Model Fallback Chain ──
+    # If a model returns 404 (deprecated), try the next one automatically.
+    # This prevents total failure when Google deprecates a model.
+    LLM_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+    ]
+
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -1379,52 +1388,86 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
             "maxOutputTokens": max_tokens
         }
     }
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            r = await client.post(url, json=payload, timeout=5.0)
-            if r.status_code != 200:
-                print(f"[LLM Error] HTTP {r.status_code}: {r.text[:200]}")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                return "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
-            data = r.json()
-            if "candidates" not in data or not data["candidates"]:
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                return "माफ़ कीजिये, आवाज नहीं आई।"
-            candidate = data["candidates"][0]
-            content = candidate.get("content", {})
-            parts = content.get("parts", [])
-            if not parts or "text" not in parts[0]:
-                print(f"[LLM] Empty/blocked response from model")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                return "माफ़ कीजिये, आवाज नहीं आई।"
-            reply = parts[0]["text"].strip().replace("*", "")
-            print(f"\n🤖 [BOT REPLY]: '{reply}'\n")
-            reply = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', reply)
-            reply = re.sub(r'\[.*?\]', '', reply).strip()
-            reply = sanitize_for_tts(reply)
 
-            # ── Zero-latency anti-hallucination post-check ──
-            reply = _anti_hallucination_filter(reply, last_bot_reply)
+    reply = None
+    for model_name in LLM_MODELS:
+        # Skip models we already know are dead (cached globally)
+        if model_name in _dead_llm_models:
+            continue
 
-            break
-        except asyncio.TimeoutError:
-            print(f"[LLM] Timeout on attempt {attempt + 1}")
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-                continue
-            return "माफ़ कीजिये, जवाब देने में समय लग रहा है।"
-        except Exception as e:
-            print(f"[LLM Error]: {e}")
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-                continue
-            return "माफ़ कीजिये, कुछ गड़बड़ हो गई।"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GENARTML_SERVER_KEY}"
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                r = await client.post(url, json=payload, timeout=5.0)
+
+                if r.status_code == 404:
+                    # Model deprecated/unavailable — mark dead and try next model
+                    _dead_llm_models.add(model_name)
+                    print(f"[LLM] ❌ {model_name} unavailable (404), trying next model...")
+                    break  # Break retry loop, continue to next model
+
+                if r.status_code == 429:
+                    print(f"[LLM] ⚠️ Rate limited on {model_name}, attempt {attempt+1}")
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    break  # Try next model
+
+                if r.status_code != 200:
+                    print(f"[LLM Error] HTTP {r.status_code} on {model_name}: {r.text[:200]}")
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
+                    break  # Try next model
+
+                data = r.json()
+                if "candidates" not in data or not data["candidates"]:
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
+                    break
+
+                candidate = data["candidates"][0]
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                if not parts or "text" not in parts[0]:
+                    print(f"[LLM] Empty/blocked response from {model_name}")
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
+                    break
+
+                reply = parts[0]["text"].strip().replace("*", "")
+                print(f"\n🤖 [BOT REPLY] ({model_name}): '{reply}'\n")
+                reply = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', reply)
+                reply = re.sub(r'\[.*?\]', '', reply).strip()
+                reply = sanitize_for_tts(reply)
+
+                # ── Zero-latency anti-hallucination post-check ──
+                reply = _anti_hallucination_filter(reply, last_bot_reply)
+                break  # Success — exit retry loop
+
+            except asyncio.TimeoutError:
+                print(f"[LLM] Timeout on {model_name} (attempt {attempt + 1})")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+                break  # Try next model
+            except Exception as e:
+                print(f"[LLM Error] {model_name}: {e}")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+                break
+
+        if reply:
+            break  # Got a successful reply — stop trying models
+
+    if not reply:
+        print(f"[LLM] ❌ All models exhausted: {LLM_MODELS}")
+        reply = "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
+
     elapsed = time.time() - start_time
     print(f"[BOT TEXT]: '{reply}' ({elapsed:.2f}s)")
     return reply
@@ -2085,7 +2128,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 agent = agent_config or FALLBACK_AGENT
                 system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
+                # Use first available (non-dead) model from the fallback chain
+                warmup_models = ["gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+                warmup_model = next((m for m in warmup_models if m not in _dead_llm_models), warmup_models[0])
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{warmup_model}:generateContent?key={GENARTML_SERVER_KEY}"
                 warmup_history = trim_history(history)
                 # Send a lightweight ping with history only — no user message yet
                 # This primes Gemini's KV cache with the conversation so far
