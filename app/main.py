@@ -163,9 +163,9 @@ voice_key_manager = CallexVoiceKeyManager(_voice_keys)
 # Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
 # To avoid rate limits and hallucinations on high concurrency, we load balance across multiple keys
 _raw_sarvam_keys = [
-    os.getenv("SARVAM_API_KEY_1", os.getenv("SARVAM_API_KEY", "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB")),
-    os.getenv("SARVAM_API_KEY_2", ""),
-    os.getenv("SARVAM_API_KEY_3", ""),
+    os.getenv("SARVAM_API_KEY_1", "sk_kgi72rmr_glr1sBTLutXCMXnQaiFfGyVA"),
+    os.getenv("SARVAM_API_KEY_2", "sk_1wsdh24r_rNyxFUMot4CxeAqdqaDuduxR"),
+    os.getenv("SARVAM_API_KEY_3", "sk_3jviz6us_DNLTOy42wLIG6zpZ4olgOQIw"),
     os.getenv("SARVAM_API_KEY_4", ""),
     os.getenv("SARVAM_API_KEY_5", ""),
 ]
