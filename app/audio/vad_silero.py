@@ -20,6 +20,9 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torch')
 
 
+_GLOBAL_SILERO_MODEL = None
+_GLOBAL_SILERO_UTILS = None
+
 class SileroVADFilter:
     """
     Production-grade Voice Activity Detection using Silero VAD.
@@ -40,26 +43,33 @@ class SileroVADFilter:
             threshold: Speech probability threshold (0.0-1.0)
             device: 'cpu' or 'cuda'
         """
+        global _GLOBAL_SILERO_MODEL, _GLOBAL_SILERO_UTILS
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.device = torch.device(device)
         
-        # Load Silero VAD model
-        print("[Silero VAD] Loading model...")
-        try:
-            self.model, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=False,
-                onnx=False,  # Use PyTorch version for better performance
-                trust_repo=True
-            )
-            self.model.to(self.device)
-            self.model.eval()
-            print(f"[Silero VAD] ✅ Model loaded on {device}")
-        except Exception as e:
-            print(f"[Silero VAD] ❌ Failed to load model: {e}")
-            raise
+        # Load Silero VAD model globally so we don't redownload/reload it on each call
+        if _GLOBAL_SILERO_MODEL is None:
+            print("[Silero VAD] Loading model to global cache...")
+            try:
+                model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False,  # Use PyTorch version for better performance
+                    trust_repo=True
+                )
+                model.to(self.device)
+                model.eval()
+                _GLOBAL_SILERO_MODEL = model
+                _GLOBAL_SILERO_UTILS = utils
+                print(f"[Silero VAD] ✅ Model cached on {device}")
+            except Exception as e:
+                print(f"[Silero VAD] ❌ Failed to load model: {e}")
+                raise
+                
+        self.model = _GLOBAL_SILERO_MODEL
+        utils = _GLOBAL_SILERO_UTILS
         
         # Extract utility functions
         (self.get_speech_timestamps,

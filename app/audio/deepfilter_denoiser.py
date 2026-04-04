@@ -65,9 +65,18 @@ def load_deepfilter_model() -> bool:
             model.eval()
 
             # Store enhance function too so we don't import it per-call
-            _GLOBAL_DF_MODEL = (model, _enhance)
-            _GLOBAL_DF_STATE = df_state
-            _GLOBAL_DF_SR    = df_state.sr()   # 48000
+            from df.config import config
+            # We must create a new DF state per call, so we save the config parameters
+            from df.config import ModelParams
+            p = ModelParams()
+            df_params = {
+                'sr': p.sr, 'fft_size': p.fft_size, 'hop_size': p.hop_size, 
+                'nb_bands': p.nb_erb, 'min_nb_erb_freqs': p.min_nb_freqs
+            }
+            
+            _GLOBAL_DF_MODEL = (model, _enhance, df_params)
+            _GLOBAL_DF_STATE = df_state # DEPRECATED, kept for compat
+            _GLOBAL_DF_SR    = p.sr   # 48000
 
             elapsed = time.time() - t0
             print(f"[DeepFilter] ✅ DeepFilterNet3 loaded in {elapsed:.2f}s "
@@ -114,8 +123,14 @@ class DeepFilterDenoiser:
         # We process in 480-sample @ 16kHz (= 1440 @ 48kHz) windows for good
         # SNR improvement without adding too much latency per packet
         self._process_chunk_16k = 480  # 30ms @ 16kHz
+        
+        self._df_state = None
 
         if self._model_active:
+            # Instantiate a completely unique RNN state for this specific call
+            from df import DF
+            model, _enhance, params = _GLOBAL_DF_MODEL
+            self._df_state = DF(**params)
             print(f"[DeepFilter] ✅ Per-call instance ready (SR={self.call_sr}Hz)")
         else:
             print("[DeepFilter] ⚠️  Model not available — passthrough mode")
@@ -170,8 +185,8 @@ class DeepFilterDenoiser:
 
     def _enhance_chunk(self, chunk_16k: np.ndarray) -> np.ndarray:
         """Process a single 480-sample chunk through DeepFilterNet3."""
-        model, enhance_fn = _GLOBAL_DF_MODEL
-        df_state = _GLOBAL_DF_STATE
+        model, enhance_fn, _ = _GLOBAL_DF_MODEL
+        df_state = self._df_state
 
         t0 = time.perf_counter()
 

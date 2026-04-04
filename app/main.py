@@ -1662,12 +1662,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
     classifier = GLOBAL_YAMNET_CLASSIFIER
     semantic_filter = SemanticFilter(language='hi', min_length=SEMANTIC_MIN_LENGTH)
-    use_silero = USE_SILERO_VAD and GLOBAL_SILERO_VAD is not None
+    use_silero = USE_SILERO_VAD
 
-    if use_silero and GLOBAL_SILERO_VAD:
-        silero_vad = GLOBAL_SILERO_VAD
+    if use_silero:
+        silero_vad = SileroVADFilter(sample_rate=SAMPLE_RATE, threshold=SILERO_CONFIDENCE_THRESHOLD)
         silero_vad.reset_noise_profile()
-        print("[Noise Filter] ✅ Using pre-loaded: Silero VAD + YAMNet + Semantic Filter")
+        print("[Noise Filter] ✅ Using per-call Silero VAD + YAMNet + Semantic Filter")
     else:
         silero_vad = None
         print("[Noise Filter] Initialized: High-pass + Band-pass + YAMNet Classifier")
