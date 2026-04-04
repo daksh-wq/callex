@@ -33,6 +33,7 @@ from app.audio.semantic import SemanticFilter
 from app.audio.speaker_verifier import SpeakerVerifier
 from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
 from app.audio.deepfilter_denoiser import load_deepfilter_model, DeepFilterDenoiser
+from app.audio.call_context import CallAudioContext
 
 # Force unbuffered output for PM2/Systemd logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -1660,30 +1661,26 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
 
-    classifier = GLOBAL_YAMNET_CLASSIFIER
-    semantic_filter = SemanticFilter(language='hi', min_length=SEMANTIC_MIN_LENGTH)
-    use_silero = USE_SILERO_VAD
-
-    if use_silero:
-        silero_vad = SileroVADFilter(sample_rate=SAMPLE_RATE, threshold=SILERO_CONFIDENCE_THRESHOLD)
-        silero_vad.reset_noise_profile()
-        print("[Noise Filter] ✅ Using per-call Silero VAD + YAMNet + Semantic Filter")
-    else:
-        silero_vad = None
-        print("[Noise Filter] Initialized: High-pass + Band-pass + YAMNet Classifier")
-
-    if not classifier:
-        print("[Noise Filter] ⚠️ YAMNet not available, noise classification disabled")
-
-    # Initialize DeepFilterNet3 — production traffic noise suppressor
-    print(f"[Noise Filter] 🧠 Initializing DeepFilterNet3 (Sample Rate: {SAMPLE_RATE}Hz)")
-    deepfilter = DeepFilterDenoiser(call_sample_rate=SAMPLE_RATE)
-
-    speaker_verifier = SpeakerVerifier(
+    # ── Production-Grade Per-Call Audio Isolation ──
+    # Every concurrent call gets its own deep-copied VAD model, DeepFilter state,
+    # and speaker verifier. This prevents RNN hidden-state crosstalk that causes
+    # barge-in failures and hallucinations during simultaneous calls.
+    call_ctx = CallAudioContext(
+        call_uuid=call_uuid,
         sample_rate=SAMPLE_RATE,
-        enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
-        similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD
+        use_silero=USE_SILERO_VAD,
+        silero_threshold=SILERO_CONFIDENCE_THRESHOLD,
+        speaker_enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
+        speaker_similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD,
+        semantic_min_length=SEMANTIC_MIN_LENGTH,
+        yamnet_classifier=GLOBAL_YAMNET_CLASSIFIER,
     )
+    silero_vad = call_ctx.silero_vad
+    deepfilter = call_ctx.deepfilter
+    speaker_verifier = call_ctx.speaker_verifier
+    semantic_filter = call_ctx.semantic_filter
+    classifier = call_ctx.classifier
+    use_silero = call_ctx.use_silero
 
     async def cancel_current():
         nonlocal current_task, bot_speaking
@@ -2512,6 +2509,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             # ── Force cleanup to prevent memory creep across calls ──
             partial_transcript = None
             llm_warmup_task = None
+
+            # Release all per-call audio processing resources (VAD clone, DF state, etc.)
+            call_ctx.cleanup()
 
             if 'db' in locals():
                 db.close()

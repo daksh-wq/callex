@@ -19,6 +19,8 @@ from typing import Tuple, Optional, List
 import time
 
 
+_GLOBAL_VOICE_ENCODER = None
+
 class SpeakerVerifier:
     """
     Production-grade caller voice verification with rolling embeddings.
@@ -68,17 +70,21 @@ class SpeakerVerifier:
         print(f"[Speaker Verifier] Initialized (enrollment={enrollment_seconds}s, threshold={similarity_threshold})")
 
     def _load_model(self):
-        """Lazy-load Resemblyzer encoder on first use."""
+        """Lazy-load Resemblyzer encoder on first use, caching it globally for concurrent calls."""
         if self._model_loaded:
             return
 
+        global _GLOBAL_VOICE_ENCODER
         try:
-            from resemblyzer import VoiceEncoder
-            print("[Speaker Verifier] Loading Resemblyzer voice encoder...")
-            start = time.time()
-            self._encoder = VoiceEncoder(device="cpu")
+            if _GLOBAL_VOICE_ENCODER is None:
+                from resemblyzer import VoiceEncoder
+                print("[Speaker Verifier] Loading Resemblyzer voice encoder globally...")
+                start = time.time()
+                _GLOBAL_VOICE_ENCODER = VoiceEncoder(device="cpu")
+                print(f"[Speaker Verifier] ✅ Shared Encoder loaded ({time.time()-start:.1f}s)")
+
+            self._encoder = _GLOBAL_VOICE_ENCODER
             self._model_loaded = True
-            print(f"[Speaker Verifier] ✅ Encoder loaded ({time.time()-start:.1f}s)")
         except ImportError:
             print("[Speaker Verifier] ❌ resemblyzer not installed. Run: pip install resemblyzer")
             self._encoder = None
