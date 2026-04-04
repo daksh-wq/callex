@@ -798,17 +798,17 @@ class _ASRStrategyManager:
 
     def __init__(self):
         # IMPORTANT: All strategies use language=hi (Hindi-locked).
-        # language=multi was removed because it misdetects Hindi as Spanish/English.
-        # Nova-2 Hindi is primary (proven fast + accurate in production).
+        # Nova-3 Hindi is primary (proven fastest + most accurate at 500ms).
+        # Nova-2 Hindi is secondary fallback.
         self.strategies = [
-            _ASRStrategy(
-                "Nova-2 Hindi",
-                "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=1,
-            ),
             _ASRStrategy(
                 "Nova-3 Hindi",
                 "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=1,
+            ),
+            _ASRStrategy(
+                "Nova-2 Hindi",
+                "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true&punctuate=true&numerals=true",
                 max_retries=0,
             ),
         ]
