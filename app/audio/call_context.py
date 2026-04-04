@@ -33,7 +33,8 @@ import time
 import numpy as np
 from typing import Optional
 
-from app.audio.vad_silero import SileroVADFilter, _GLOBAL_SILERO_MODEL
+from app.audio import vad_silero as _vad_module
+from app.audio.vad_silero import SileroVADFilter
 from app.audio.deepfilter_denoiser import DeepFilterDenoiser
 from app.audio.speaker_verifier import SpeakerVerifier
 from app.audio.semantic import SemanticFilter
@@ -64,8 +65,11 @@ class CallAudioContext:
         self._creation_time = time.time()
 
         # ── 1. Silero VAD (deep-copied model for isolated RNN state) ──
+        # Access the global model through the MODULE (not a captured import value)
+        # so we always see the latest value after startup has loaded it.
+        global_silero = _vad_module._GLOBAL_SILERO_MODEL
         self.silero_vad: Optional[SileroVADFilter] = None
-        if use_silero and _GLOBAL_SILERO_MODEL is not None:
+        if use_silero and global_silero is not None:
             t0 = time.time()
             self.silero_vad = SileroVADFilter(
                 sample_rate=sample_rate,
@@ -74,13 +78,13 @@ class CallAudioContext:
             # CRITICAL: Deep-copy the shared PyTorch model to get isolated
             # hidden state (h, c tensors). Without this, concurrent calls
             # corrupt each other's RNN state → barge-in breaks completely.
-            self.silero_vad.model = copy.deepcopy(_GLOBAL_SILERO_MODEL)
+            self.silero_vad.model = copy.deepcopy(global_silero)
             self.silero_vad.model.eval()
             self.silero_vad.reset_noise_profile()
             elapsed_ms = (time.time() - t0) * 1000
             print(f"[CallContext:{call_uuid[:8]}] ✅ Silero VAD cloned ({elapsed_ms:.1f}ms)")
         else:
-            print(f"[CallContext:{call_uuid[:8]}] ⚠️ Silero VAD not available")
+            print(f"[CallContext:{call_uuid[:8]}] ⚠️ Silero VAD not available (use_silero={use_silero}, model_loaded={global_silero is not None})")
 
         # ── 2. DeepFilterNet3 (per-call DF state for isolated FFT buffers) ──
         self.deepfilter = DeepFilterDenoiser(call_sample_rate=sample_rate)

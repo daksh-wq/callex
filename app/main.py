@@ -609,7 +609,7 @@ class NoiseFilter:
 
     def process(self, audio: np.ndarray) -> tuple:
         if len(audio) == 0:
-            return audio, False
+            return audio, audio, False
             
         # 1. Convert incoming float32 array to PCM16 bytes
         pcm16_bytes = (audio * 32767.0).astype(np.int16).tobytes()
@@ -634,7 +634,8 @@ class NoiseFilter:
         
         # If we didn't process anything yet (e.g. initial few bytes), return empty
         if len(clean_pcm) == 0:
-            return np.array([], dtype=np.float32), False
+            empty = np.array([], dtype=np.float32)
+            return empty, empty, False
             
         # Convert the cleaned, processed frames back to float32
         cleaned_audio = np.frombuffer(bytes(clean_pcm), dtype=np.int16).astype(np.float32) / 32768.0
