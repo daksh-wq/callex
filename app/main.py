@@ -191,12 +191,12 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.65
+SILERO_CONFIDENCE_THRESHOLD = 0.55
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
 # Speaker Verification Configuration
-SPEAKER_SIMILARITY_THRESHOLD = 0.76  # Stricter verification to block background voices
+SPEAKER_SIMILARITY_THRESHOLD = 0.72  # Balanced to block background voices without rejecting the caller
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
 BARGE_IN_SILENCE_TIMEOUT = 0.8  # seconds — slightly faster commit after a confirmed barge-in
