@@ -807,11 +807,6 @@ class _ASRStrategyManager:
                 max_retries=1,
             ),
             _ASRStrategy(
-                "Nova-2 Phonecall",
-                "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=1,
-            ),
-            _ASRStrategy(
                 "Nova-3 Hindi",
                 "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
                 max_retries=0,
@@ -1368,7 +1363,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -2084,7 +2079,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 agent = agent_config or FALLBACK_AGENT
                 system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
                 warmup_history = trim_history(history)
                 # Send a lightweight ping with history only — no user message yet
                 # This primes Gemini's KV cache with the conversation so far
