@@ -177,9 +177,8 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Smart silence timeout — 1.0s prevents the VAD from chopping speech prematurely
-# if the customer pauses slightly to think mid-sentence.
-SILENCE_TIMEOUT = 1.0
+# Smart silence timeout — 0.7s is safe because we use LLM pre-warming + rolling ASR
+SILENCE_TIMEOUT = 0.7
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -191,20 +190,20 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.55
+SILERO_CONFIDENCE_THRESHOLD = 0.50  # Less aggressive, picks up softer speech
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
 # Speaker Verification Configuration
-SPEAKER_SIMILARITY_THRESHOLD = 0.72  # Balanced to block background voices without rejecting the caller
+SPEAKER_SIMILARITY_THRESHOLD = 0.65  # Less aggressive to avoid rejecting valid user speech
 SPEAKER_ENROLLMENT_SECONDS = 3.0
-BARGE_IN_CONFIRM_MS = 150  # milliseconds of continuous speech required before barge-in
-BARGE_IN_SILENCE_TIMEOUT = 0.8  # seconds — slightly faster commit after a confirmed barge-in
+BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
+BARGE_IN_SILENCE_TIMEOUT = 0.5  # Ultra-fast commit after barge-in
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
-ROLLING_ASR_INTERVAL = 1.0  # seconds between rolling partial ASR requests
+ROLLING_ASR_INTERVAL = 0.8  # More frequent rolling partial ASR requests
 
-SPEAKER_SOFT_THRESHOLD = 0.55  # Softer threshold during enrollment period
+SPEAKER_SOFT_THRESHOLD = 0.45  # Softer threshold during enrollment period
 
 # Voice Settings (from config)
 VOICE_SPEED = bot_config.voice.speed
@@ -800,8 +799,7 @@ class _ASRStrategyManager:
     def __init__(self):
         # IMPORTANT: All strategies use language=hi (Hindi-locked).
         # language=multi was removed because it misdetects Hindi as Spanish/English.
-        # Nova-2 Hindi is primary (proven best: 98% conf, 782ms in production).
-        # Nova-2 Phonecall REMOVED — Deepgram returns 400 (no hi+phonecall combo).
+        # Nova-2 Hindi is primary (proven fast + accurate in production).
         self.strategies = [
             _ASRStrategy(
                 "Nova-2 Hindi",
@@ -809,9 +807,14 @@ class _ASRStrategyManager:
                 max_retries=1,
             ),
             _ASRStrategy(
+                "Nova-2 Phonecall",
+                "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=hi&smart_format=true&punctuate=true&numerals=true",
+                max_retries=1,
+            ),
+            _ASRStrategy(
                 "Nova-3 Hindi",
                 "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&punctuate=true&numerals=true",
-                max_retries=1,
+                max_retries=0,
             ),
         ]
         print(f"[ASR STRATEGY] ✅ Initialized {len(self.strategies)} strategies: {', '.join(s.name for s in self.strategies)}")
@@ -1233,9 +1236,6 @@ def _anti_hallucination_filter(reply: str, last_bot_reply: str) -> str:
 
 # ───────── LLM Response Generation ─────────
 
-# Global cache of deprecated/unavailable Gemini models — skip them after first 404
-_dead_llm_models: set = set()
-
 async def generate_response(client: httpx.AsyncClient, user_text: str, history: List[Dict], agent_config: Dict = None) -> str:
     if not user_text:
         return "..."
@@ -1368,17 +1368,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
-    # ── Dynamic LLM Model Fallback Chain ──
-    # If a model returns 404 (deprecated), try the next one automatically.
-    # This prevents total failure when Google deprecates a model.
-    LLM_MODELS = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-04-17",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-    ]
-
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -1388,86 +1378,52 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
             "maxOutputTokens": max_tokens
         }
     }
-
-    reply = None
-    for model_name in LLM_MODELS:
-        # Skip models we already know are dead (cached globally)
-        if model_name in _dead_llm_models:
-            continue
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GENARTML_SERVER_KEY}"
-
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                r = await client.post(url, json=payload, timeout=5.0)
-
-                if r.status_code == 404:
-                    # Model deprecated/unavailable — mark dead and try next model
-                    _dead_llm_models.add(model_name)
-                    print(f"[LLM] ❌ {model_name} unavailable (404), trying next model...")
-                    break  # Break retry loop, continue to next model
-
-                if r.status_code == 429:
-                    print(f"[LLM] ⚠️ Rate limited on {model_name}, attempt {attempt+1}")
-                    if attempt < MAX_RETRIES:
-                        await asyncio.sleep(RETRY_DELAY * (attempt + 1))
-                        continue
-                    break  # Try next model
-
-                if r.status_code != 200:
-                    print(f"[LLM Error] HTTP {r.status_code} on {model_name}: {r.text[:200]}")
-                    if attempt < MAX_RETRIES:
-                        await asyncio.sleep(RETRY_DELAY)
-                        continue
-                    break  # Try next model
-
-                data = r.json()
-                if "candidates" not in data or not data["candidates"]:
-                    if attempt < MAX_RETRIES:
-                        await asyncio.sleep(RETRY_DELAY)
-                        continue
-                    break
-
-                candidate = data["candidates"][0]
-                content = candidate.get("content", {})
-                parts = content.get("parts", [])
-                if not parts or "text" not in parts[0]:
-                    print(f"[LLM] Empty/blocked response from {model_name}")
-                    if attempt < MAX_RETRIES:
-                        await asyncio.sleep(RETRY_DELAY)
-                        continue
-                    break
-
-                reply = parts[0]["text"].strip().replace("*", "")
-                print(f"\n🤖 [BOT REPLY] ({model_name}): '{reply}'\n")
-                reply = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', reply)
-                reply = re.sub(r'\[.*?\]', '', reply).strip()
-                reply = sanitize_for_tts(reply)
-
-                # ── Zero-latency anti-hallucination post-check ──
-                reply = _anti_hallucination_filter(reply, last_bot_reply)
-                break  # Success — exit retry loop
-
-            except asyncio.TimeoutError:
-                print(f"[LLM] Timeout on {model_name} (attempt {attempt + 1})")
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = await client.post(url, json=payload, timeout=5.0)
+            if r.status_code != 200:
+                print(f"[LLM Error] HTTP {r.status_code}: {r.text[:200]}")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_DELAY)
                     continue
-                break  # Try next model
-            except Exception as e:
-                print(f"[LLM Error] {model_name}: {e}")
+                return "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
+            data = r.json()
+            if "candidates" not in data or not data["candidates"]:
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_DELAY)
                     continue
-                break
+                return "माफ़ कीजिये, आवाज नहीं आई।"
+            candidate = data["candidates"][0]
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            if not parts or "text" not in parts[0]:
+                print(f"[LLM] Empty/blocked response from model")
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+                return "माफ़ कीजिये, आवाज नहीं आई।"
+            reply = parts[0]["text"].strip().replace("*", "")
+            print(f"\n🤖 [BOT REPLY]: '{reply}'\n")
+            reply = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', reply)
+            reply = re.sub(r'\[.*?\]', '', reply).strip()
+            reply = sanitize_for_tts(reply)
 
-        if reply:
-            break  # Got a successful reply — stop trying models
+            # ── Zero-latency anti-hallucination post-check ──
+            reply = _anti_hallucination_filter(reply, last_bot_reply)
 
-    if not reply:
-        print(f"[LLM] ❌ All models exhausted: {LLM_MODELS}")
-        reply = "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
-
+            break
+        except asyncio.TimeoutError:
+            print(f"[LLM] Timeout on attempt {attempt + 1}")
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(RETRY_DELAY)
+                continue
+            return "माफ़ कीजिये, जवाब देने में समय लग रहा है।"
+        except Exception as e:
+            print(f"[LLM Error]: {e}")
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(RETRY_DELAY)
+                continue
+            return "माफ़ कीजिये, कुछ गड़बड़ हो गई।"
     elapsed = time.time() - start_time
     print(f"[BOT TEXT]: '{reply}' ({elapsed:.2f}s)")
     return reply
@@ -2128,10 +2084,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 agent = agent_config or FALLBACK_AGENT
                 system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-                # Use first available (non-dead) model from the fallback chain
-                warmup_models = ["gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-                warmup_model = next((m for m in warmup_models if m not in _dead_llm_models), warmup_models[0])
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{warmup_model}:generateContent?key={GENARTML_SERVER_KEY}"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GENARTML_SERVER_KEY}"
                 warmup_history = trim_history(history)
                 # Send a lightweight ping with history only — no user message yet
                 # This primes Gemini's KV cache with the conversation so far
@@ -2253,14 +2206,29 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 t0 = time.time()
 
-                # ── ALWAYS transcribe the FULL final buffer for accuracy ──
-                # We previously used rolling ASR partials speculatively, but it caused
-                # transcripts to be chopped off (e.g., showing only 2 words) if the 
-                # customer continued speaking. We must send the complete audio.
-                pcm16 = (samples * 32767).astype(np.int16).tobytes()
-                user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+                # ── SPECULATIVE EXECUTION: Use rolling ASR partial if available ──
+                # If we already have a partial transcript from rolling ASR, use it
+                # immediately AND fire a parallel full ASR. If full ASR returns
+                # something different, we'll use that instead. This saves ~600ms.
+                speculative_text = partial_transcript
+                full_asr_task = None
+                user_text = None
 
-                # Clear stale partial since we just did a full transcription
+                if speculative_text:
+                    # We have a partial — start full ASR in background to verify
+                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                    full_asr_task = asyncio.create_task(
+                        asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+                    )
+                    # Use the partial immediately for now
+                    user_text = speculative_text
+                    print(f"\n[SPECULATIVE] ⚡ Using rolling ASR partial: '{user_text[:60]}' (full ASR running in background)")
+                else:
+                    # No partial available — must do full ASR (normal path)
+                    pcm16 = (samples * 32767).astype(np.int16).tobytes()
+                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=history)
+
+                # Clear stale partial since we just used/started full transcription
                 partial_transcript = None
 
                 if not user_text or not ws_alive:
@@ -2310,17 +2278,33 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 # ── Normal (non-digit) processing path ──
                 history.append({"role": "user", "parts": [{"text": user_text}]})
                 full_history.append({"role": "user", "parts": [{"text": user_text}]})
-
                 if call_uuid:
                     tracker.log_message(call_uuid, "user", user_text)
                     asyncio.create_task(log_live_message("user", user_text))
-
                 history = trim_history(history)
 
                 t_llm = time.time()
                 reply_text = await generate_response(client, user_text, history, agent_config=agent_config)
                 llm_elapsed = (time.time() - t_llm) * 1000
                 print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+
+                # ── Check if full ASR returned something better ──
+                # If we used speculative partial AND full ASR is done with a different result,
+                # log the difference (for the next turn, history will be correct either way)
+                if full_asr_task and not full_asr_task.done():
+                    # Full ASR still running — no need to wait, we already have the LLM response
+                    full_asr_task.cancel()
+                    print(f"[SPECULATIVE] ✅ LLM responded before full ASR finished — cancelled background ASR")
+                elif full_asr_task and full_asr_task.done():
+                    try:
+                        full_result = full_asr_task.result()
+                        if full_result and full_result != user_text:
+                            print(f"[SPECULATIVE] 📝 Full ASR differs: '{full_result[:60]}' (was: '{user_text[:60]}')")
+                            # Update the history with the more accurate full ASR result
+                            if history and history[-2].get("role") == "user":
+                                history[-2]["parts"][0]["text"] = full_result
+                    except Exception:
+                        pass  # Full ASR failed — partial was good enough
 
                 should_hangup = False
                 if "[HANGUP]" in reply_text:
@@ -2557,7 +2541,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 avg_db = 20 * np.log10(avg_energy + 1e-9)
                                 # Short genuine words are spoken clearly (higher energy)
                                 # Noise bursts are random and have low average energy
-                                if avg_db < -30.0:
+                                if avg_db < -35.0:
                                     print(f"[VAD] Short utterance rejected: too quiet ({avg_db:.1f}dB, {duration:.2f}s)")
                                     buffer.clear()
                                     vad_buffer.clear()
@@ -2567,7 +2551,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 if use_silero and silero_vad and len(vad_buffer) > 0:
                                     vad_samples = np.array(vad_buffer, dtype=np.float32)
                                     is_valid, short_conf = silero_vad.is_speech(vad_samples)
-                                    if not is_valid or short_conf < 0.55:
+                                    if not is_valid or short_conf < 0.40:
                                         print(f"[VAD] Short utterance rejected: low VAD confidence ({short_conf:.2f}, {duration:.2f}s)")
                                         buffer.clear()
                                         vad_buffer.clear()
