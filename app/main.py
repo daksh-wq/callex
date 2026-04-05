@@ -48,10 +48,36 @@ config_mgr = get_config_manager()
 bot_config = config_mgr.load_config()
 
 # API Keys (from config)
-GENARTML_SERVER_KEY = bot_config.api_credentials.server_key
+_GEMINI_ORIGINAL_KEY = bot_config.api_credentials.server_key
 # Hardcoding API key because PM2 server caching is preventing .env updates from taking effect
 GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
+
+# ───────── Gemini LLM Key Pool (Round-Robin for Rate Limit Prevention) ─────────
+_raw_gemini_keys = [
+    os.getenv("GEMINI_API_KEY_1", _GEMINI_ORIGINAL_KEY),
+    os.getenv("GEMINI_API_KEY_2", "AIzaSyBIhDHUyTygVndKIXsItOoUXDQlfT01s1w"),
+    os.getenv("GEMINI_API_KEY_3", "AIzaSyAGKLGuQ3me-A-d8J8ApLdvqsxsBqdY6vw"),
+    os.getenv("GEMINI_API_KEY_4", ""),
+    os.getenv("GEMINI_API_KEY_5", ""),
+]
+GEMINI_KEYS = [k.strip() for k in _raw_gemini_keys if k and k.strip() and k.strip() != "set-your-gemini-key"]
+_gemini_key_idx = 0
+_gemini_key_lock = asyncio.Lock()
+
+async def get_gemini_key() -> str:
+    """Get the next Gemini API key via round-robin."""
+    global _gemini_key_idx
+    if not GEMINI_KEYS:
+        return _GEMINI_ORIGINAL_KEY
+    async with _gemini_key_lock:
+        key = GEMINI_KEYS[_gemini_key_idx]
+        _gemini_key_idx = (_gemini_key_idx + 1) % len(GEMINI_KEYS)
+    return key
+
+# Keep a sync version for non-async contexts (startup, etc.)
+GENARTML_SERVER_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else _GEMINI_ORIGINAL_KEY
+print(f"[CONFIG] ⚡ Gemini LLM Pool initialized with {len(GEMINI_KEYS)} keys")
 
 # ───────── Callex Voice Key Pool (Production Failover) ─────────
 class CallexVoiceKeyManager:
@@ -752,7 +778,8 @@ async def _sarvam_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, api_ke
 
 async def _gemini_transcribe(client: httpx.AsyncClient, trimmed_pcm: bytes) -> Optional[str]:
     """Fallback ASR using Gemini Flash (1-3s latency)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    gemini_key = await get_gemini_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
     payload = {
         "contents": [{
             "role": "user",
@@ -1134,7 +1161,8 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    gemini_key = await get_gemini_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -1271,7 +1299,8 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
     {disposition_rules_prompt}
     {custom_fields_prompt}
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+    gemini_key = await get_gemini_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\nTranscript:\n{transcript}"}]}],
         "generationConfig": {"responseMimeType": "application/json"}
@@ -1846,7 +1875,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 agent = agent_config or FALLBACK_AGENT
                 system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GENARTML_SERVER_KEY}"
+                gemini_key = await get_gemini_key()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
                 warmup_history = trim_history(history)
                 # Send a lightweight ping with history only — no user message yet
                 # This primes Gemini's KV cache with the conversation so far
