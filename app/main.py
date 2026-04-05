@@ -55,11 +55,10 @@ GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
 # ───────── Gemini LLM Key Pool (Round-Robin for Rate Limit Prevention) ─────────
 _raw_gemini_keys = [
-    os.getenv("GEMINI_API_KEY_1", _GEMINI_ORIGINAL_KEY),
-    os.getenv("GEMINI_API_KEY_2", "AIzaSyBIhDHUyTygVndKIXsItOoUXDQlfT01s1w"),
-    os.getenv("GEMINI_API_KEY_3", "AIzaSyAGKLGuQ3me-A-d8J8ApLdvqsxsBqdY6vw"),
-    os.getenv("GEMINI_API_KEY_4", ""),
-    os.getenv("GEMINI_API_KEY_5", ""),
+    os.getenv("GEMINI_API_KEY_1", "AIzaSyBRexK6MGrAbA2-lve7a1r-gPrIJrJU5kM"),
+    os.getenv("GEMINI_API_KEY_2", "AIzaSyBGOPSFRpa1T4CVRudbpNsUvvE-SIGHpEI"),
+    os.getenv("GEMINI_API_KEY_3", "AIzaSyDrwQPYY5mnWPsvTFuAGDO1tIFCyJzAoFw"),
+    os.getenv("GEMINI_API_KEY_4", "AIzaSyCb0Qz5ktn6qPLqhgpL0g47axZVUKYzBpg"),
 ]
 GEMINI_KEYS = [k.strip() for k in _raw_gemini_keys if k and k.strip() and k.strip() != "set-your-gemini-key"]
 _gemini_key_idx = 0
