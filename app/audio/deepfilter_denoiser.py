@@ -128,7 +128,7 @@ class DeepFilterDenoiser:
 
         if self._model_active:
             # Instantiate a completely unique RNN state for this specific call
-            from df import DF
+            from libdf import DF
             model, _enhance, params = _GLOBAL_DF_MODEL
             self._df_state = DF(**params)
             print(f"[DeepFilter] ✅ Per-call instance ready (SR={self.call_sr}Hz)")
