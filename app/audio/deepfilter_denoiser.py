@@ -67,7 +67,7 @@ def load_deepfilter_model() -> bool:
             # Store enhance function too so we don't import it per-call
             from df.config import config
             # We must create a new DF state per call, so we save the config parameters
-            from df.config import ModelParams
+            from df.model import ModelParams
             p = ModelParams()
             df_params = {
                 'sr': p.sr, 'fft_size': p.fft_size, 'hop_size': p.hop_size, 
