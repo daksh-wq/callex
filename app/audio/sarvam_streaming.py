@@ -83,11 +83,8 @@ class SarvamStreamingSTT:
         try:
             params = [
                 f"model={self._model}",
-                f"language_code={self._language}",
+                f"language-code={self._language}",
                 f"mode={self._mode}",
-                f"sample_rate={self._sample_rate}",
-                f"encoding=pcm_s16le",
-                f"flush_signal=true"
             ]
             if self._vad_signals:
                 params.append("vad_signals=true")
@@ -206,7 +203,8 @@ class SarvamStreamingSTT:
             message = json.dumps({
                 "audio": {
                     "data": b64_data,
-                    "is_last": False,
+                    "sample_rate": str(self._sample_rate),
+                    "encoding": "pcm_s16le",
                 }
             })
             asyncio.create_task(self._safe_send(message))
