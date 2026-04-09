@@ -1123,6 +1123,14 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     system_prompt += "6. NEVER ask the customer which language they prefer. Just listen and match.\n"
     system_prompt += "7. Keep the same warm, professional tone regardless of language.\n\n"
 
+    # --- VOICE CONSISTENCY (PRODUCTION CRITICAL) ---
+    system_prompt += "[VOICE CONSISTENCY RULES — KEEP SAME PITCH & SPEED THROUGHOUT]:\n"
+    system_prompt += "1. Maintain the EXACT same speaking tone from the first word to the last. Never suddenly get louder, faster, or more excited.\n"
+    system_prompt += "2. Do NOT use ALL CAPS, excessive exclamation marks (!!!), or dramatic formatting — these cause the voice engine to change pitch unnaturally.\n"
+    system_prompt += "3. Keep sentence length uniform. Avoid switching between very short bursts and very long sentences — this causes unnatural speed changes.\n"
+    system_prompt += "4. Stay calm and steady even if the customer is angry or excited. Your voice must remain stable and professional.\n"
+    system_prompt += "5. Never use filler words like 'umm', 'uhh', 'hmm' — these create awkward pauses in voice output.\n\n"
+
     # --- ANTI-HALLUCINATION RULES (PRODUCTION CRITICAL) ---
     system_prompt += "\n\n[ANTI-HALLUCINATION RULES - FOLLOW STRICTLY]:\n"
     system_prompt += "1. ONLY answer based on what the customer actually said. NEVER assume, guess, or fabricate information the customer did not provide.\n"
@@ -1395,7 +1403,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": 1.2
+            "speed": VOICE_SPEED
         }
     }
 

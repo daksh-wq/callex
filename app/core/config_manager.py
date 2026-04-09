@@ -27,9 +27,9 @@ class APICredentials(BaseModel):
 class VoiceSettings(BaseModel):
     """Voice synthesis parameters"""
     speed: float = Field(1.0, ge=0.5, le=2.0, description="Speaking speed multiplier")
-    stability: float = Field(0.5, ge=0.0, le=1.0, description="Voice stability (0=expressive, 1=consistent)")
-    similarity_boost: float = Field(0.75, ge=0.0, le=1.0, description="How closely to match voice model")
-    style: float = Field(0.0, ge=0.0, le=1.0, description="Speaking style intensity")
+    stability: float = Field(0.85, ge=0.0, le=1.0, description="Voice stability (0=expressive, 1=consistent). High = locked pitch/tone")
+    similarity_boost: float = Field(0.80, ge=0.0, le=1.0, description="How closely to match voice model")
+    style: float = Field(0.0, ge=0.0, le=1.0, description="Speaking style intensity (0=stable, keep low for consistency)")
     use_speaker_boost: bool = Field(True, description="Enable speaker boost")
 
 
