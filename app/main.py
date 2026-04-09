@@ -1087,15 +1087,15 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     
     agent_lang = agent_config.get("language", "en-US")
     if agent_lang == "gu-IN":
-        system_prompt += "1. Your PRIMARY language is Gujarati. If the customer speaks in GUJARATI → reply in pure Gujarati. Example: 'Ha, hu tamne madad kari shaku chu.'\n"
-        system_prompt += "2. CRITICAL: You must write your Gujarati response ONLY in the English/Roman alphabet (e.g. 'Kem cho'). NEVER use native Gujarati characters.\n"
+        system_prompt += "1. Your PRIMIARY language is Gujarati. If the customer speaks in GUJARATI → reply in pure Gujarati. Example: 'હા, હું તમને મદદ કરી શકું છું.'\n"
+        system_prompt += "2. You must read and output all your text in the native Gujarati script.\n"
         system_prompt += "3. If the customer speaks in Hindi or English, reply in their language, but try to steer the conversation back to Gujarati politely if possible.\n"
     elif agent_lang == "hi-IN":
-        system_prompt += "1. If the customer speaks in HINDI → reply in pure Hindi.\n"
-        system_prompt += "2. If the customer speaks in ENGLISH → reply in pure English.\n"
-        system_prompt += "3. If the customer speaks in GUJARATI → reply in pure Gujarati, but write the Gujarati response ONLY in the English/Roman alphabet (e.g. 'Ha, hu tamne madad kari shaku chu'). NEVER output native Gujarati script.\n"
-        system_prompt += "4. If the customer speaks in HINGLISH (mix of Hindi and English) → reply in Hinglish naturally.\n"
-        system_prompt += "5. When speaking Hindi or Hinglish, ALWAYS write in English/Roman script (e.g. 'Namaste' not 'नमस्ते') for better voice pronunciation.\n"
+        system_prompt += "1. If the customer speaks in HINDI → reply in pure Hindi. Example: 'जी हाँ, मैं आपकी मदद करता हूँ।'\n"
+        system_prompt += "2. If the customer speaks in ENGLISH → reply in pure English. Example: 'Yes, I can help you with that.'\n"
+        system_prompt += "3. If the customer speaks in GUJARATI → reply in pure Gujarati and output in native Gujarati script. Example: 'હા, હું તમને મદદ કરી શકું છું.'\n"
+        system_prompt += "4. If the customer speaks in HINGLISH (mix of Hindi and English) → reply in Hinglish naturally. Example: 'Haan ji, aapka account check karta hoon.'\n"
+        system_prompt += "5. When speaking Hindi/Hinglish, write in Roman script (e.g. 'Namaste' not 'नमस्ते') for better voice pronunciation.\n"
     elif agent_lang == "en-US" or agent_lang == "en-GB":
         system_prompt += "1. Your PRIMARY language is English. Speak clearly and professionally.\n"
     else:
@@ -1964,32 +1964,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             await sarvam_transcript_queue.put(text)
 
         async def _on_sarvam_speech_started():
-            """Called when Sarvam server VAD detects speech start."""
+            """Called when Sarvam server VAD detects speech — reinforces local barge-in."""
             nonlocal speaking, was_barge_in, last_voice, bot_audio_expected_end, barge_in_active
             if not first_line_complete:
                 return
             last_voice = time.time()
-            if not speaking:
-                print("[SARVAM VAD] 🎤 Speech detected — stopping bot immediately")
-                if bot_speaking:
-                    print("[VAD] 🔴 Customer started speaking while bot was playing — barge-in triggered")
-                speaking = True
-                was_barge_in = True
-                barge_in_active = True  # Block all audio sending INSTANTLY
-                bot_audio_expected_end = time.time()
-                try:
-                    await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
-                except Exception:
-                    pass
-                await cancel_current()
+            # Only use server VAD as reinforcement — local VAD handles the actual barge-in gate
+            if bot_speaking and not speaking:
+                print("[SARVAM VAD] 🎤 Server confirms speech during bot playback")
 
         async def _on_sarvam_speech_ended():
-            """Called when Sarvam server VAD detects speech end."""
-            nonlocal speaking, was_barge_in
+            """Called when Sarvam server VAD detects speech end — informational only."""
             if speaking:
-                print("[SARVAM VAD] 🔇 Speech ended by server")
-            speaking = False
-            was_barge_in = False
+                print("[SARVAM VAD] 🔇 Server reports speech ended")
 
         async def _connect_sarvam():
             """Connect to Sarvam streaming STT WebSocket."""
@@ -2222,22 +2209,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         break
                     await asyncio.sleep(0.02)
         else:
-            print(f"[CACHE] Generating opener + caching for next call...")
-            os.makedirs(CACHE_DIR, exist_ok=True)
-            cache_buffer = bytearray()
+            print(f"[CACHE] Generating opener on the fly for agent {agent_config['id']}")
             async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice']):
-                cache_buffer.extend(chunk)
                 if await send_audio_safe(chunk):
                     total_opener_bytes += len(chunk)
                 else:
                     break
-            try:
-                with open(cache_path, "wb") as f:
-                    f.write(cache_buffer)
-                _cleanup_old_opener_caches(agent_config['id'], cache_path)
-                print(f"[CACHE] ✅ Opener cached for next call")
-            except Exception as e:
-                print(f"[CACHE] Write failed: {e}")
         bot_speaking = False
 
         print(f"[SYSTEM] Opener generation complete, waiting for FreeSWITCH play buffer to drain...")
@@ -2329,8 +2306,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 prompt_index += 1
                 print(f"[NO-RESPONSE] 🔔 {silence_duration:.1f}s silence → '{msg}'")
 
-                barge_in_active = False   # ← reset gate before playing
-
                 bot_speaking = True
                 try:
                     async for audio_chunk in tts_stream_generate(
@@ -2374,8 +2349,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if pcm.size == 0:
                         continue
 
-                    # 2. DeepFilterNet3 strips traffic/crowd/wind noise
-                    enhanced_float32 = deepfilter.process(pcm)
+                    # 2. RUN NEURAL NETWORK: DeepFilterNet3 strips traffic/crowd/wind noise
+                    enhanced_float32 = await asyncio.to_thread(deepfilter.process, pcm)
 
                     # If buffer not yet full, enhanced_float32 will be empty — skip this chunk
                     if len(enhanced_float32) == 0:
@@ -2387,13 +2362,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     # 3b. FEED SARVAM STREAMING STT — continuous audio for real-time transcription
                     if sarvam_stt and sarvam_stt.is_connected and first_line_complete:
-                        # Guard: skip audio that overlaps with bot TTS to prevent echo feedback
-                        if time.time() > bot_audio_expected_end + 1.5:
+                        # Small guard: skip audio that overlaps with bot TTS to reduce echo
+                        # (brain.is_echo() catches anything that slips through)
+                        if time.time() > bot_audio_expected_end + 0.15:
                             sarvam_stt.send_audio(clean_int16.tobytes())
                     
                     # 4. enhanced_float32 is already float32 — feed into DSP pipeline
                     chunk = enhanced_float32
-                    unfiltered_clean, filtered_chunk, is_valid_speech = noise_filter.process(chunk)
+                    unfiltered_clean, filtered_chunk, is_valid_speech = await asyncio.to_thread(noise_filter.process, chunk)
                     
                     if len(filtered_chunk) == 0:
                         continue
@@ -2440,7 +2416,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     vad_confidence = 1.0  # Fallback
                     if use_silero and silero_vad:
-                        is_speech, vad_confidence = silero_vad.is_speech(filtered_chunk)
+                        is_speech, vad_confidence = await asyncio.to_thread(silero_vad.is_speech, filtered_chunk)
                         if not is_speech or vad_confidence < SILERO_CONFIDENCE_THRESHOLD:
                             if speaking:
                                 buffer.extend(unfiltered_clean)
@@ -2464,7 +2440,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                             # Stage 3: Speaker Verification
                             if speaker_verifier.is_enrolled:
-                                is_caller, speaker_similarity = speaker_verifier.verify(filtered_chunk)
+                                is_caller, speaker_similarity = await asyncio.to_thread(speaker_verifier.verify, filtered_chunk)
                                 if not is_caller:
                                     barge_in_confirm_start = None
                                     buffer.clear()
