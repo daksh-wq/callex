@@ -1041,6 +1041,24 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     if knowledge_base:
         system_prompt += f"\n\n[TRAINED KNOWLEDGE BASE — Use this to answer customer questions]:\n{knowledge_base}"
 
+    # --- REAL-TIME AWARENESS (IST) ---
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    day_name = now_ist.strftime("%A")
+    date_str = now_ist.strftime("%d %B %Y")
+    time_str = now_ist.strftime("%I:%M %p")
+    hour = now_ist.hour
+    if hour < 12:
+        greeting_period = "morning"
+    elif hour < 17:
+        greeting_period = "afternoon"
+    else:
+        greeting_period = "evening"
+    system_prompt += f"\n\n[CURRENT DATE & TIME — IST (Indian Standard Time)]:\n"
+    system_prompt += f"Today is {day_name}, {date_str}. The current time is {time_str} IST ({greeting_period}).\n"
+    system_prompt += f"Use this information naturally — for example, say 'Good {greeting_period}' if appropriate, and be aware of business hours, holidays, and scheduling context.\n\n"
+
     # --- HARD SYSTEM OVERRIDE FOR SAFETY & IDENTITY ---
     system_prompt += "\n\n[ABSOLUTE FORMATTING RULES - VIOLATION MEANS FAILURE]:\n"
     system_prompt += "1. You are speaking on a PHONE CALL. Your text will be read aloud by a voice engine. It CANNOT read digits.\n"
