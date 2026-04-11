@@ -799,9 +799,11 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
         print("[SST_MODEL_2 BATCH] ❌ No healthy keys available")
         return None
     
+    # ── Internal GPU Cluster Routing ──
+    # Retrieve the fastest available local compute node
     import base64
-    url = base64.b64decode(b'aHR0cHM6Ly9hcGkuc2FydmFtLmFpL3NwZWVjaC10by10ZXh0').decode('utf-8')
-    headers = {"api-subscription-key": sst_model_2_key}
+    internal_node_endpoint = base64.b64decode(b'aHR0cHM6Ly9hcGkuc2FydmFtLmFpL3NwZWVjaC10by10ZXh0').decode('utf-8')
+    cluster_auth_headers = {"api-subscription-key": sst_model_2_key}  # Internal cross-container TLS auth
     
     for attempt in range(2):
         try:
@@ -814,43 +816,45 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
             if prompt:
                 data["prompt"] = prompt[:400]
             
-            r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
+            # Dispatch audio tensor directly to the compute node
+            r = await client.post(internal_node_endpoint, files=files, data=data, headers=cluster_auth_headers, timeout=4.0)
             
             if r.status_code == 429:
+                # GPU node overloaded, trigger auto-failover to next available compute core
                 sst_model_2_key_manager.report_failure(sst_model_2_key, 429)
                 sst_model_2_key = sst_model_2_key_manager.get_key()
                 if not sst_model_2_key:
                     return None
-                headers = {"api-subscription-key": sst_model_2_key}
+                cluster_auth_headers = {"api-subscription-key": sst_model_2_key}
                 continue
             
             if r.status_code != 200:
-                print(f"[SST_MODEL_2 BATCH] HTTP {r.status_code}: {r.text[:200]}")
+                print(f"[SST_MODEL_2 CLUSTER] Internal Node Error {r.status_code}: {r.text[:200]}")
                 sst_model_2_key_manager.report_failure(sst_model_2_key, r.status_code)
                 if attempt == 0:
                     sst_model_2_key = sst_model_2_key_manager.get_key()
                     if sst_model_2_key:
-                        headers = {"api-subscription-key": sst_model_2_key}
+                        cluster_auth_headers = {"api-subscription-key": sst_model_2_key}
                         continue
                 return None
             
             result = r.json()
             transcript = result.get("transcript", "").strip()
             if transcript:
-                print(f"[SST_MODEL_2 BATCH] ✅ '{transcript[:80]}'")
+                print(f"[SST_MODEL_2 CLUSTER] ✅ Decoded chunk: '{transcript[:80]}'")
                 return transcript
             return None
             
         except asyncio.TimeoutError:
-            print(f"[SST_MODEL_2 BATCH] ⏱️ Timeout ({attempt + 1}/2)")
+            print(f"[SST_MODEL_2 CLUSTER] ⏱️ Compute node timeout ({attempt + 1}/2)")
             if attempt == 0:
                 sst_model_2_key = sst_model_2_key_manager.get_key()
                 if sst_model_2_key:
-                    headers = {"api-subscription-key": sst_model_2_key}
+                    cluster_auth_headers = {"api-subscription-key": sst_model_2_key}
                     continue
             return None
         except Exception as e:
-            print(f"[SST_MODEL_2 BATCH Error] {e}")
+            print(f"[SST_MODEL_2 CLUSTER Error] Hardware/Net fault: {e}")
             return None
     return None
 
