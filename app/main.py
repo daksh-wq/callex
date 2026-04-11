@@ -13,6 +13,14 @@ import asyncio
 import httpx
 import struct
 import json
+
+def __safe_log(msg) -> str:
+    if msg is None: return "None"
+    s = __safe_log(msg)
+    s = s.replace("sarvam", "SST_MODEL_2").replace("Sarvam", "SST_MODEL_2").replace("SARVAM", "SST_MODEL_2")
+    s = s.replace("saaras", "genartml-callex").replace("Saaras", "genartml-callex")
+    return s
+
 import time
 import re
 import threading
@@ -339,7 +347,7 @@ try:
         })
         print(f"[FIREBASE] Initialized with bucket: {FIREBASE_STORAGE_BUCKET}")
 except Exception as e:
-    print(f"[FIREBASE ERROR] Failed to initialize: {e}")
+    print(f"[FIREBASE ERROR] Failed to initialize: {__safe_log(e)}")
 
 # ACTIVE_SCRIPT_ID is no longer used — agent_id from FreeSWITCH determines the agent
 
@@ -369,7 +377,7 @@ async def freeswitch_hangup(uuid: str):
         writer.close()
         await writer.wait_closed()
     except Exception as e:
-        print(f"[ESL Error] Failed to hang up call {uuid}: {e}")
+        print(f"[ESL Error] Failed to hang up call {uuid}: {__safe_log(e)}")
 
 
 async def freeswitch_command(cmd: str):
@@ -391,7 +399,7 @@ async def freeswitch_command(cmd: str):
         await writer.wait_closed()
         return response.decode().strip()
     except Exception as e:
-        print(f"[ESL Error] Command failed ({cmd}): {e}")
+        print(f"[ESL Error] Command failed ({cmd}): {__safe_log(e)}")
         return None
 
 
@@ -416,7 +424,7 @@ def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]
         print(f"[FIREBASE] Upload Successful (signed URL, 24h expiry)")
         return url
     except Exception as e:
-        print(f"[FIREBASE Error] Upload failed: {e}")
+        print(f"[FIREBASE Error] Upload failed: {__safe_log(e)}")
         return None
 
 
@@ -438,7 +446,7 @@ class LocalRecorder:
             self.wav_file.setframerate(SAMPLE_RATE)
             print(f"[LOCAL RECORDING] Started Stereo: {self.filepath}")
         except Exception as e:
-            print(f"[LOCAL RECORDING ERROR] Failed to create file: {e}")
+            print(f"[LOCAL RECORDING ERROR] Failed to create file: {__safe_log(e)}")
 
     def write_bot_audio(self, pcm_bytes: bytes):
         """Buffer incoming bot audio rapidly streamed by the AI TTS"""
@@ -471,7 +479,7 @@ class LocalRecorder:
             self.frames_written += len(pcm_bytes) // 2
             self.customer_chunks += 1
         except Exception as e:
-            print(f"[LOCAL RECORDING ERROR] Write failed: {e}")
+            print(f"[LOCAL RECORDING ERROR] Write failed: {__safe_log(e)}")
 
     def close(self) -> str:
         if self.wav_file:
@@ -481,7 +489,7 @@ class LocalRecorder:
                 print(f"[LOCAL RECORDING] Saved Stereo: {self.filepath} ({duration:.1f}s)")
                 return self.filepath
             except Exception as e:
-                print(f"[LOCAL RECORDING ERROR] Close failed: {e}")
+                print(f"[LOCAL RECORDING ERROR] Close failed: {__safe_log(e)}")
         return None
 
 
@@ -561,7 +569,7 @@ async def lifespan(app: FastAPI):
         if not GLOBAL_DEEPFILTER_LOADED:
             print("[STARTUP] ⚠️ DeepFilterNet3 failed — calls will use raw audio passthrough")
     except Exception as e:
-        print(f"[STARTUP] ⚠️ DeepFilterNet3 error: {e}")
+        print(f"[STARTUP] ⚠️ DeepFilterNet3 error: {__safe_log(e)}")
         GLOBAL_DEEPFILTER_LOADED = False
 
     try:
@@ -569,7 +577,7 @@ async def lifespan(app: FastAPI):
         GLOBAL_YAMNET_CLASSIFIER = SoundEventClassifier()
         print(f"[STARTUP] YAMNet loaded ({time.time()-startup_start:.1f}s)")
     except Exception as e:
-        print(f"[STARTUP] ⚠️ YAMNet failed to load: {e}")
+        print(f"[STARTUP] ⚠️ YAMNet failed to load: {__safe_log(e)}")
         GLOBAL_YAMNET_CLASSIFIER = None
 
     if USE_SILERO_VAD:
@@ -582,7 +590,7 @@ async def lifespan(app: FastAPI):
             )
             print(f"[STARTUP] Silero VAD loaded ({time.time()-vad_start:.1f}s)")
         except Exception as e:
-            print(f"[STARTUP] ⚠️ Silero VAD failed to load: {e}")
+            print(f"[STARTUP] ⚠️ Silero VAD failed to load: {__safe_log(e)}")
             GLOBAL_SILERO_VAD = None
 
     total_time = time.time() - startup_start
@@ -653,7 +661,7 @@ def load_bg_noise():
         else:
             print(f"[SYSTEM] ⚠️ Failed to load background noise via ffmpeg: {proc.stderr.decode()}")
     except Exception as e:
-        print(f"[SYSTEM] ⚠️ Failed to load background noise: {e}")
+        print(f"[SYSTEM] ⚠️ Failed to load background noise: {__safe_log(e)}")
 
 load_bg_noise()
 
@@ -829,7 +837,7 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
                 continue
             
             if r.status_code != 200:
-                print(f"[SST_MODEL_2 CLUSTER] Internal Node Error {r.status_code}: {r.text[:200]}")
+                print(f"[SST_MODEL_2 CLUSTER] Internal Node Error {r.status_code}: {__safe_log(r.text)[:200]}")
                 sst_model_2_key_manager.report_failure(sst_model_2_key, r.status_code)
                 if attempt == 0:
                     sst_model_2_key = sst_model_2_key_manager.get_key()
@@ -854,7 +862,7 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
                     continue
             return None
         except Exception as e:
-            print(f"[SST_MODEL_2 CLUSTER Error] Hardware/Net fault: {e}")
+            print(f"[SST_MODEL_2 CLUSTER Error] Hardware/Net fault: {__safe_log(e)}")
             return None
     return None
 
@@ -1064,7 +1072,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 else:
                     print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore natively, using config fallback")
             except Exception as e:
-                print(f"[LLM] ⚠️ Threaded re-read failed ({e}), using config fallback")
+                print(f"[LLM] ⚠️ Threaded re-read failed ({__safe_log(e)}), using config fallback")
     else:
         print(f"[LLM] Using fallback agent systemPrompt")
 
@@ -1238,7 +1246,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
             async with key_semaphore:
                 r = await client.post(url, json=payload, timeout=3.5)
             if r.status_code != 200:
-                print(f"[LLM Error] HTTP {r.status_code}: {r.text[:200]}")
+                print(f"[LLM Error] HTTP {r.status_code}: {__safe_log(r.text)[:200]}")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_DELAY)
                     continue
@@ -1275,7 +1283,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 continue
             return "माफ़ कीजिये, जवाब देने में समय लग रहा है।"
         except Exception as e:
-            print(f"[LLM Error]: {e}")
+            print(f"[LLM Error]: {__safe_log(e)}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAY)
                 continue
@@ -1424,7 +1432,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
                     yield fallback_chunk
                 return
         except Exception as e:
-            print(f"[Callex Voice Engine] ❌ Error on key #{attempt + 1}: {e}")
+            print(f"[Callex Voice Engine] ❌ Error on key #{attempt + 1}: {__safe_log(e)}")
             if attempt < len(keys_to_try) - 1:
                 continue
             if not is_fallback:
@@ -1491,7 +1499,7 @@ async def fetch_crm_phone(crm_id: str) -> str:
                 else:
                     print(f"[CRM API] Server returned {resp.status_code}: {resp.text}")
         except Exception as e:
-            print(f"[CRM API] Attempt {attempt+1} failed for {crm_id}: {e}")
+            print(f"[CRM API] Attempt {attempt+1} failed for {crm_id}: {__safe_log(e)}")
             await asyncio.sleep(0.5)
 
     return "Unknown"
@@ -1613,7 +1621,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             await asyncio.to_thread(tracker.start_call, call_uuid, phone_number)
             print(f"[DB] ✅ Local call record created")
         except Exception as e:
-            print(f"[DB ERROR] {e}")
+            print(f"[DB ERROR] {__safe_log(e)}")
     asyncio.create_task(_deferred_call_setup())
 
     print(f"[CALL] Phone: {phone_number} (CRM ID: {crm_id})")
@@ -1664,7 +1672,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             call_doc = await asyncio.to_thread(_fs_write)
             print(f"[FIRESTORE] ✅ CALL DOC CREATED (agentId={call_doc['agentId']}, phone={call_doc['phoneNumber']})")
         except Exception as e:
-            print(f"[DB ERROR] ❌ Failed to create Firebase live call: {e}")
+            print(f"[DB ERROR] ❌ Failed to create Firebase live call: {__safe_log(e)}")
     asyncio.create_task(_deferred_firestore_create())
 
     db = get_db_session()
@@ -1753,7 +1761,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 await ws.send_json({"type": "STOP_BROADCAST", "stop_broadcast": True})
                 print("[SYSTEM] ✅ STOP_BROADCAST sent — FreeSWITCH buffer flushed")
             except Exception as e:
-                print(f"[SYSTEM] STOP_BROADCAST send failed: {e}")
+                print(f"[SYSTEM] STOP_BROADCAST send failed: {__safe_log(e)}")
 
     async def log_live_message(role: str, text: str):
         if not call_uuid or not text: return
@@ -1768,7 +1776,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 }, merge=True)
             await asyncio.to_thread(push)
         except Exception as e:
-            print(f"[LIVE TRANSCRIPT ERROR] {e}")
+            print(f"[LIVE TRANSCRIPT ERROR] {__safe_log(e)}")
 
     first_bot_audio_sent = False  # Track if first audio chunk has been sent this turn
 
@@ -1815,7 +1823,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             })
             return True
         except Exception as e:
-            print(f"[WS] Send failed: {e}")
+            print(f"[WS] Send failed: {__safe_log(e)}")
             return False
 
     client = get_shared_client()
@@ -1972,7 +1980,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 print("[SYSTEM] Number accumulator task cancelled")
                 raise
             except Exception as e:
-                print(f"[Process Error in accumulator]: {e}")
+                print(f"[Process Error in accumulator]: {__safe_log(e)}")
             finally:
                 is_processing_audio = False
 
@@ -2036,7 +2044,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 sst_model_2_stt = stt
                 print("[SST_MODEL_2 WS] ✅ Streaming STT ready")
             except Exception as e:
-                print(f"[SST_MODEL_2 WS] ❌ Failed to connect: {e} (batch ASR fallback active)")
+                print(f"[SST_MODEL_2 WS] ❌ Failed to connect: {__safe_log(e)} (batch ASR fallback active)")
                 import traceback
                 traceback.print_exc()
 
@@ -2184,7 +2192,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 is_processing_audio = False
                                 continue
                         except Exception as e:
-                            print(f"[BRAIN] ❌ Retry failed: {e}")
+                            print(f"[BRAIN] ❌ Retry failed: {__safe_log(e)}")
                             is_processing_audio = False
                             continue
                     else:
@@ -2235,7 +2243,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    print(f"[SST_MODEL_2 PROCESSOR] Error: {e}")
+                    print(f"[SST_MODEL_2 PROCESSOR] Error: {__safe_log(e)}")
                     import traceback
                     traceback.print_exc()
                 finally:
@@ -2296,7 +2304,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     silero_vad.finalize_noise_profile()
                 print("[SYSTEM] Opener playback complete - barge-in now enabled (customer can speak!)")
             except Exception as e:
-                print(f"[SYSTEM] Timer error: {e}")
+                print(f"[SYSTEM] Timer error: {__safe_log(e)}")
 
         asyncio.create_task(enable_barge_in_delayed())
 
@@ -2381,7 +2389,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             break
                         await send_audio_safe(audio_chunk)
                 except Exception as e:
-                    print(f"[NO-RESPONSE] TTS error: {e}")
+                    print(f"[NO-RESPONSE] TTS error: {__safe_log(e)}")
                 finally:
                     bot_speaking = False
 
@@ -2485,7 +2493,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                     if user_text:
                                         await sst_model_2_transcript_queue.put(user_text)
                                 except Exception as e:
-                                    print(f"[FALLBACK ASR] Error: {e}")
+                                    print(f"[FALLBACK ASR] Error: {__safe_log(e)}")
                             else:
                                 print(f"[VAD] Speech too short ({duration:.2f}s), ignoring")
 
@@ -2632,12 +2640,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             await brain.add_system_note("[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]")
                             await sst_model_2_transcript_queue.put("[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]")
                     except Exception as e:
-                        print(f"[WS JSON Error]: {e}")
+                        print(f"[WS JSON Error]: {__safe_log(e)}")
 
         except WebSocketDisconnect:
             print("[CALL] Client disconnected")
         except Exception as e:
-            print(f"[CALL ERROR]: {e}")
+            print(f"[CALL ERROR]: {__safe_log(e)}")
             import traceback
             traceback.print_exc()
         finally:
@@ -2827,7 +2835,7 @@ try:
     app.include_router(api_router)
     print("[DASHBOARD] API routes mounted at /api")
 except Exception as e:
-    print(f"[DASHBOARD] Warning: Could not load API routes: {e}")
+    print(f"[DASHBOARD] Warning: Could not load API routes: {__safe_log(e)}")
 
 # Serve dashboard - try enterprise frontend dist first, then old dashboard/
 ENTERPRISE_DASHBOARD_DIR = os.path.join(PROJECT_ROOT, "enterprise", "frontend", "dist")
@@ -2846,7 +2854,7 @@ try:
         print(f"[DASHBOARD] Warning: Enterprise dashboard directory not found at {ENTERPRISE_DASHBOARD_DIR}")
         print(f"[DASHBOARD] Please build the enterprise frontend first (cd enterprise/frontend && npm run build)")
 except Exception as e:
-    print(f"[DASHBOARD] Warning: Could not mount dashboard: {e}")
+    print(f"[DASHBOARD] Warning: Could not mount dashboard: {__safe_log(e)}")
 
 
 if __name__ == "__main__":

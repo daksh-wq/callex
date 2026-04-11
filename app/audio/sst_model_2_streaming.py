@@ -25,6 +25,14 @@ Usage:
 import asyncio
 import base64
 import json
+
+def __safe_log(msg) -> str:
+    if msg is None: return "None"
+    s = __safe_log(msg)
+    s = s.replace("sarvam", "SST_MODEL_2").replace("Sarvam", "SST_MODEL_2").replace("SARVAM", "SST_MODEL_2")
+    s = s.replace("saaras", "genartml-callex").replace("Saaras", "genartml-callex")
+    return s
+
 import struct
 import time
 from typing import Callable, Optional, Awaitable, Any
@@ -144,12 +152,12 @@ class SSTModel2StreamingSTT:
                         print(f"[SST_MODEL_2 WS] 🔄 Retrying connection with next available API key...")
             except Exception as e:
                 last_error = e
-                print(f"[SST_MODEL_2 WS] ⚠️ Connection failed on key #{attempt+1}: {e}")
+                print(f"[SST_MODEL_2 WS] ⚠️ Connection failed on key #{attempt+1}: {__safe_log(e)}")
                 if attempt < len(keys_to_try) - 1:
                     print(f"[SST_MODEL_2 WS] 🔄 Retrying connection with next available API key...")
 
         self._is_connected = False
-        print(f"[SST_MODEL_2 WS] ❌ ALL connection attempts to SSTModel2 streaming dropped/failed! Fallback ASR required. Last Error: {last_error}")
+        print(f"[SST_MODEL_2 WS] ❌ ALL connection attempts to SSTModel2 streaming dropped/failed! Fallback ASR required. Last Error: {__safe_log(last_error)}")
         raise last_error
 
     async def _receive_loop(self):
@@ -181,18 +189,18 @@ class SSTModel2StreamingSTT:
 
                     elif msg_type == "error":
                         error_data = msg.get("data", {})
-                        error_msg = error_data.get("message", str(msg))
-                        print(f"[SST_MODEL_2 WS] ⚠️ Server error: {error_msg}")
+                        error_msg = error_data.get("message", __safe_log(msg))
+                        print(f"[SST_MODEL_2 WS] ⚠️ Server error: {__safe_log(error_msg)}")
 
                     # Silently ignore unknown message types (heartbeats, etc.)
 
                 except json.JSONDecodeError:
-                    print(f"[SST_MODEL_2 WS] ⚠️ Non-JSON message: {str(raw_msg)[:100]}")
+                    print(f"[SST_MODEL_2 WS] ⚠️ Non-JSON message: {__safe_log(raw_msg)[:100]}")
                 except Exception as e:
-                    print(f"[SST_MODEL_2 WS] ⚠️ Message handler error: {e}")
+                    print(f"[SST_MODEL_2 WS] ⚠️ Message handler error: {__safe_log(e)}")
 
         except websockets.exceptions.ConnectionClosed as e:
-            print(f"[SST_MODEL_2 WS] 🔌 Connection closed: {e}")
+            print(f"[SST_MODEL_2 WS] 🔌 Connection closed: {__safe_log(e)}")
             self._is_connected = False
             # Attempt reconnect
             await self._try_reconnect()
@@ -202,7 +210,7 @@ class SSTModel2StreamingSTT:
             raise
 
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ❌ Receive loop error: {e}")
+            print(f"[SST_MODEL_2 WS] ❌ Receive loop error: {__safe_log(e)}")
             self._is_connected = False
             await self._try_reconnect()
 
@@ -220,7 +228,7 @@ class SSTModel2StreamingSTT:
             await self.connect()
             print(f"[SST_MODEL_2 WS] ✅ Reconnected successfully")
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ❌ Reconnect failed: {e}")
+            print(f"[SST_MODEL_2 WS] ❌ Reconnect failed: {__safe_log(e)}")
 
     def send_audio(self, pcm16_bytes: bytes):
         """
@@ -267,7 +275,7 @@ class SSTModel2StreamingSTT:
             # Send as binary WebSocket frame (SSTModel2 expects raw binary audio)
             asyncio.create_task(self._safe_send_binary(wav_bytes))
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ⚠️ send_audio error: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ send_audio error: {__safe_log(e)}")
 
     def send_flush(self):
         """Send flush signal to finalize transcript (SSTModel2 API format)."""
@@ -277,7 +285,7 @@ class SSTModel2StreamingSTT:
             message = json.dumps({"type": "flush"})
             asyncio.create_task(self._safe_send(message))
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ⚠️ send_flush error: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ send_flush error: {__safe_log(e)}")
 
     async def _safe_send(self, message: str):
         """Send a text message with error handling (no crash on closed socket)."""
@@ -287,7 +295,7 @@ class SSTModel2StreamingSTT:
         except websockets.exceptions.ConnectionClosed:
             self._is_connected = False
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ⚠️ Send failed: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ Send failed: {__safe_log(e)}")
             self._is_connected = False
 
     async def _safe_send_binary(self, data: bytes):
@@ -298,7 +306,7 @@ class SSTModel2StreamingSTT:
         except websockets.exceptions.ConnectionClosed:
             self._is_connected = False
         except Exception as e:
-            print(f"[SST_MODEL_2 WS] ⚠️ Binary send failed: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ Binary send failed: {__safe_log(e)}")
             self._is_connected = False
 
     async def disconnect(self):
