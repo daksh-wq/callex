@@ -268,8 +268,10 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Natural silence timeout — 1.2s allows callers to pause, breathe, or think without cutting them off
-SILENCE_TIMEOUT = 0.80  # 0.80s — Fast conversational pacing: minimizes lag after caller finishes
+# Silence timeout is now a SAFETY NET only — the STT server's AI-based VAD
+# handles primary end-of-speech detection via speech_end callbacks.
+# This timeout only fires if the server VAD signal is missed.
+SILENCE_TIMEOUT = 0.45  # 450ms — ultra-fast: AI VAD handles the real detection
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -288,7 +290,7 @@ SEMANTIC_MIN_LENGTH = 3
 SPEAKER_SIMILARITY_THRESHOLD = 0.48  # Low enough to not reject caller's degraded phone audio
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
-BARGE_IN_SILENCE_TIMEOUT = 0.80  # 800ms for barge-in end-of-speech detection
+BARGE_IN_SILENCE_TIMEOUT = 0.35  # 350ms for barge-in — even faster since we know customer is interrupting
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
 ROLLING_ASR_INTERVAL = 0.8  # More frequent rolling partial ASR requests
@@ -2497,7 +2499,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     # ── Secondary: audio was fed to SSTModel2 but speaking never formally started ──
                     # (handles short quiet words like "haan", "nahi" that don't pass barge-in threshold)
-                    if not speaking and sst_model_2_fed_audio and sst_model_2_last_audio_time > 0 and (now - sst_model_2_last_audio_time) > 1.5:
+                    if not speaking and sst_model_2_fed_audio and sst_model_2_last_audio_time > 0 and (now - sst_model_2_last_audio_time) > 0.7:
                         print(f"[VAD] 🔇 SSTModel2 audio timeout — flushing unsent speech")
                         if sst_model_2_stt and sst_model_2_stt.is_connected:
                             sst_model_2_stt.send_flush()
