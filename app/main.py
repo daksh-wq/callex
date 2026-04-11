@@ -271,7 +271,7 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.65  # Rejects background noise (scores 0.3-0.5) while passing real speech
+SILERO_CONFIDENCE_THRESHOLD = 0.55  # Balanced: catches single words while rejecting ambient noise
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
@@ -1685,6 +1685,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     barge_in_confirm_start = None  # Timestamp when continuous caller speech started
     was_barge_in = False  # Track if current speech started as a barge-in
     barge_in_active = False  # Instantly blocks all bot audio when True
+    sarvam_fed_audio = False  # Track if audio was sent to Sarvam since last flush
+    sarvam_last_audio_time = 0.0  # When audio was last sent to Sarvam
+    speaking_start_time = 0.0  # When speaking started (for max duration limit)
+    MAX_SPEAKING_DURATION = 15.0  # Force end-of-speech after 15s
 
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
@@ -1994,9 +1998,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 print("[SARVAM VAD] 🎤 Server confirms speech during bot playback")
 
         async def _on_sarvam_speech_ended():
-            """Called when Sarvam server VAD detects speech end — informational only."""
-            if speaking:
-                print("[SARVAM VAD] 🔇 Server reports speech ended")
+            """Called when Sarvam server VAD detects speech end — triggers flush for transcript."""
+            nonlocal sarvam_fed_audio
+            if sarvam_fed_audio:
+                print("[SARVAM VAD] 🔇 Server reports speech ended — sending flush")
+                if sarvam_stt and sarvam_stt.is_connected:
+                    sarvam_stt.send_flush()
+                    sarvam_fed_audio = False
 
         async def _connect_sarvam():
             """Connect to Sarvam streaming STT WebSocket."""
@@ -2432,13 +2440,33 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     # Use shorter silence timeout after barge-in for faster reply
                     active_silence_timeout = BARGE_IN_SILENCE_TIMEOUT if was_barge_in else SILENCE_TIMEOUT
-                    if speaking and now - last_voice > active_silence_timeout:
+
+                    # ── End-of-speech detection (primary: silence after speaking) ──
+                    silence_detected = speaking and now - last_voice > active_silence_timeout
+
+                    # ── Safety valve: force end after MAX_SPEAKING_DURATION ──
+                    if speaking and speaking_start_time > 0 and (now - speaking_start_time) > MAX_SPEAKING_DURATION:
+                        print(f"[VAD] ⏰ Max speaking duration ({MAX_SPEAKING_DURATION}s) reached — forcing end-of-speech")
+                        silence_detected = True
+
+                    # ── Secondary: audio was fed to Sarvam but speaking never formally started ──
+                    # (handles short quiet words like "haan", "nahi" that don't pass barge-in threshold)
+                    if not speaking and sarvam_fed_audio and sarvam_last_audio_time > 0 and (now - sarvam_last_audio_time) > 1.5:
+                        print(f"[VAD] 🔇 Sarvam audio timeout — flushing unsent speech")
+                        if sarvam_stt and sarvam_stt.is_connected:
+                            sarvam_stt.send_flush()
+                        sarvam_fed_audio = False
+                        sarvam_last_audio_time = 0.0
+
+                    if silence_detected:
                         speaking = False
                         was_barge_in = False
+                        speaking_start_time = 0.0
                         speaker_verifier.clear_verify_buffer()
 
                         if sarvam_stt and sarvam_stt.is_connected:
                             sarvam_stt.send_flush()
+                            sarvam_fed_audio = False
 
                         # ── BATCH ASR FALLBACK: If Sarvam WS is not connected, use batch ASR ──
                         if not (sarvam_stt and sarvam_stt.is_connected):
@@ -2458,7 +2486,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                         buffer.clear()
                         vad_buffer.clear()
-                        # Sarvam WS handles transcription when connected — no need to batch here
 
                     if not is_valid_speech:
                         barge_in_confirm_start = None  # Reset confirmation buffer on silence
@@ -2499,10 +2526,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if sarvam_stt and sarvam_stt.is_connected and first_line_complete:
                         if time.time() > bot_audio_expected_end + 0.15:
                             sarvam_stt.send_audio(clean_int16.tobytes())
+                            sarvam_fed_audio = True
+                            sarvam_last_audio_time = now
 
                     buffer.extend(unfiltered_clean)
                     vad_buffer.extend(filtered_chunk)
-                    last_voice = now  # Keep silence timer fresh while customer speaks
+
+                    # Only refresh silence timer on genuinely strong speech
+                    # (prevents background noise from keeping the timer alive forever)
+                    if audio_db > INTERRUPTION_THRESHOLD_DB or vad_confidence >= 0.85:
+                        last_voice = now
 
                     if audio_db > INTERRUPTION_THRESHOLD_DB:
                         if not speaking:
@@ -2546,6 +2579,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 asyncio.create_task(brain.add_system_note("[System: User interrupted previous response]"))
                                 asyncio.create_task(log_live_message("model", "[System: User interrupted previous response]"))
                             speaking = True
+                            speaking_start_time = now
                             was_barge_in = True
                             barge_in_active = True
                             last_voice = now
