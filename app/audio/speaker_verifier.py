@@ -57,7 +57,7 @@ class SpeakerVerifier:
         # Rolling verification buffer (accumulate speech for reliable comparison)
         self._verify_buffer: List[float] = []
         self._verify_buffer_duration: float = 0.0
-        self.MIN_VERIFY_DURATION: float = 0.8  # seconds of speech needed for embedding
+        self.MIN_VERIFY_DURATION: float = 0.5  # minimum seconds of speech needed for embedding (Resemblyzer min is ~0.5s)
 
         # Rolling embedding update
         self._verified_utterance_count: int = 0
@@ -277,13 +277,14 @@ class SpeakerVerifier:
             if combined_duration >= self.MIN_VERIFY_DURATION:
                 verify_audio = np.array(combined, dtype=np.float32)
             else:
-                # Not enough audio yet — soft pass with lower confidence
-                return True, 0.75
+                # Not enough audio yet — soft pass but with 0.0 confidence 
+                # so that barge_in_confirm waits for a real voice match
+                return True, 0.0
 
         # Generate embedding for incoming speech
         chunk_embedding = self._get_embedding(verify_audio)
         if chunk_embedding is None:
-            return True, 0.75
+            return True, 0.0
 
         # Compare with reference
         similarity = self._cosine_similarity(self.reference_embedding, chunk_embedding)
