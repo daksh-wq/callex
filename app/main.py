@@ -485,11 +485,11 @@ class LocalRecorder:
         return None
 
 
-def _opener_cache_path(agent_id: str, opener_text: str) -> str:
+def _opener_cache_path(agent_id: str, opener_text: str, voice_id: str = "") -> str:
     """Build a content-hash based cache path so edits to the opener auto-invalidate."""
     import hashlib
     safe_id = str(agent_id).replace('-', '_')[:32]
-    text_hash = hashlib.md5(opener_text.encode('utf-8')).hexdigest()[:10]
+    text_hash = hashlib.md5(f"{opener_text}|{voice_id}".encode('utf-8')).hexdigest()[:10]
     return os.path.join(CACHE_DIR, f"{safe_id}_opener_{text_hash}.pcm")
 
 def _cleanup_old_opener_caches(agent_id: str, keep_path: str):
@@ -513,7 +513,7 @@ async def ensure_opener_cache(agent_id: str = None, opener_text: str = None, voi
         print("[CACHE] No agent/opener provided, skipping cache")
         return
 
-    filepath = _opener_cache_path(agent_id, opener_text)
+    filepath = _opener_cache_path(agent_id, opener_text, voice_id)
 
     if os.path.exists(filepath):
         print(f"[CACHE] Opener found: {filepath}")
@@ -2239,8 +2239,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         brain.mark_opening_spoken()  # Lock for repeat detection
         asyncio.create_task(log_live_message("model", opener_text))
 
-        # Cache path uses content-hash so edits to opening line auto-invalidate
-        cache_path = _opener_cache_path(agent_config['id'], opener_text)
+        # Cache path uses content-hash so edits to opening line or voice auto-invalidate
+        cache_path = _opener_cache_path(agent_config['id'], opener_text, agent_config.get('voice', ''))
         total_opener_bytes = 0
         first_bot_audio_sent = False
         bot_speaking = True
