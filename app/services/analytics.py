@@ -110,6 +110,15 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
                     print("[ANALYSIS] Empty response from model")
                     return None
                 raw_json = parts[0]["text"]
+                # Clean up markdown code blocks if the model wrapped the JSON
+                if raw_json.startswith("```json"):
+                    raw_json = raw_json[7:]
+                elif raw_json.startswith("```"):
+                    raw_json = raw_json[3:]
+                if raw_json.endswith("```"):
+                    raw_json = raw_json[:-3]
+                raw_json = raw_json.strip()
+                
                 result = json.loads(raw_json)
                 
                 today = date.today()
@@ -139,6 +148,10 @@ async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], a
                     "notes": result.get("notes", ""),
                     "structuredData": json.dumps(structured_data) if structured_data else None
                 }
+            else:
+                print(f"[ANALYSIS] Invalid response structure: {data}")
+        else:
+            print(f"[ANALYSIS ERROR] HTTP {r.status_code} from Gemini: {r.text[:500]}")
     except Exception as e:
         import traceback
         print(f"[ANALYSIS ERROR] {type(e).__name__}: {str(e)}")
