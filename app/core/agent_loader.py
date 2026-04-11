@@ -189,6 +189,7 @@ def _doc_to_dict(doc) -> Dict[str, Any]:
         'patienceMs': 800,
         'prosodyRate': 1.0,
         'prosodyPitch': 1.0,
+        'voiceSpeed': 1.0,
         'name': 'Agent',
     }
 

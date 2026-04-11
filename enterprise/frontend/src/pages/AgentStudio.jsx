@@ -312,6 +312,8 @@ function UserAgentStudio() {
     const [promptVersions, setPromptVersions] = useState([]);
     const [newAgent, setNewAgent] = useState(false);
     const [showSimulation, setShowSimulation] = useState(false);
+    const [listTab, setListTab] = useState('production');
+    const [pushingProd, setPushingProd] = useState(false);
     const { showToast } = useStore();
 
     const fetchAgents = () => api.agents().then(setAgents);
@@ -346,8 +348,22 @@ function UserAgentStudio() {
 
     async function deleteAgent(id) {
         if (!window.confirm("Delete this agent?")) return;
-        await api.deleteAgent(id);
         showToast('Agent deleted', 'info'); setSelected(null); setForm({}); fetchAgents();
+    }
+
+    async function pushToProd(id) {
+        if (!window.confirm("Are you sure? This will permanently overwrite the Production Agent's system prompt with this Sandbox's prompt!")) return;
+        setPushingProd(true);
+        try {
+            await api.post(`/agents/${id}/push-to-prod`);
+            showToast('Successfully pushed Sandbox to Production!', 'success');
+            // Refresh to show updated parent agent if selected
+            fetchAgents();
+        } catch (e) {
+            showToast(e.message || 'Failed to push to production', 'error');
+        } finally {
+            setPushingProd(false);
+        }
     }
 
     async function setStatus(id, status) {
@@ -379,20 +395,30 @@ function UserAgentStudio() {
 
             <div className="flex gap-6 h-[calc(100vh-160px)]">
                 {/* Agent List Sidebar */}
-                <div className="w-64 shrink-0 space-y-2 overflow-y-auto pr-2 custom-scroll">
-                    {agents.map(a => (
-                        <button key={a.id} onClick={() => selectAgent(a)} className={`w-full text-left p-3.5 rounded-xl border transition-all ${selected?.id === a.id ? 'border-orange-200 bg-orange-50' : 'border-gray-100 bg-white hover:border-orange-100'}`}>
-                            <div className="flex items-center gap-2">
-                                <Bot size={14} className="text-orange-500" />
-                                <span className="font-semibold text-sm text-gray-800 truncate">{a.name}</span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                                <span className={a.status === 'active' ? 'badge-green' : a.status === 'paused' ? 'badge-orange' : 'badge-gray'} style={{ fontSize: '10px' }}>{a.status}</span>
-                                <span className="text-[10px] text-gray-400">{a.llmModel}</span>
-                            </div>
-                        </button>
-                    ))}
-                    {agents.length === 0 && <p className="text-xs text-gray-400 text-center py-6">No agents yet. Create one!</p>}
+                <div className="w-72 shrink-0 bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
+                    <div className="flex border-b border-gray-100 p-2 gap-1 bg-gray-50/50">
+                        <button onClick={() => setListTab('production')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${listTab === 'production' ? 'bg-white shadow-sm text-gray-900 border border-gray-150' : 'text-gray-500 hover:text-gray-700'}`}>Production</button>
+                        <button onClick={() => setListTab('sandbox')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${listTab === 'sandbox' ? 'bg-white shadow-sm text-gray-900 border border-gray-150' : 'text-gray-500 hover:text-gray-700'}`}>Sandbox</button>
+                    </div>
+                    <div className="flex-1 space-y-2 overflow-y-auto p-3 custom-scroll">
+                        {(listTab === 'production' ? agents.filter(a => !a.isTrainingSandbox) : agents.filter(a => a.isTrainingSandbox)).map(a => (
+                            <button key={a.id} onClick={() => selectAgent(a)} className={`w-full text-left p-3.5 rounded-xl border transition-all ${selected?.id === a.id ? 'border-orange-200 bg-orange-50' : 'border-gray-100 bg-white hover:border-orange-100'}`}>
+                                <div className="flex items-center gap-2">
+                                    <Bot size={14} className="text-orange-500" />
+                                    <span className="font-semibold text-sm text-gray-800 truncate">{a.name}</span>
+                                </div>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <span className={a.status === 'active' ? 'badge-green' : a.status === 'paused' ? 'badge-orange' : 'badge-gray'} style={{ fontSize: '10px' }}>{a.status}</span>
+                                    {a.isTrainingSandbox && <span className="badge-purple" style={{ fontSize: '10px' }}>Auto-Learning</span>}
+                                </div>
+                            </button>
+                        ))}
+                        {(listTab === 'production' ? agents.filter(a => !a.isTrainingSandbox) : agents.filter(a => a.isTrainingSandbox)).length === 0 && (
+                            <p className="text-xs text-gray-400 text-center py-6">
+                                {listTab === 'production' ? 'No production agents yet.' : 'No sandbox agents created.'}
+                            </p>
+                        )}
+                    </div>
                 </div>
 
                 {/* Main Configuration Panel */}
@@ -408,6 +434,11 @@ function UserAgentStudio() {
                                 </select>
                             </div>
                             <div className="flex gap-2">
+                                {selected?.isTrainingSandbox && (
+                                    <button className="btn-primary py-2 text-sm bg-purple-600 hover:bg-purple-700 shadow-purple-200" onClick={() => pushToProd(selected.id)} disabled={pushingProd}>
+                                        {pushingProd ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} {pushingProd ? 'Pushing...' : 'Push to Production'}
+                                    </button>
+                                )}
                                 {selected && <button className="btn-secondary py-2 text-blue-600 border-blue-100 hover:bg-blue-50" onClick={() => setShowSimulation(true)}><PhoneCall size={14} /> Simulate</button>}
                                 <button className="btn-primary py-2 text-sm" onClick={saveAgent}><Save size={14} /> Save</button>
                                 {selected && <button className="btn-secondary py-2 text-red-600 border-red-100 hover:bg-red-50" onClick={() => deleteAgent(selected.id)}><Trash2 size={14} /></button>}
@@ -490,6 +521,17 @@ function UserAgentStudio() {
                                                     <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
                                                 </label>
                                             </div>
+                                        </div>
+
+                                        <div className="bg-white p-4 rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50 to-white shadow-sm flex items-center justify-between">
+                                            <div>
+                                                <label className="label mb-0 flex items-center gap-2"><Sparkles size={14} className="text-blue-600" /> Advanced NLP & Persuasion Mode</label>
+                                                <p className="text-xs text-blue-800 mt-1">Acts as a highly persuasive human with advanced EQ to multiply conversation time and handle objections.</p>
+                                            </div>
+                                            <label className="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" className="sr-only peer" {...FBool('advancedNlpEnabled')} />
+                                                <div className="w-9 h-5 bg-blue-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                                            </label>
                                         </div>
                                     </div>
                                 )}

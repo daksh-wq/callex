@@ -1,19 +1,42 @@
 import asyncio
-import httpx
+import websockets
+import base64
+import json
+import wave
+import sys
 import os
-import io
 
-SARVAM_API_KEY = "sk_bm79tc59_upqYb40cw1XeEaEFmwtJNmJB"
+key = os.environ.get("SARVAM_API_KEY", "")
 
-async def test():
-    # Record a quick empty wav or use a dummy
-    dummy_wav = b'RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
-    async with httpx.AsyncClient() as client:
-        url = "https://api.sarvam.ai/speech-to-text"
-        headers = {"api-subscription-key": SARVAM_API_KEY}
-        files = {"file": ("audio.wav", io.BytesIO(dummy_wav), "audio/wav")}
-        data = {"model": "saaras:v3", "language_code": "unknown", "mode": "transcribe"}
-        r = await client.post(url, files=files, data=data, headers=headers)
-        print(r.json())
+async def test_fields(url, key):
+    headers = {"Api-Subscription-Key": key}
+    print("Testing:", url)
+    try:
+        async with websockets.connect(url, additional_headers=headers) as ws:
+            print("Connected.")
+            msg = {
+                "audio": base64.b64encode(b'\x00' * 3200).decode('ascii'),
+                "sample_rate": 16000,
+                "encoding": "audio/wav"
+            }
+            await ws.send(json.dumps(msg))
+            try:
+                while True:
+                    res = await asyncio.wait_for(ws.recv(), 4.0)
+                    print("Response:", res)
+            except asyncio.TimeoutError:
+                pass
+            except Exception as e:
+                print("Error:", e)
+    except Exception as e:
+        print("Connection failed:", e)
 
-asyncio.run(test())
+async def test_all():
+    urls = [
+        "wss://api.sarvam.ai/speech-to-text-streaming/ws?model=saaras:v3",
+        "wss://api.sarvam.ai/v1/speech-to-text/ws?model=saaras:v3"
+    ]
+    for u in urls:
+        await test_fields(u, key)
+
+asyncio.run(test_all())

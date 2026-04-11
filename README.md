@@ -35,7 +35,7 @@
 │ • FastAPI        │ • REST API (19 routes)│ • 18 Pages (SPA)      │
 │ • WebSocket      │ • WebSocket (Live)    │ • React Router        │
 │ • FreeSWITCH ESL │ • Prisma ORM          │ • Real-time WS        │
-│ • ElevenLabs TTS │ • JWT Auth            │                       │
+│ • Callex TTS │ • JWT Auth            │                       │
 │ • Gemini STT/LLM │ • API Key Auth        │                       │
 │ • 6-Layer Gating │ • External API        │                       │
 └─────────────────┴──────────────────────┴────────────────────────┘
@@ -52,7 +52,7 @@
 | Layer | Technology |
 |-------|-----------|
 | **AI Engine** | Python 3.11, FastAPI, Uvicorn, WebSocket |
-| **Voice** | ElevenLabs TTS, Gemini 2.5 Flash (STT/LLM) |
+| **Voice** | Callex TTS, Gemini 2.5 Flash (STT/LLM) |
 | **Audio Processing** | WebRTC VAD, Silero VAD, RNNoise, YAMNet, Resemblyzer |
 | **Telephony** | FreeSWITCH (ESL), SIP/VoIP |
 | **Backend** | Node.js, Express, Prisma, Socket.IO |
@@ -285,7 +285,7 @@ pm2 monit                   # Real-time monitoring
 Create a `.env` file in the project root:
 
 ```env
-# ElevenLabs (TTS)
+# Callex (TTS)
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 GENARTML_SECRET_KEY=your_elevenlabs_api_key
 
@@ -315,7 +315,7 @@ The heart of the platform. Handles real-time voice calls via WebSocket:
 2. **Processes through 6-layer gating pipeline** to detect valid speech
 3. **Transcribes** using Gemini 2.5 Flash
 4. **Generates response** using Gemini LLM with agent's system prompt
-5. **Synthesizes speech** using ElevenLabs TTS
+5. **Synthesizes speech** using Callex TTS
 6. **Streams audio back** to FreeSWITCH
 
 ### Audio Gating Pipeline (`app/audio/gating.py`)

@@ -72,7 +72,8 @@ router.post('/', upload.single('file'), async (req, res) => {
         amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
         piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
         complianceScript, dynamicCodeSwitching, dncLitigatorScrub, callBlending, costCapTokens,
-        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions
+        postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions,
+        voiceSpeed
     } = req.body;
 
     const data = {
@@ -82,6 +83,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         llmModel: llmModel || 'callex-1.3',
         fillerPhrases: typeof fillerPhrases === 'string' ? fillerPhrases : JSON.stringify(fillerPhrases || ['Let me check...', 'One moment...']),
         prosodyRate: parseNum(prosodyRate, 1.0), prosodyPitch: parseNum(prosodyPitch, 1.0),
+        voiceSpeed: parseNum(voiceSpeed, 1.0),
         ipaLexicon: typeof ipaLexicon === 'string' ? ipaLexicon : JSON.stringify(ipaLexicon || {}),
         tools: typeof tools === 'string' ? tools : JSON.stringify(tools || []),
         topK: parseNum(topK, 5), similarityThresh: parseNum(similarityThresh, 0.75),
@@ -201,6 +203,28 @@ router.post('/', upload.single('file'), async (req, res) => {
         agentId: ref.id, version: 1, prompt: systemPrompt || '', isActive: true, label: 'v1 - Initial', createdAt: new Date()
     });
 
+    // --- Create Shadow Training Sandbox Automatically ---
+    if (!data.isTrainingSandbox) {
+        const sandboxData = {
+            ...data,
+            name: `${data.name} - Training Sandbox`,
+            isTrainingSandbox: true,
+            parentAgentId: ref.id,
+            status: 'draft',
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+        try {
+            const sandboxRef = await db.collection('agents').add(sandboxData);
+            await db.collection('promptVersions').add({
+                agentId: sandboxRef.id, version: 1, prompt: systemPrompt || '', isActive: true, label: 'v1 - Sandbox Initial', createdAt: new Date()
+            });
+            console.log(`[AGENT CREATION] Auto-generated Shadow Sandbox: ${sandboxRef.id}`);
+        } catch (e) {
+            console.error('[AGENT CREATION] Failed to generate Shadow Sandbox:', e);
+        }
+    }
+
     // Handle optional unified dispositions
     let createdDispositions = [];
     if (dispositions) {
@@ -252,7 +276,7 @@ router.patch('/:id', upload.single('file'), async (req, res) => {
     }
 
     // Numbers
-    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays'];
+    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays', 'voiceSpeed'];
     for (const f of numFields) {
         if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
     }
@@ -623,6 +647,55 @@ router.post('/clone-voice', upload.single('audio'), async (req, res) => {
     } catch (e) {
         console.error("Voice Cloning Error:", e);
         res.status(500).json({ error: 'Failed to clone voice' });
+    }
+});
+
+// POST /api/agents/:id/push-to-prod
+router.post('/:id/push-to-prod', async (req, res) => {
+    try {
+        const sandboxDoc = await db.collection('agents').doc(req.params.id).get();
+        if (!sandboxDoc.exists) return res.status(404).json({ error: 'Sandbox Agent not found' });
+        
+        const sandbox = docToObj(sandboxDoc);
+        if (!sandbox.isTrainingSandbox || !sandbox.parentAgentId || sandbox.userId !== req.userId) {
+            return res.status(400).json({ error: 'Invalid Sandbox Agent for Production Push' });
+        }
+
+        const parentDoc = await db.collection('agents').doc(sandbox.parentAgentId).get();
+        if (!parentDoc.exists) return res.status(404).json({ error: 'Parent Production Agent not found' });
+
+        // Update the parent agent with the finalized Sandbox Prompt & KnowledgeBase
+        const updates = { 
+            systemPrompt: sandbox.systemPrompt, 
+            knowledgeBase: sandbox.knowledgeBase,
+            updatedAt: new Date() 
+        };
+        await db.collection('agents').doc(sandbox.parentAgentId).update(updates);
+
+        // Versioning for the parent agent
+        const pvSnap = await db.collection('promptVersions')
+            .where('agentId', '==', sandbox.parentAgentId)
+            .get();
+        let maxVersion = 0;
+        pvSnap.forEach(doc => {
+            const pv = doc.data();
+            if (pv.version > maxVersion) maxVersion = pv.version;
+            doc.ref.update({ isActive: false });
+        });
+        
+        await db.collection('promptVersions').add({
+            agentId: sandbox.parentAgentId,
+            version: maxVersion + 1,
+            prompt: sandbox.systemPrompt || '',
+            isActive: true,
+            label: `v${maxVersion + 1} - Pushed from Sandbox`,
+            createdAt: new Date()
+        });
+
+        res.json({ success: true, message: 'Successfully pushed Sandbox to Production', parentAgentId: sandbox.parentAgentId });
+    } catch (e) {
+        console.error("[PUSH TO PROD ERROR]", e);
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 

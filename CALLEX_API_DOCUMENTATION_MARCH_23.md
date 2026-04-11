@@ -26,7 +26,7 @@ Create a new AI agent and immediately feed it a knowledge base document in one r
 | `name`         | String | Yes      | The internal name for the agent                                             |
 | `systemPrompt` | String | No       | The core behavior instructions. Optional if relying solely on the document. |
 | `file`         | File   | No       | The PDF/Excel/Word document. Max size 20MB.                                 |
-| `voice`        | String | No       | ElevenLabs voice ID (e.g.,`MF4J4IDTRo0AxOO4dpFR`)                         |
+| `voice`        | String | No       | Callex voice ID (e.g.,`MF4J4IDTRo0AxOO4dpFR`)                         |
 | `dispositions` | JSON   | No       | Stringified array of objects: `[{"name": "Sold", "category": "Sales"}]` |
 
 **Success Response (201 Created):**

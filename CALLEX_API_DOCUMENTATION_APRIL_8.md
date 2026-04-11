@@ -191,6 +191,7 @@ Only `name` is required. All other fields have smart defaults.
 | `recordCall` | boolean | No | `true` | Record the call |
 | `piiRedaction` | boolean | No | `true` | Auto-redact sensitive info |
 | `autoSummary` | boolean | No | `true` | Generate AI call summary |
+| `advancedNlpEnabled` | boolean | No | `false` | Enable psychological sales and persuasion framework |
 
 > 📘 See full [Agent Configuration Reference](#agent-configuration-reference) for all 50+ fields.
 

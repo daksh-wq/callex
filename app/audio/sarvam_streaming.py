@@ -25,8 +25,9 @@ Usage:
 import asyncio
 import base64
 import json
+import struct
 import time
-from typing import Callable, Optional, Awaitable
+from typing import Callable, Optional, Awaitable, Any
 
 import websockets
 import websockets.exceptions
@@ -46,8 +47,8 @@ class SarvamStreamingSTT:
 
     def __init__(
         self,
-        api_key: str,
-        on_transcript: Callable[[str], Awaitable[None]],
+        api_key: str = None,
+        on_transcript: Callable[[str], Awaitable[None]] = None,
         on_speech_started: Optional[Callable[[], Awaitable[None]]] = None,
         on_speech_ended: Optional[Callable[[], Awaitable[None]]] = None,
         model: str = "saaras:v3",
@@ -56,8 +57,10 @@ class SarvamStreamingSTT:
         sample_rate: int = 16000,
         vad_signals: bool = True,
         high_vad_sensitivity: bool = True,
+        key_manager: Any = None,
     ):
         self._api_key = api_key
+        self._key_manager = key_manager
         self._on_transcript = on_transcript
         self._on_speech_started = on_speech_started
         self._on_speech_ended = on_speech_ended
@@ -79,44 +82,69 @@ class SarvamStreamingSTT:
         return self._is_connected and self._ws is not None
 
     async def connect(self):
-        """Establish the WebSocket connection to Sarvam streaming API."""
-        try:
-            params = [
-                f"model={self._model}",
-                f"language-code={self._language}",
-                f"mode={self._mode}",
-            ]
-            if self._vad_signals:
-                params.append("vad_signals=true")
-            if self._high_vad_sensitivity:
-                params.append("high_vad_sensitivity=true")
+        """Establish the WebSocket connection to Sarvam streaming API with Key Rotation."""
+        params = [
+            f"model={self._model}",
+            f"language-code={self._language}",
+            f"mode={self._mode}",
+        ]
+        if self._vad_signals:
+            params.append("vad_signals=true")
+        if self._high_vad_sensitivity:
+            params.append("high_vad_sensitivity=true")
 
-            url = f"{self.WS_URL}?{'&'.join(params)}"
+        url = f"{self.WS_URL}?{'&'.join(params)}"
 
+        if self._key_manager:
+            primary_key = self._key_manager.get_key()
+            keys_to_try = [primary_key] + self._key_manager.get_all_keys_for_retry(exclude_key=primary_key)
+        else:
+            keys_to_try = [self._api_key]
+
+        last_error = None
+        
+        for attempt, key in enumerate(keys_to_try):
+            if not key:
+                continue
             headers = {
-                "Api-Subscription-Key": self._api_key,
+                "Api-Subscription-Key": key,
             }
+            try:
+                self._ws = await websockets.connect(
+                    url,
+                    additional_headers=headers,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=5,
+                    max_size=2**20,  # 1MB max message
+                )
+                self._is_connected = True
+                self._connect_time = time.time()
+                self._reconnect_count = 0
+                self._api_key = key  # lock in successful key
 
-            self._ws = await websockets.connect(
-                url,
-                additional_headers=headers,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5,
-                max_size=2**20,  # 1MB max message
-            )
-            self._is_connected = True
-            self._connect_time = time.time()
-            self._reconnect_count = 0
+                # Start background receiver
+                self._receive_task = asyncio.create_task(self._receive_loop())
+                print(f"[SARVAM WS] ✅ Connected to streaming STT ({self._model}, {self._language}) using key #{attempt + 1}")
+                return
 
-            # Start background receiver
-            self._receive_task = asyncio.create_task(self._receive_loop())
-            print(f"[SARVAM WS] ✅ Connected to streaming STT ({self._model}, {self._language})")
+            except websockets.exceptions.InvalidStatus as e:
+                last_error = e
+                status_code = e.response.status_code
+                print(f"[SARVAM WS] ⚠️ Key #{attempt + 1} HTTP {status_code} ({key[:8]}...)")
+                if self._key_manager:
+                    self._key_manager.report_failure(key, status_code)
+                    if attempt < len(keys_to_try) - 1:
+                        print(f"[SARVAM WS] 🔄 Retrying connection with next available API key...")
+            except Exception as e:
+                last_error = e
+                print(f"[SARVAM WS] ⚠️ Connection failed on key #{attempt+1}: {e}")
+                if attempt < len(keys_to_try) - 1:
+                    print(f"[SARVAM WS] 🔄 Retrying connection with next available API key...")
 
-        except Exception as e:
-            print(f"[SARVAM WS] ❌ Connection failed: {e}")
-            self._is_connected = False
-            raise
+        self._is_connected = False
+        print(f"[SARVAM WS] ❌ ALL connection attempts to Sarvam streaming dropped/failed! Fallback ASR required. Last Error: {last_error}")
+        raise last_error
 
     async def _receive_loop(self):
         """Background task: reads messages from Sarvam WS and dispatches callbacks."""
@@ -190,39 +218,72 @@ class SarvamStreamingSTT:
 
     def send_audio(self, pcm16_bytes: bytes):
         """
-        Send PCM16 audio wrapped as WAV to Sarvam streaming STT.
+        Send PCM16 audio to Sarvam streaming STT as base64-encoded JSON.
+        
+        Sarvam's WebSocket API expects JSON messages with the audio payload:
+            {"audio": "<base64-wav>", "encoding": "audio/wav", "sample_rate": 16000}
+        
+        We wrap raw PCM16 in a minimal WAV header, base64-encode the result,
+        and send it as a JSON text frame — matching the format used by the
+        official Sarvam SDK (sarvamai.transcribe()).
         
         Non-blocking: schedules the send on the event loop.
         Safe to call from the audio processing hot path.
         """
         if not self._is_connected or self._ws is None:
             return
+        if not pcm16_bytes or len(pcm16_bytes) == 0:
+            return
 
         try:
-            b64_data = base64.b64encode(pcm16_bytes).decode('ascii')
+            # Build a minimal WAV header for this chunk
+            num_channels = 1
+            sample_width = 2  # 16-bit = 2 bytes
+            data_size = len(pcm16_bytes)
+            byte_rate = self._sample_rate * num_channels * sample_width
+            block_align = num_channels * sample_width
+
+            wav_header = struct.pack(
+                '<4sI4s4sIHHIIHH4sI',
+                b'RIFF',
+                36 + data_size,
+                b'WAVE',
+                b'fmt ',
+                16,                     # Subchunk1Size (PCM)
+                1,                      # AudioFormat (1 = PCM)
+                num_channels,
+                self._sample_rate,
+                byte_rate,
+                block_align,
+                16,                     # BitsPerSample
+                b'data',
+                data_size
+            )
+            wav_bytes = wav_header + pcm16_bytes
+
+            # Encode to base64 and send as JSON (Sarvam API requirement)
+            audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
             message = json.dumps({
-                "audio": {
-                    "data": b64_data,
-                    "sample_rate": str(self._sample_rate),
-                    "encoding": "pcm_s16le",
-                }
+                "audio": audio_b64,
+                "encoding": "audio/wav",
+                "sample_rate": self._sample_rate,
             })
             asyncio.create_task(self._safe_send(message))
         except Exception as e:
             print(f"[SARVAM WS] ⚠️ send_audio error: {e}")
 
     def send_flush(self):
-        """Send flush signal to finalize transcript."""
+        """Send flush signal to finalize transcript (Sarvam API format)."""
         if not self._is_connected or self._ws is None:
             return
         try:
-            message = json.dumps({"flush": True})
+            message = json.dumps({"type": "flush"})
             asyncio.create_task(self._safe_send(message))
         except Exception as e:
             print(f"[SARVAM WS] ⚠️ send_flush error: {e}")
 
     async def _safe_send(self, message: str):
-        """Send a message with error handling (no crash on closed socket)."""
+        """Send a text message with error handling (no crash on closed socket)."""
         try:
             if self._ws and self._is_connected:
                 await self._ws.send(message)
@@ -230,6 +291,17 @@ class SarvamStreamingSTT:
             self._is_connected = False
         except Exception as e:
             print(f"[SARVAM WS] ⚠️ Send failed: {e}")
+            self._is_connected = False
+
+    async def _safe_send_binary(self, data: bytes):
+        """Send a binary frame with error handling (no crash on closed socket)."""
+        try:
+            if self._ws and self._is_connected:
+                await self._ws.send(data)
+        except websockets.exceptions.ConnectionClosed:
+            self._is_connected = False
+        except Exception as e:
+            print(f"[SARVAM WS] ⚠️ Binary send failed: {e}")
             self._is_connected = False
 
     async def disconnect(self):

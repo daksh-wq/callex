@@ -35,8 +35,9 @@ Usage:
 import re
 import asyncio
 import time
+import hashlib
 from collections import deque
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from difflib import SequenceMatcher
 
 
@@ -57,7 +58,8 @@ class ConversationBrain:
         # ── Core State (per-call isolated) ──
         self.history: List[Dict] = []        # Trimmed context window for LLM
         self.full_history: List[Dict] = []   # Complete transcript for analytics
-        self._lock = asyncio.Lock()          # Protects all history mutations
+        self._lock = asyncio.Lock()          # Protects all history mutations AND reads
+        self._llm_lock = asyncio.Lock()      # Gates LLM calls — only 1 at a time per call
 
         # ── Anti-Hallucination State ──
         self._opening_line: str = agent_config.get('openingLine', '')
@@ -66,6 +68,12 @@ class ConversationBrain:
         self._recent_user_messages: deque = deque(maxlen=5)  # Last N user messages
         self._last_bot_reply: str = ""                        # Most recent for duplicate check
         self._bot_speaking_text: Optional[str] = None         # Currently being spoken by TTS
+        self._bot_speaking_cleared_at: float = 0.0            # When TTS ended (for delayed clear)
+        self._BOT_ECHO_LINGER_SECONDS: float = 2.0            # Keep echo detection alive after TTS
+
+        # ── Response Fingerprinting (catches rephrased duplicates at scale) ──
+        self._response_fingerprints: Set[str] = set()  # SHA256 of normalized responses
+        self._MAX_FINGERPRINTS: int = 20                # Sliding window
 
     # ──────────────────────────────────────────────────────────────────────
     # History Management
@@ -100,12 +108,18 @@ class ConversationBrain:
             self.full_history.append({"role": "model", "parts": [{"text": text}]})
             self._trim_history()
 
-    def get_history(self) -> List[Dict]:
-        """Get a snapshot of trimmed history for LLM. Thread-safe read."""
-        return list(self.history)
+    async def get_history(self) -> List[Dict]:
+        """Get a snapshot of trimmed history for LLM. Thread-safe read under lock."""
+        async with self._lock:
+            return list(self.history)
+
+    async def get_full_history_snapshot(self) -> List[Dict]:
+        """Get the complete untruncated transcript (locked snapshot)."""
+        async with self._lock:
+            return list(self.full_history)
 
     def get_full_history(self) -> List[Dict]:
-        """Get the complete untruncated transcript."""
+        """Get the complete untruncated transcript (unlocked — use only at call end)."""
         return list(self.full_history)
 
     def get_last_bot_reply(self) -> str:
@@ -127,8 +141,15 @@ class ConversationBrain:
             self._last_bot_reply = self._opening_line
 
     def set_bot_speaking(self, text: Optional[str]):
-        """Track what the bot is currently saying (for echo detection)."""
-        self._bot_speaking_text = text
+        """Track what the bot is currently saying (for echo detection).
+        When text=None (TTS ended), keeps the last text alive for _BOT_ECHO_LINGER_SECONDS
+        to catch delayed echoes under CPU pressure."""
+        if text is not None:
+            self._bot_speaking_text = text
+            self._bot_speaking_cleared_at = 0.0
+        else:
+            # Don't clear immediately — keep alive for echo detection
+            self._bot_speaking_cleared_at = time.time()
 
     # ──────────────────────────────────────────────────────────────────────
     # Echo Detection — Prevents bot from hearing & responding to its own TTS
@@ -179,9 +200,16 @@ class ConversationBrain:
                     print(f"[ECHO DETECT] 🔇 High word overlap with bot ({overlap:.0%}): '{transcript[:50]}'")
                     return True
 
-        # Check against what the bot is currently saying
-        if self._bot_speaking_text:
-            speaking_norm = re.sub(r'[^\w\s]', '', self._bot_speaking_text.lower()).strip()
+        # Check against what the bot is currently saying (or recently said)
+        speaking_text = self._bot_speaking_text
+        # If TTS ended recently, still check against it (delayed clear)
+        if speaking_text and self._bot_speaking_cleared_at > 0:
+            if time.time() - self._bot_speaking_cleared_at > self._BOT_ECHO_LINGER_SECONDS:
+                self._bot_speaking_text = None  # Actually clear now
+                speaking_text = None
+
+        if speaking_text:
+            speaking_norm = re.sub(r'[^\w\s]', '', speaking_text.lower()).strip()
             if speaking_norm and t_norm in speaking_norm:
                 print(f"[ECHO DETECT] 🔇 Transcript matches currently-speaking text: '{transcript[:50]}'")
                 return True
@@ -245,6 +273,18 @@ class ConversationBrain:
         if reply != original:
             print(f"[BRAIN] ✂️ Cleaned: '{original[:50]}' → '{reply[:50]}'")
 
+        # Response fingerprinting — catch semantically identical rephrased responses
+        if reply.strip():
+            fingerprint = self._fingerprint(reply)
+            if fingerprint in self._response_fingerprints:
+                print(f"[BRAIN] 🛡️ BLOCKED fingerprint duplicate: '{reply[:60]}'")
+                return None
+            self._response_fingerprints.add(fingerprint)
+            # Sliding window — keep only last N fingerprints
+            if len(self._response_fingerprints) > self._MAX_FINGERPRINTS:
+                # Remove oldest (sets are unordered, but for production this is fine)
+                self._response_fingerprints.pop()
+
         return reply if reply.strip() else None
 
     def _remove_duplicate_sentences(self, text: str) -> str:
@@ -305,12 +345,22 @@ class ConversationBrain:
             return 0.0
         return SequenceMatcher(None, a, b).ratio()
 
+    @staticmethod
+    def _fingerprint(text: str) -> str:
+        """Generate a normalized fingerprint for response dedup.
+        Strips punctuation, lowercases, sorts words — catches rephrased duplicates."""
+        norm = re.sub(r'[^\w\s]', '', text.lower()).strip()
+        # Sort words to catch reordered sentences
+        words = sorted(norm.split())
+        return hashlib.sha256(' '.join(words).encode()).hexdigest()[:16]
+
     def cleanup(self):
         """Release all memory. Call when the call ends."""
         self.history.clear()
         self.full_history.clear()
         self._recent_bot_messages.clear()
         self._recent_user_messages.clear()
+        self._response_fingerprints.clear()
         self._last_bot_reply = ""
         self._bot_speaking_text = None
         print(f"[Brain:{self.call_uuid[:8]}] 🧹 Cleaned up")

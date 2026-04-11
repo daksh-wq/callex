@@ -15,6 +15,7 @@ import struct
 import json
 import time
 import re
+import threading
 import wave  # For recording
 import numpy as np
 from collections import deque
@@ -65,10 +66,10 @@ from app.core.config_manager import get_config_manager
 config_mgr = get_config_manager()
 bot_config = config_mgr.load_config()
 
-# API Keys (from config)
+# API Keys (from config + env)
 _GEMINI_ORIGINAL_KEY = bot_config.api_credentials.server_key
-# Hardcoding API key because PM2 server caching is preventing .env updates from taking effect
-GENARTML_SECRET_KEY = "ebc0cf6c4dd6f63022db2cbb3bb2323268e4ad660d19038e11e897d175345d39"
+# Load from env only — never hardcode keys in source
+GENARTML_SECRET_KEY = os.getenv("GENARTML_SECRET_KEY", "")
 GENARTML_VOICE_ID = bot_config.api_credentials.voice_id
 
 # ───────── Gemini LLM Key Pool (Round-Robin for Rate Limit Prevention) ─────────
@@ -83,6 +84,17 @@ GEMINI_KEYS = [k.strip() for k in _raw_gemini_keys if k and k.strip() and k.stri
 _gemini_key_idx = 0
 _gemini_key_lock = asyncio.Lock()
 
+# Per-key semaphore: max N concurrent Gemini requests per key
+# 4 keys × 5 concurrent = 20 max inflight LLM requests (prevents 429 storms)
+_GEMINI_MAX_CONCURRENT_PER_KEY = 5
+_gemini_key_semaphores: dict = {}
+
+def _get_gemini_semaphore(key: str) -> asyncio.Semaphore:
+    """Get or create a semaphore for a specific API key."""
+    if key not in _gemini_key_semaphores:
+        _gemini_key_semaphores[key] = asyncio.Semaphore(_GEMINI_MAX_CONCURRENT_PER_KEY)
+    return _gemini_key_semaphores[key]
+
 async def get_gemini_key() -> str:
     """Get the next Gemini API key via round-robin."""
     global _gemini_key_idx
@@ -95,15 +107,15 @@ async def get_gemini_key() -> str:
 
 # Keep a sync version for non-async contexts (startup, etc.)
 GENARTML_SERVER_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else _GEMINI_ORIGINAL_KEY
-print(f"[CONFIG] ⚡ Gemini LLM Pool initialized with {len(GEMINI_KEYS)} keys")
+print(f"[CONFIG] ⚡ Gemini LLM Pool initialized with {len(GEMINI_KEYS)} keys (max {_GEMINI_MAX_CONCURRENT_PER_KEY} concurrent/key)")
 
 # ───────── Callex Voice Key Pool (Production Failover) ─────────
 class CallexVoiceKeyManager:
-    """Production-grade API key pool with automatic failover.
+    """Production-grade API key load-balancer with automatic failover.
     
-    Manages multiple Callex Voice API keys. If one key's credits are
-    exhausted (401/402) or rate-limited (429), the manager instantly
-    rotates to the next healthy key — zero downtime for the caller.
+    Implements TRUE round-robin load balancing. If 3 concurrent requests
+    come in, they are instantly routed to 3 different keys. This maximizes
+    throughput and prevents rate-limits during high concurrency.
     """
     # HTTP codes that indicate a key is exhausted or rate-limited
     EXHAUSTED_CODES = {401, 402, 403}
@@ -113,105 +125,122 @@ class CallexVoiceKeyManager:
     def __init__(self, keys: list):
         self._keys = [k for k in keys if k]  # filter out empty strings
         self._healthy = set(range(len(self._keys)))  # indices of healthy keys
-        self._dead = set()  # indices of keys with exhausted credits (permanent until restart)
+        self._dead = set()  # indices of keys with exhausted credits
         self._cooldown = {}  # index -> timestamp when key can be retried
         self._current_idx = 0
-        self._lock = asyncio.Lock() if 'asyncio' in dir() else None
-        print(f"[CALLEX VOICE POOL] ✅ {len(self._keys)} keys loaded, all healthy")
+        self._lock = threading.Lock()  # Thread-safe lock for 100+ concurrent access
+        print(f"[CALLEX VOICE POOL] ✅ {len(self._keys)} keys loaded for Load Balancing")
 
     def _rotate_index(self):
-        """Move to the next healthy key using round-robin."""
+        """Move to the next healthy key (Must be called under lock)."""
         start = self._current_idx
         for _ in range(len(self._keys)):
             self._current_idx = (self._current_idx + 1) % len(self._keys)
+            
             # Check if rate-limited key has cooled down
             if self._current_idx in self._cooldown:
                 if time.time() >= self._cooldown[self._current_idx]:
                     del self._cooldown[self._current_idx]
                     self._healthy.add(self._current_idx)
                     print(f"[CALLEX VOICE POOL] 🔄 Key #{self._current_idx + 1} recovered from cooldown")
+                    
             if self._current_idx in self._healthy:
                 return
-        # If we looped all the way around, no healthy keys left
+        
+        # If no healthy keys left, rotate back to start
         self._current_idx = start
 
     def get_key(self) -> str:
-        """Get the current healthy API key."""
-        # First, check if any cooled-down keys can be recovered
-        now = time.time()
-        for idx in list(self._cooldown.keys()):
-            if now >= self._cooldown[idx]:
-                del self._cooldown[idx]
-                self._healthy.add(idx)
-                print(f"[CALLEX VOICE POOL] 🔄 Key #{idx + 1} recovered from cooldown")
+        """Get the next healthy API key via strict ROUND-ROBIN."""
+        with self._lock:
+            # First, check if any cooled-down keys can be recovered
+            now = time.time()
+            for idx in list(self._cooldown.keys()):
+                if now >= self._cooldown[idx]:
+                    del self._cooldown[idx]
+                    self._healthy.add(idx)
+                    print(f"[CALLEX VOICE POOL] 🔄 Key #{idx + 1} recovered from cooldown")
 
-        if not self._healthy:
-            # All keys are exhausted — last resort: try the first key anyway
-            print("[CALLEX VOICE POOL] ⚠️ ALL keys exhausted! Attempting first key as last resort...")
-            return self._keys[0] if self._keys else ""
-        
-        if self._current_idx not in self._healthy:
+            if not self._healthy:
+                # All keys are exhausted — last resort: try the first key anyway
+                print("[CALLEX VOICE POOL] ⚠️ ALL keys exhausted! Attempting first key as last resort...")
+                return self._keys[0] if self._keys else ""
+            
+            # If current index isn't healthy, find next healthy one
+            if self._current_idx not in self._healthy:
+                self._rotate_index()
+                
+            # Get the current key, then ACTIVELY ROTATE for the NEXT request
+            # This is the secret to perfect load-balancing distribution
+            selected_key = self._keys[self._current_idx]
             self._rotate_index()
-        return self._keys[self._current_idx]
+            return selected_key
 
     def report_failure(self, failed_key: str, status_code: int):
-        """Report a key failure. Marks it as dead or rate-limited depending on the HTTP code."""
-        try:
-            idx = self._keys.index(failed_key)
-        except ValueError:
-            return  # Unknown key, ignore
+        """Report a key failure. Marks it as dead or rate-limited depending on HTTP code."""
+        with self._lock:
+            try:
+                idx = self._keys.index(failed_key)
+            except ValueError:
+                return  # Unknown key, ignore
 
-        if status_code in self.EXHAUSTED_CODES:
-            # Credits exhausted — mark as permanently dead until server restart
-            self._healthy.discard(idx)
-            self._dead.add(idx)
-            remaining = len(self._healthy)
-            print(f"[CALLEX VOICE POOL] ❌ Key #{idx + 1} EXHAUSTED (HTTP {status_code}). {remaining} keys remaining.")
-        elif status_code in self.RATE_LIMITED_CODES:
-            # Rate limited — put on cooldown
-            self._healthy.discard(idx)
-            self._cooldown[idx] = time.time() + self.RATE_LIMIT_COOLDOWN
-            remaining = len(self._healthy)
-            print(f"[CALLEX VOICE POOL] ⏳ Key #{idx + 1} rate-limited (HTTP 429). Cooldown {self.RATE_LIMIT_COOLDOWN}s. {remaining} keys remaining.")
-        
-        # Auto-rotate to next healthy key
-        if self._healthy:
-            self._rotate_index()
-            print(f"[CALLEX VOICE POOL] ➡️ Switched to Key #{self._current_idx + 1}")
+            if status_code in self.EXHAUSTED_CODES and idx not in self._dead:
+                # Credits exhausted — permanently dead
+                self._healthy.discard(idx)
+                self._dead.add(idx)
+                print(f"[CALLEX VOICE POOL] ❌ Key #{idx + 1} EXHAUSTED (HTTP {status_code}). {len(self._healthy)} keys remaining.")
+            
+            elif status_code in self.RATE_LIMITED_CODES and idx not in self._cooldown:
+                # Rate limited — put on cooldown
+                self._healthy.discard(idx)
+                self._cooldown[idx] = time.time() + self.RATE_LIMIT_COOLDOWN
+                print(f"[CALLEX VOICE POOL] ⏳ Key #{idx + 1} rate-limited (HTTP 429). Cooldown {self.RATE_LIMIT_COOLDOWN}s. {len(self._healthy)} keys remaining.")
+            
+            # If the current pointer is on the failed key, fast-rotate away
+            if self._current_idx == idx and self._healthy:
+                self._rotate_index()
 
     def get_all_keys_for_retry(self, exclude_key: str = None) -> list:
-        """Get all remaining healthy keys for retry attempts (excluding the one that just failed)."""
-        keys = []
-        for idx in range(len(self._keys)):
-            if idx in self._healthy and self._keys[idx] != exclude_key:
-                keys.append(self._keys[idx])
-        return keys
+        """Get all remaining healthy keys for retry attempts."""
+        with self._lock:
+            keys = []
+            for idx in range(len(self._keys)):
+                if idx in self._healthy and self._keys[idx] != exclude_key:
+                    keys.append(self._keys[idx])
+            return keys
 
     @property
     def pool_status(self) -> str:
-        h = len(self._healthy)
-        d = len(self._dead)
-        c = len(self._cooldown)
-        return f"healthy={h}, exhausted={d}, cooldown={c}, total={len(self._keys)}"
+        with self._lock:
+            h = len(self._healthy)
+            d = len(self._dead)
+            c = len(self._cooldown)
+            return f"healthy={h}, exhausted={d}, cooldown={c}, total={len(self._keys)}"
 
 
-# Load Callex Voice API keys (hardcoded defaults — no env changes needed on server)
+# Load Callex Voice API keys from environment (no hardcoded defaults)
 _voice_keys = [
-    os.getenv("CALLEX_VOICE_KEY_1", "030a62b112af48f06748c478cd7f607c386f41b30d1be8ffc680484f808a6d9c"),
-    os.getenv("CALLEX_VOICE_KEY_2", "23b48f49c918261a3d9d9f36a779bf064b5247239b13d4b2b85f9e67fc96a92a"),
+    os.getenv("CALLEX_VOICE_KEY_1", ""),
+    os.getenv("CALLEX_VOICE_KEY_2", ""),
     os.getenv("CALLEX_VOICE_KEY_3", ""),
     os.getenv("CALLEX_VOICE_KEY_4", ""),
     os.getenv("CALLEX_VOICE_KEY_5", ""),
 ]
 voice_key_manager = CallexVoiceKeyManager(_voice_keys)
 
-# Sarvam AI ASR Configuration (⚡ Best Hindi STT — Saaras v3)
-# To avoid rate limits and hallucinations on high concurrency, we heavily load balance across multiple keys
+# TTS concurrency limiter — prevents connection pool saturation at 100+ calls
+# Each ElevenLabs stream holds an HTTP connection open for 1-3 seconds.
+# Without this, 100 simultaneous streams exhaust httpx connection pool → audio breaks.
+_TTS_MAX_CONCURRENT = int(os.getenv("TTS_MAX_CONCURRENT", "15"))
+_tts_semaphore = asyncio.Semaphore(_TTS_MAX_CONCURRENT)
+print(f"[CONFIG] 🔊 TTS concurrency limit: {_TTS_MAX_CONCURRENT} simultaneous streams")
+
+# Sarvam AI ASR keys from environment (no hardcoded defaults)
 _raw_sarvam_keys = [
-    os.getenv("SARVAM_API_KEY_1", "sk_kgi72rmr_glr1sBTLutXCMXnQaiFfGyVA"),
-    os.getenv("SARVAM_API_KEY_2", "sk_1wsdh24r_rNyxFUMot4CxeAqdqaDuduxR"),
-    os.getenv("SARVAM_API_KEY_3", "sk_3jviz6us_DNLTOy42wLIG6zpZ4olgOQIw"),
-    os.getenv("SARVAM_API_KEY_4", "sk_joguc0cy_rZ0KQ6L9wXRRn15a1Fb0tnEL"),
+    os.getenv("SARVAM_API_KEY_1", ""),
+    os.getenv("SARVAM_API_KEY_2", ""),
+    os.getenv("SARVAM_API_KEY_3", ""),
+    os.getenv("SARVAM_API_KEY_4", ""),
     os.getenv("SARVAM_API_KEY_5", ""),
 ]
 SARVAM_KEYS = [k.strip() for k in _raw_sarvam_keys if k and k.strip()]
@@ -230,7 +259,7 @@ MAX_BUFFER_SECONDS = 15
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 # Natural silence timeout — 1.3s allows callers to pause, breathe, or think without interrupting them
-SILENCE_TIMEOUT = 1.3
+SILENCE_TIMEOUT = 0.35  # 350ms — aggressive but safe (Sarvam server VAD provides backup)
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -246,11 +275,10 @@ SILERO_CONFIDENCE_THRESHOLD = 0.50  # Less aggressive, picks up softer speech
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
-# Speaker Verification Configuration
-SPEAKER_SIMILARITY_THRESHOLD = 0.65  # Less aggressive to avoid rejecting valid user speech
+SPEAKER_SIMILARITY_THRESHOLD = 0.65  
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
-BARGE_IN_SILENCE_TIMEOUT = 1.2  # 1.2s to prevent chopping half-sentences when they interrupt
+BARGE_IN_SILENCE_TIMEOUT = 0.30  # 300ms for ultra-fast barge-in response
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
 ROLLING_ASR_INTERVAL = 0.8  # More frequent rolling partial ASR requests
@@ -276,23 +304,26 @@ RETRY_DELAY = 0.15  # Fast retry — don't waste latency on waits
 
 # ── Firestore Prompt Cache (prevents redundant network reads) ──
 _prompt_cache: dict = {}  # {agent_id: {"prompt": str, "ts": float}}
+_prompt_cache_lock = asyncio.Lock()
 PROMPT_CACHE_TTL = 30.0  # seconds — re-read from Firestore every 30s max
 
-def _get_cached_prompt(agent_id: str) -> Optional[str]:
-    """Return cached systemPrompt if fresh, else None."""
-    entry = _prompt_cache.get(agent_id)
-    if entry and (time.time() - entry["ts"]) < PROMPT_CACHE_TTL:
-        return entry["prompt"]
+async def _get_cached_prompt(agent_id: str) -> Optional[str]:
+    """Return cached systemPrompt if fresh, else None. Thread-safe."""
+    async with _prompt_cache_lock:
+        entry = _prompt_cache.get(agent_id)
+        if entry and (time.time() - entry["ts"]) < PROMPT_CACHE_TTL:
+            return entry["prompt"]
     return None
 
-def _set_cached_prompt(agent_id: str, prompt: str):
-    """Cache a systemPrompt with current timestamp."""
-    _prompt_cache[agent_id] = {"prompt": prompt, "ts": time.time()}
+async def _set_cached_prompt(agent_id: str, prompt: str):
+    """Cache a systemPrompt with current timestamp. Thread-safe."""
+    async with _prompt_cache_lock:
+        _prompt_cache[agent_id] = {"prompt": prompt, "ts": time.time()}
 
 # FreeSWITCH ESL Configuration
-ESL_HOST = "127.0.0.1"
-ESL_PORT = 8021
-ESL_PASSWORD = "ClueCon"
+ESL_HOST = os.getenv("FS_HOST", "127.0.0.1")
+ESL_PORT = int(os.getenv("FS_PORT", "8021"))
+ESL_PASSWORD = os.getenv("FS_PASSWORD", "ClueCon")
 
 # Firebase Configuration (loaded from config which handles .env securely)
 from app.core.config import FIREBASE_CREDENTIALS_PATH, FIREBASE_STORAGE_BUCKET
@@ -365,7 +396,7 @@ async def freeswitch_command(cmd: str):
 
 
 def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]:
-    """Upload a file to Firebase Storage and return the public URL"""
+    """Upload a file to Firebase Storage and return a signed URL (24h expiry)."""
     if object_name is None:
         object_name = os.path.basename(file_path)
     try:
@@ -376,10 +407,13 @@ def upload_to_firebase(file_path: str, object_name: str = None) -> Optional[str]
         # Upload the file
         blob.upload_from_filename(file_path, content_type='audio/wav')
         
-        # Make the file publicly accessible for the dashboard audio player
-        blob.make_public()
-        url = blob.public_url
-        print(f"[FIREBASE] Upload Successful: {url}")
+        # Generate a signed URL (expires in 24 hours) — NOT public
+        from datetime import timedelta
+        url = blob.generate_signed_url(
+            expiration=timedelta(hours=24),
+            method='GET'
+        )
+        print(f"[FIREBASE] Upload Successful (signed URL, 24h expiry)")
         return url
     except Exception as e:
         print(f"[FIREBASE Error] Upload failed: {e}")
@@ -782,7 +816,7 @@ async def _sarvam_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, 
             r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
             
             if r.status_code == 429:
-                sarvam_key_manager.report_key_failure(sarvam_key, 429)
+                sarvam_key_manager.report_failure(sarvam_key, 429)
                 sarvam_key = sarvam_key_manager.get_key()
                 if not sarvam_key:
                     return None
@@ -791,7 +825,7 @@ async def _sarvam_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, 
             
             if r.status_code != 200:
                 print(f"[SARVAM BATCH] HTTP {r.status_code}: {r.text[:200]}")
-                sarvam_key_manager.report_key_failure(sarvam_key, r.status_code)
+                sarvam_key_manager.report_failure(sarvam_key, r.status_code)
                 if attempt == 0:
                     sarvam_key = sarvam_key_manager.get_key()
                     if sarvam_key:
@@ -998,7 +1032,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     agent = agent_config or FALLBACK_AGENT
     logic_context = agent.get('description', '') or ''
     temperature = agent.get('temperature', 0.7)
-    max_tokens = agent.get('maxTokens', 250)
+    max_tokens = min(agent.get('maxTokens', 150), 150)  # Cap at 150 — phone calls need short replies
 
     # ── Read systemPrompt with 30s TTL cache (prevents latency creep) ──
     # Cache eliminates ~50-150ms Firestore read on every single turn.
@@ -1006,28 +1040,26 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
     agent_id = agent.get('id')
     if agent_id and agent_id != 'fallback':
-        cached = _get_cached_prompt(agent_id)
+        cached = await _get_cached_prompt(agent_id)
         if cached:
             system_prompt = cached
             # Silent — no log spam on cache hits to keep logs clean
         else:
             try:
-                import firebase_admin
-                from firebase_admin import firestore as _fs
-                _db = _fs.client()
-                _doc = _db.collection('agents').document(str(agent_id)).get()
-                if _doc.exists:
-                    fresh_prompt = _doc.to_dict().get('systemPrompt')
+                from app.core.db import db_get_doc
+                _doc_data = await db_get_doc('agents', str(agent_id))
+                if _doc_data:
+                    fresh_prompt = _doc_data.get('systemPrompt')
                     if fresh_prompt:
                         system_prompt = fresh_prompt
-                        _set_cached_prompt(agent_id, fresh_prompt)
-                        print(f"[LLM] ✅ Fresh systemPrompt from Firestore (cached for {PROMPT_CACHE_TTL}s)")
+                        await _set_cached_prompt(agent_id, fresh_prompt)
+                        print(f"[LLM] ✅ Fresh systemPrompt from Firestore natively (cached for {PROMPT_CACHE_TTL}s)")
                     else:
-                        print(f"[LLM] ⚠️ Firestore agent has no systemPrompt, using agent_config fallback")
+                        print(f"[LLM] ⚠️ Firestore agent has no systemPrompt, using default/fallback")
                 else:
-                    print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore, using agent_config fallback")
+                    print(f"[LLM] ⚠️ Agent {agent_id} not found in Firestore natively, using config fallback")
             except Exception as e:
-                print(f"[LLM] ⚠️ Firestore re-read failed ({e}), using agent_config fallback")
+                print(f"[LLM] ⚠️ Threaded re-read failed ({e}), using config fallback")
     else:
         print(f"[LLM] Using fallback agent systemPrompt")
 
@@ -1105,9 +1137,12 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     
     agent_lang = agent_config.get("language", "en-US")
     if agent_lang == "gu-IN":
-        system_prompt += "1. Your PRIMIARY language is Gujarati. If the customer speaks in GUJARATI → reply in pure Gujarati. Example: 'હા, હું તમને મદદ કરી શકું છું.'\n"
-        system_prompt += "2. You must read and output all your text in the native Gujarati script.\n"
-        system_prompt += "3. If the customer speaks in Hindi or English, reply in their language, but try to steer the conversation back to Gujarati politely if possible.\n"
+        system_prompt += "1. Your PRIMARY language is Gujarati. ALWAYS write in ROMAN SCRIPT (English letters). NEVER use Gujarati Unicode script. The voice engine can ONLY read Roman/English letters.\n"
+        system_prompt += "2. Your Gujarati MUST sound like a REAL DESI GUJARATI person talking on the phone. Casual, warm, natural. NOT formal or textbook. Write EXACTLY how a Gujarati person actually speaks in daily life.\n"
+        system_prompt += "3. Use natural Gujarati fillers: 'haa bhai', 'are yaar', 'saachu kahu to', 'juo ne', 'bolo bolo', 'samjya?', 'haa ke nai?', 'saru saru'.\n"
+        system_prompt += "4. CORRECT desi output examples: 'Haa bhai, kem chho? Tamaru connection aaje band thai jase, to jaldi recharge karavi lo ne.' | 'Juo, bas be so rupiya ni vaat chhe, bau motu nathi.' | 'Are bhai, tension na lo. Hu tamne help karu chhu, bolo shu karvanu chhe?'\n"
+        system_prompt += "5. WRONG (NEVER do this): Gujarati script like 'કેમ છો' — will sound broken. Also WRONG: formal Gujarati like 'Hu tamane sahayata karava mangish' — nobody talks like that.\n"
+        system_prompt += "6. If the customer speaks Hindi or English, reply in their language, but gently steer back to casual Gujarati (Roman script).\n"
     elif agent_lang == "hi-IN":
         system_prompt += "1. If the customer speaks in HINDI → reply in pure Hindi. Example: 'जी हाँ, मैं आपकी मदद करता हूँ।'\n"
         system_prompt += "2. If the customer speaks in ENGLISH → reply in pure English. Example: 'Yes, I can help you with that.'\n"
@@ -1131,6 +1166,16 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     system_prompt += "4. Stay calm and steady even if the customer is angry or excited. Your voice must remain stable and professional.\n"
     system_prompt += "5. Never use filler words like 'umm', 'uhh', 'hmm' — these create awkward pauses in voice output.\n\n"
 
+    # --- ADVANCED SALES & PERSUASION MODE (NLP ENABLED) ---
+    if agent_config.get("advancedNlpEnabled", False):
+        system_prompt += "[PSYCHOLOGICAL MASTERY & PERSUASION FRAMEWORK (ADVANCED NLP ACTIVE)]:\n"
+        system_prompt += "You are operating in Advanced Persuasion Mode. You must act as a master of human psychology, persuasion, and emotional intelligence (high EQ). Your primary goal is to maximize conversation engagement, uncover implicit needs, and gracefully guide the user toward a positive outcome.\n"
+        system_prompt += "1. ACTIVE MIRRORING: Subtly match the customer's emotional state, pacing, and tone. Repeat their vocabulary back to them to build subconscious rapport.\n"
+        system_prompt += "2. VALIDATION & EMPATHY: Never argue. Always validate objections ('I completely understand why you'd feel that way') before offering a pivot.\n"
+        system_prompt += "3. OPEN-ENDED ENGAGEMENT: To keep the user on the phone, ask targeted open-ended questions about their specific problems instead of just giving yes/no answers.\n"
+        system_prompt += "4. THE EXPERT ADVISOR: Do not sound like a pushy salesperson. Formulate your sentences as an intelligent, caring human expert who is solving a friend's problem.\n"
+        system_prompt += "5. CONVERSATION EXTENSION: Instead of strictly wrapping up the call quickly, naturally transition into upselling, exploring deeper value propositions, or building further rapport if appropriate.\n\n"
+
     # --- ANTI-HALLUCINATION RULES (PRODUCTION CRITICAL) ---
     system_prompt += "\n\n[ANTI-HALLUCINATION RULES - FOLLOW STRICTLY]:\n"
     system_prompt += "1. ONLY answer based on what the customer actually said. NEVER assume, guess, or fabricate information the customer did not provide.\n"
@@ -1145,9 +1190,9 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
     system_prompt += "[IDENTITY RULES]:\n"
     if agent_lang == "gu-IN":
-        system_prompt += "જો કોઈ તમને પૂછે કે તમે કઈ ભાષા (language), મોડલ (model) અથવા ટેકનોલોજી (technology) પર કામ કરો છો, તો ફક્ત આ કહેવું: "
-        system_prompt += "'મને Callex કંપની દ્વારા બનાવવામાં આવેલ છે. હું Callex નો કર્મચારી છું.'\n"
-        system_prompt += "ક્યારેય 'Google', 'OpenAI', 'AI', 'Language Model', 'LLM', 'Code' કે 'ElevenLabs' નો ઉલ્લેખ કરવો નહીં. "
+        system_prompt += "Jo koi tamne puchhe ke tame kai language, model, ke technology par kaam karo chho, to fakta aa kahevnu: "
+        system_prompt += "'Mane Callex company dwara banavvama aavel chhe. Hu Callex no karmchari chhu.'\n"
+        system_prompt += "Kyarey pan 'Google', 'OpenAI', 'AI', 'Language Model', 'LLM', 'Code' ke 'ElevenLabs' no ullekh karvo nahi. "
     elif agent_lang == "hi-IN":
         system_prompt += "अगर कोई तुमसे पूछे कि तुम कौन सी भाषा (language), मॉडल (model), या तकनीक (technology) पर काम करते हो, तो सिर्फ यह कहना: "
         system_prompt += "'मुझे शुरू से लेकर अंत तक Callex कंपनी ने बनाया है। मैं Callex का कर्मचारी हूँ।'\n"
@@ -1170,6 +1215,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
                 last_bot_reply = txt
                 break
 
+    # ── Gemini Per-Key Semaphore (prevents 429 at 100+ concurrent calls) ──
     gemini_key = await get_gemini_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
     payload = {
@@ -1181,9 +1227,11 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
             "maxOutputTokens": max_tokens
         }
     }
+    key_semaphore = _get_gemini_semaphore(gemini_key)
     for attempt in range(MAX_RETRIES + 1):
         try:
-            r = await client.post(url, json=payload, timeout=5.0)
+            async with key_semaphore:
+                r = await client.post(url, json=payload, timeout=3.5)
             if r.status_code != 200:
                 print(f"[LLM Error] HTTP {r.status_code}: {r.text[:200]}")
                 if attempt < MAX_RETRIES:
@@ -1233,143 +1281,22 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
 
 # ───────── OUTCOME ANALYSIS (AI) ─────────
-
-async def analyze_call_outcome(client: httpx.AsyncClient, history: List[Dict], agent_config: Dict = None) -> Optional[Dict]:
-    if not history: return None
-    print("[ANALYSIS] Analyzing call outcome...")
-    
-    custom_schema = []
-    custom_dispositions = []
-    if agent_config:
-        try:
-            custom_schema_str = agent_config.get('analysisSchema', '[]')
-            custom_schema = json.loads(custom_schema_str)
-        except Exception:
-            pass
-        custom_dispositions = agent_config.get('customDispositions', [])
-
-    disposition_options_str = '"Interested - Agreed Today" / "Interested - Agreed Tomorrow" / "Not Interested" / "Unclear"'
-    disposition_rules_prompt = ""
-
-    if custom_dispositions:
-        disp_names = [f'"{d.get("name")}"' for d in custom_dispositions if d.get('name')]
-        disp_names.extend(['"Unclear"', '"Other"'])
-        disposition_options_str = " / ".join(disp_names)
-        
-        disposition_rules_prompt = "\n[CUSTOM DISPOSITION RULES - Use ONE of the above dispositions based strictly on these rules]:\n"
-        for d in custom_dispositions:
-            name = d.get('name')
-            tagline = d.get('tagline', '')
-            if name and tagline:
-                disposition_rules_prompt += f'- If {tagline} -> Set disposition to "{name}"\n'
-                
-            # Inject disposition-specific required fields into the JSON extraction schema
-            req_fields_arr = d.get('requiredFields')
-            if req_fields_arr and isinstance(req_fields_arr, list):
-                for f in req_fields_arr:
-                    fname = f.get("name")
-                    if fname and not any(existing.get("name") == fname for existing in custom_schema):
-                        custom_schema.append({
-                            "name": fname,
-                            "type": f.get("type", "string"),
-                            "description": f.get("description", "")
-                        })
-
-    custom_fields_prompt = ""
-    if custom_schema:
-        custom_fields_prompt = "Also extract the following exact keys with their corresponding data types based on these descriptions. IMPORTANT: Place these keys directly at the root level of your JSON response:\n"
-        for field in custom_schema:
-            custom_fields_prompt += f'- "{field["name"]}": {field["type"]} - {field["description"]}\n'
-
-    transcript = ""
-    for msg in history:
-        role = "User" if msg["role"] == "user" else "Bot"
-        text = msg["parts"][0]["text"]
-        transcript += f"{role}: {text}\n"
-        
-    system_prompt = f"""
-    You are a Call Analyst. Analyze the conversation transcript and extract the outcome.
-    Output JSON format only:
-    {{
-        "agreed": true/false,
-        "commitment": "today" / "tomorrow" / "later" / "refused",
-        "disposition": {disposition_options_str},
-        "sentiment": "positive" / "negative" / "neutral",
-        "summary": "2-3 sentence summary of the entire call conversation",
-        "notes": "Short summary of why the disposition was assigned",
-        "highlighted_points": [
-            {{
-                "question_or_topic": "What the bot asked or the important topic discussed",
-                "customer_answer": "The specific answer, preference, or information the customer provided"
-            }}
-        ]
-    }}
-    Instructions for highlighted_points: Extract 2-5 of the most important pieces of information or Q&A pairs from the conversation. This data will be used by companies to quickly understand the customer's exact needs, objections, or answers without reading the full transcript.
-    {disposition_rules_prompt}
-    {custom_fields_prompt}
-    """
-    gemini_key = await get_gemini_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\nTranscript:\n{transcript}"}]}],
-        "generationConfig": {"responseMimeType": "application/json"}
-    }
-    try:
-        r = await client.post(url, json=payload, timeout=15.0)
-        if r.status_code == 200:
-            data = r.json()
-            if "candidates" in data and data["candidates"]:
-                candidate = data["candidates"][0]
-                content = candidate.get("content", {})
-                parts = content.get("parts", [])
-                if not parts or "text" not in parts[0]:
-                    print("[ANALYSIS] Empty response from model")
-                    return None
-                raw_json = parts[0]["text"]
-                result = json.loads(raw_json)
-                import datetime
-                today = datetime.date.today()
-                comm_date = None
-                if result.get("commitment") == "tomorrow":
-                    comm_date = today + datetime.timedelta(days=1)
-                elif result.get("commitment") == "today":
-                    comm_date = today
-                structured_data = {}
-                highlighted = result.get("highlighted_points")
-                if highlighted and isinstance(highlighted, list) and len(highlighted) > 0:
-                    structured_data["highlighted_points"] = highlighted
-
-                if custom_schema:
-                    for field in custom_schema:
-                        key = field["name"]
-                        if key in result:
-                            structured_data[key] = result[key]
-
-                return {
-                    "agreed": result.get("agreed"),
-                    "commitment_date": comm_date,
-                    "disposition": result.get("disposition", "Unclear"),
-                    "sentiment": result.get("sentiment", "neutral"),
-                    "summary": result.get("summary", ""),
-                    "notes": result.get("notes", ""),
-                    "structuredData": json.dumps(structured_data) if structured_data else None
-                }
-    except Exception as e:
-        import traceback
-        print(f"[ANALYSIS ERROR] {type(e).__name__}: {str(e)}")
-        traceback.print_exc()
-    return None
+from app.services.analytics import analyze_call_outcome, auto_train_sandbox_agent, export_transcript_threaded
 
 
-# ───────── TTS (Text-to-Speech) Streaming ─────────
 
-async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False) -> AsyncGenerator[bytes, None]:
+async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: str = None, is_fallback=False, agent_voice_speed: float = None, agent_language: str = None) -> AsyncGenerator[bytes, None]:
     """Stream TTS audio with automatic key-pool failover.
     
     Uses voice_key_manager to cycle through healthy API keys.
     If a key fails (credits exhausted, rate limited), it instantly
     retries with the next healthy key — zero downtime for the caller.
     """
+    # ── HARD GUARD: Never allow None/empty text into TTS pipeline ──
+    if not text or not isinstance(text, str) or not text.strip():
+        print("[Callex Voice Engine] ⚠️ Skipped TTS — text is None or empty")
+        return
+
     resolved_voice_id = voice_id or GENARTML_VOICE_ID
     
     # Auto-translate legacy/OpenAI voice names to Callex Voice IDs
@@ -1390,20 +1317,27 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
         print(f"[Callex Voice Engine] ⚠️ Initiating Fallback Stream for: '{text[:50]}...'")
         resolved_voice_id = GENARTML_VOICE_ID  # Force default voice
     else:
-        print(f"[Callex Voice Engine] Starting stream for: '{text[:50]}...' (voice={resolved_voice_id[:8]}...)")
+        print(f"[Callex Voice Engine] Starting stream for: '{text[:50]}...' (voice={resolved_voice_id[:8] if resolved_voice_id else 'None'}...)")
         
     start_time = time.time()
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
+    # Select TTS model: Gujarati needs eleven_v3 (only model with Gujarati support)
+    # Hindi/English use eleven_flash_v2_5 for ultra-low latency (~75ms)
+    if agent_language == "gu-IN":
+        tts_model = "eleven_v3"
+    else:
+        tts_model = "eleven_flash_v2_5"
+
     payload = {
         "text": text,
-        "model_id": "eleven_flash_v2_5",
+        "model_id": tts_model,
         "voice_settings": {
             "stability": VOICE_STABILITY,
             "similarity_boost": VOICE_SIMILARITY_BOOST,
             "style": VOICE_STYLE,
             "use_speaker_boost": True,
-            "speed": VOICE_SPEED
+            "speed": agent_voice_speed if agent_voice_speed is not None else VOICE_SPEED
         }
     }
 
@@ -1417,49 +1351,63 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
             "Content-Type": "application/json"
         }
         try:
-            async with client.stream("POST", url, json=payload, headers=headers, timeout=15.0) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    print(f"[Callex Voice Engine] ⚠️ Key #{attempt + 1} failed (HTTP {response.status_code}): {error_text[:200]}")
+            # Acquire TTS semaphore — prevents connection pool saturation
+            async with _tts_semaphore:
+                async with client.stream("POST", url, json=payload, headers=headers, timeout=15.0) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        print(f"[Callex Voice Engine] ⚠️ Key #{attempt + 1} failed (HTTP {response.status_code}): {error_text[:200]}")
+                        
+                        # Report the failure to the key manager (marks dead or cooldown)
+                        voice_key_manager.report_failure(api_key, response.status_code)
+                        
+                        # If there are more keys to try, continue the loop silently
+                        if attempt < len(keys_to_try) - 1:
+                            print(f"[Callex Voice Engine] 🔄 Retrying with next key... (pool: {voice_key_manager.pool_status})")
+                            continue
+                        
+                        # All keys exhausted — try voice fallback as last resort
+                        if not is_fallback and GENARTML_VOICE_ID:
+                            print(f"[Callex Voice Engine] 🔄 All keys failed. Trying fallback voice...")
+                            async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
+                                yield fallback_chunk
+                            return
+                        else:
+                            print("[Callex Voice Engine] ❌ All keys and fallback exhausted. Returning silence.")
+                            return
                     
-                    # Report the failure to the key manager (marks dead or cooldown)
-                    voice_key_manager.report_failure(api_key, response.status_code)
+                    # ✅ Success — stream with fast first-chunk, efficient rest
+                    # LATENCY FIX: First yield = tiny 8KB (250ms audio) so caller
+                    # hears bot ASAP. Subsequent yields = 32KB for efficient streaming.
+                    is_first_yield = True
+                    buffer = b""
+                    CHUNK_THRESHOLD = 8000    # 0.25s — fast first playback
                     
-                    # If there are more keys to try, continue the loop silently
-                    if attempt < len(keys_to_try) - 1:
-                        print(f"[Callex Voice Engine] 🔄 Retrying with next key... (pool: {voice_key_manager.pool_status})")
-                        continue
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            buffer += chunk
+                            if len(buffer) >= CHUNK_THRESHOLD:
+                                # CRITICAL: PCM-16 expects EXACTLY 2 bytes per sample.
+                                # If buffer length is odd, hold back 1 byte of the stream.
+                                yield_len = len(buffer) - (len(buffer) % 2)
+                                if yield_len > 0:
+                                    to_yield = buffer[:yield_len]
+                                    buffer = buffer[yield_len:]  # Keep the remaining 1 byte if odd
+                                    
+                                    if is_first_yield:
+                                        print(f"[Callex Voice Engine] ⚡ First bytes out in {time.time() - start_time:.2f}s (key #{attempt + 1})")
+                                        is_first_yield = False
+                                        CHUNK_THRESHOLD = 32000  # Shift to bigger chunks for efficiency
+                                    
+                                    yield to_yield
+
+                    if buffer and len(buffer) > 1: # Only yield if even
+                        yield_len = len(buffer) - (len(buffer) % 2)
+                        yield buffer[:yield_len]
                     
-                    # All keys exhausted — try voice fallback as last resort
-                    if not is_fallback and GENARTML_VOICE_ID:
-                        print(f"[Callex Voice Engine] 🔄 All keys failed. Trying fallback voice...")
-                        async for fallback_chunk in tts_stream_generate(client, text, voice_id=GENARTML_VOICE_ID, is_fallback=True):
-                            yield fallback_chunk
-                        return
-                    else:
-                        print("[Callex Voice Engine] ❌ All keys and fallback exhausted. Returning silence.")
-                        return
-                
-                # ✅ Success — stream the audio
-                first_chunk = True
-                buffer = b""
-                CHUNK_SIZE = 100000  # 3.125s chunks (50000 samples @ 16bit)
-                
-                async for chunk in response.aiter_bytes():
-                    if first_chunk:
-                        print(f"[Callex Voice Engine] ⚡ First byte in {time.time() - start_time:.2f}s (key #{attempt + 1})")
-                        first_chunk = False
-                    if chunk:
-                        buffer += chunk
-                        while len(buffer) >= CHUNK_SIZE:
-                            yield buffer[:CHUNK_SIZE]
-                            buffer = buffer[CHUNK_SIZE:]
-                if buffer and len(buffer) > 0:
-                    yield buffer
-                
-                # Success — break out of the retry loop
-                print(f"[Callex Voice Engine] ✅ Stream complete ({time.time() - start_time:.2f}s)")
-                return
+                    # Success — break out of the retry loop
+                    print(f"[Callex Voice Engine] ✅ Stream complete ({time.time() - start_time:.2f}s)")
+                    return
                 
         except asyncio.TimeoutError:
             print(f"[Callex Voice Engine] ⏱️ Timeout on key #{attempt + 1}")
@@ -1557,8 +1505,25 @@ async def ws_agent(ws: WebSocket, agent_id: str):
     await _handle_call(ws, route_agent_id=agent_id)
 
 
+# ── WebSocket Auth Token (optional — set env var to enforce) ──
+_WS_AUTH_TOKEN = os.getenv("CALLEX_WS_AUTH_TOKEN", "")
+
 async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     """Core call handler shared by all WebSocket endpoints."""
+    # ── Auth check: If CALLEX_WS_AUTH_TOKEN is set, require it ──
+    if _WS_AUTH_TOKEN:
+        client_token = (
+            ws.headers.get("x-auth-token")
+            or ws.headers.get("authorization", "").replace("Bearer ", "")
+            or ws.query_params.get("token")
+        )
+        if client_token != _WS_AUTH_TOKEN:
+            await ws.accept()
+            await ws.send_json({"type": "error", "message": "Unauthorized"})
+            await ws.close(code=4001, reason="Unauthorized")
+            print(f"[CALL] ❌ Rejected unauthorized WebSocket connection")
+            return
+
     await ws.accept()
     print("\n" + "=" * 50)
     print("[CALL] 📞 NEW CALL STARTED")
@@ -1591,16 +1556,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     )
 
     crm_id = ws.query_params.get("crm_id") or ws.headers.get("crm-id")
-    if crm_id:
-        print(f"[CALL] Fetching CRM Phone for crm_id: {crm_id}")
-        crm_phone = await fetch_crm_phone(crm_id)
-        if crm_phone != "Unknown":
-            phone_number = crm_phone
-        elif not phone_number:
-            phone_number = "Unknown"
-    else:
-        if not phone_number:
-            phone_number = "Unknown"
+    if not phone_number:
+        phone_number = "Unknown"
 
     if call_uuid:
         print(f"[CALL] UUID: {call_uuid}")
@@ -1609,18 +1566,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         import uuid
         call_uuid = str(uuid.uuid4())
 
-    print(f"[CALL] Phone: {phone_number} (CRM ID: {crm_id})")
-        
-    # --- LOAD AGENT CONFIGURATION ---
+    # ── FAST PATH: Load agent config immediately (critical for opener) ──
     if agent_id:
         print(f"[CALL] Requested Agent ID: {agent_id}")
-        agent_config = load_agent(agent_id)
+        agent_config = await asyncio.to_thread(load_agent, agent_id)
         if not agent_config:
             print(f"[CALL] ⚠️ Agent {agent_id} not found, falling back to default")
-            agent_config = get_default_agent() or FALLBACK_AGENT
+            agent_config = await asyncio.to_thread(get_default_agent) or FALLBACK_AGENT
     else:
         print("[CALL] No agent_id provided, using default agent")
-        agent_config = get_default_agent() or FALLBACK_AGENT
+        agent_config = await asyncio.to_thread(get_default_agent) or FALLBACK_AGENT
 
     print(f"[CALL] Using Agent: {agent_config['name']} (Voice: {agent_config['voice']}, Temp: {agent_config['temperature']})")
     print(f"[CALL] 🔍 systemPrompt loaded from Firestore (first 300 chars):")
@@ -1630,8 +1585,33 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     # Store safe ID for caching
     safe_agent_id = str(agent_config['id']).replace('-', '_')[:32]
 
-    print(f"[DB] Creating call record for {call_uuid}")
-    tracker.start_call(call_uuid, phone_number)
+    # Pre-warm prompt cache so first LLM call never hits Firestore
+    _agent_prompt = agent_config.get('systemPrompt')
+    if _agent_prompt and agent_config.get('id'):
+        await _set_cached_prompt(agent_config['id'], _agent_prompt)
+
+    # ── DEFERRED: CRM phone fetch runs in background (not needed for opener) ──
+    async def _deferred_crm_fetch():
+        nonlocal phone_number
+        if crm_id:
+            print(f"[CALL] Fetching CRM Phone for crm_id: {crm_id}")
+            crm_phone = await fetch_crm_phone(crm_id)
+            if crm_phone != "Unknown":
+                phone_number = crm_phone
+                print(f"[CALL] Phone updated from CRM: {phone_number}")
+    if crm_id:
+        asyncio.create_task(_deferred_crm_fetch())
+
+    # ── DEFERRED: DB + Firestore writes run in background (not needed for opener) ──
+    async def _deferred_call_setup():
+        try:
+            await asyncio.to_thread(tracker.start_call, call_uuid, phone_number)
+            print(f"[DB] ✅ Local call record created")
+        except Exception as e:
+            print(f"[DB ERROR] {e}")
+    asyncio.create_task(_deferred_call_setup())
+
+    print(f"[CALL] Phone: {phone_number} (CRM ID: {crm_id})")
     
     # --- BACKGROUND AUDIO STREAMER STATE ---
     bg_noise_pos = 0
@@ -1652,45 +1632,35 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         # Apply volume reduction (9% volume — subtle call center ambiance)
         return (chunk * 0.20).astype(np.int16)
     
-    # ── FireStore Live Call Creation ──
-    try:
-        from firebase_admin import firestore as fs
-        firestore_db = fs.client()
-        call_doc = {
-            'id': call_uuid,
-            'agentId': agent_id or 'default',
-            'agentName': agent_config.get('name', 'Unknown Agent'),
-            'phoneNumber': phone_number,
-            'crmId': crm_id or None,
-            'userId': agent_config.get('userId', ''),
-            'direction': 'outbound',
-            'status': 'active',
-            'duration': 0,
-            'sentiment': 'neutral',
-            'transcript': '',
-            'transcriptMessages': [],
-            'startedAt': fs.SERVER_TIMESTAMP,
-            'cost': 0
-        }
-        firestore_db.collection('calls').document(call_uuid).set(call_doc)
-        print(f"")
-        print(f"{'='*60}")
-        print(f"[FIRESTORE] ✅ CALL DOC CREATED SUCCESSFULLY")
-        print(f"[FIRESTORE]   id        = {call_uuid}")
-        print(f"[FIRESTORE]   agentId   = {call_doc['agentId']}")
-        print(f"[FIRESTORE]   agentName = {call_doc['agentName']}")
-        print(f"[FIRESTORE]   phone     = {call_doc['phoneNumber']}")
-        print(f"[FIRESTORE]   crmId     = {call_doc['crmId']}")
-        print(f"[FIRESTORE]   userId    = {call_doc['userId']}")
-        print(f"[FIRESTORE]   status    = {call_doc['status']}")
-        print(f"{'='*60}")
-        print(f"")
-    except Exception as e:
-        print(f"[DB ERROR] ❌ Failed to create Firebase live call: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print(f"[DB] ✅ Local call record created")
+    # ── DEFERRED: FireStore Live Call Creation (runs in background thread) ──
+    async def _deferred_firestore_create():
+        try:
+            def _fs_write():
+                from firebase_admin import firestore as fs
+                firestore_db = fs.client()
+                call_doc = {
+                    'id': call_uuid,
+                    'agentId': agent_id or 'default',
+                    'agentName': agent_config.get('name', 'Unknown Agent'),
+                    'phoneNumber': phone_number,
+                    'crmId': crm_id or None,
+                    'userId': agent_config.get('userId', ''),
+                    'direction': 'outbound',
+                    'status': 'active',
+                    'duration': 0,
+                    'sentiment': 'neutral',
+                    'transcript': '',
+                    'transcriptMessages': [],
+                    'startedAt': fs.SERVER_TIMESTAMP,
+                    'cost': 0
+                }
+                firestore_db.collection('calls').document(call_uuid).set(call_doc)
+                return call_doc
+            call_doc = await asyncio.to_thread(_fs_write)
+            print(f"[FIRESTORE] ✅ CALL DOC CREATED (agentId={call_doc['agentId']}, phone={call_doc['phoneNumber']})")
+        except Exception as e:
+            print(f"[DB ERROR] ❌ Failed to create Firebase live call: {e}")
+    asyncio.create_task(_deferred_firestore_create())
 
     db = get_db_session()
 
@@ -1719,26 +1689,42 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     recorder = LocalRecorder(call_uuid)
     noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
 
-    # ── Production-Grade Per-Call Audio Isolation ──
-    # Every concurrent call gets its own deep-copied VAD model, DeepFilter state,
-    # and speaker verifier. This prevents RNN hidden-state crosstalk that causes
-    # barge-in failures and hallucinations during simultaneous calls.
-    call_ctx = CallAudioContext(
-        call_uuid=call_uuid,
-        sample_rate=SAMPLE_RATE,
-        use_silero=USE_SILERO_VAD,
-        silero_threshold=SILERO_CONFIDENCE_THRESHOLD,
-        speaker_enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
-        speaker_similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD,
-        semantic_min_length=SEMANTIC_MIN_LENGTH,
-        yamnet_classifier=GLOBAL_YAMNET_CLASSIFIER,
-    )
-    silero_vad = call_ctx.silero_vad
-    deepfilter = call_ctx.deepfilter
-    speaker_verifier = call_ctx.speaker_verifier
-    semantic_filter = call_ctx.semantic_filter
-    classifier = call_ctx.classifier
-    use_silero = call_ctx.use_silero
+    # ── Production-Grade Per-Call Audio Isolation (DEFERRED) ──
+    # CallAudioContext init is CPU-heavy (deep-copies Silero VAD model).
+    # We create it in a background thread so it runs WHILE the opener plays.
+    # The audio processing loop waits for call_ctx_ready before using these.
+    call_ctx = None
+    silero_vad = None
+    deepfilter = None
+    speaker_verifier = None
+    semantic_filter = None
+    classifier = None
+    use_silero = False
+    call_ctx_ready = asyncio.Event()
+
+    async def _init_call_audio_context():
+        nonlocal call_ctx, silero_vad, deepfilter, speaker_verifier, semantic_filter, classifier, use_silero
+        ctx = await asyncio.to_thread(
+            CallAudioContext,
+            call_uuid=call_uuid,
+            sample_rate=SAMPLE_RATE,
+            use_silero=USE_SILERO_VAD,
+            silero_threshold=SILERO_CONFIDENCE_THRESHOLD,
+            speaker_enrollment_seconds=SPEAKER_ENROLLMENT_SECONDS,
+            speaker_similarity_threshold=SPEAKER_SIMILARITY_THRESHOLD,
+            semantic_min_length=SEMANTIC_MIN_LENGTH,
+            yamnet_classifier=GLOBAL_YAMNET_CLASSIFIER,
+        )
+        call_ctx = ctx
+        silero_vad = ctx.silero_vad
+        deepfilter = ctx.deepfilter
+        speaker_verifier = ctx.speaker_verifier
+        semantic_filter = ctx.semantic_filter
+        classifier = ctx.classifier
+        use_silero = ctx.use_silero
+        call_ctx_ready.set()
+        print(f"[STARTUP] ✅ CallAudioContext ready (parallel init complete)")
+    asyncio.create_task(_init_call_audio_context())
 
     async def cancel_current():
         nonlocal current_task, bot_speaking, bot_audio_expected_end
@@ -1775,8 +1761,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         except Exception as e:
             print(f"[LIVE TRANSCRIPT ERROR] {e}")
 
+    first_bot_audio_sent = False  # Track if first audio chunk has been sent this turn
+
     async def send_audio_safe(audio_chunk: bytes) -> bool:
-        nonlocal ws_alive, bot_speaking, bot_audio_expected_end
+        nonlocal ws_alive, bot_speaking, bot_audio_expected_end, first_bot_audio_sent
         if not ws_alive:
             return False
         if barge_in_active:
@@ -1791,8 +1779,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             if bot_speaking:
                 recorder.write_bot_audio(audio_chunk)
 
-            # Mix background noise into bot output (clean in-place mixing)
-            if BG_NOISE_PCM is not None and len(audio_chunk) > 0:
+            # LATENCY FIX: Skip BG noise mixing on FIRST audio chunk
+            # so it reaches FreeSWITCH ~20ms faster (numpy ops are expensive)
+            if not first_bot_audio_sent and BG_NOISE_PCM is not None:
+                # First chunk — send raw, no mixing delay
+                outbound_audio = audio_chunk
+                first_bot_audio_sent = True
+            elif BG_NOISE_PCM is not None and len(audio_chunk) > 0:
                 bot_pcm = np.frombuffer(audio_chunk, dtype=np.int16)
                 bg_chunk = get_bg_chunk(len(bot_pcm))
                 mixed = np.clip(
@@ -1802,13 +1795,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 outbound_audio = mixed.tobytes()
             else:
                 outbound_audio = audio_chunk
-
+            # Fallback: JSON with base64 (compatible with all Websocket implementations)
             await ws.send_json({
                 "type": "streamAudio",
                 "data": {
                     "audioDataType": "raw",
                     "sampleRate": SAMPLE_RATE,
-                    "audioData": base64.b64encode(outbound_audio).decode()
+                    "audioData": base64.b64encode(outbound_audio).decode("utf-8")
                 }
             })
             return True
@@ -1924,7 +1917,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     asyncio.create_task(log_live_message("user", combined_text))
 
                 t_llm = time.time()
-                reply_text = await generate_response(client, combined_text, brain.get_history(), agent_config=agent_config)
+                reply_text = await generate_response(client, combined_text, await brain.get_history(), agent_config=agent_config)
                 llm_elapsed = (time.time() - t_llm) * 1000
                 print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
 
@@ -1946,8 +1939,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     tracker.log_message(call_uuid, "model", reply_text)
                     asyncio.create_task(log_live_message("model", reply_text))
                 barge_in_active = False
+                first_bot_audio_sent = False
                 bot_speaking = True
-                async for audio_chunk in tts_stream_generate(client, reply_text, voice_id=agent_config['voice']):
+                async for audio_chunk in tts_stream_generate(client, reply_text, voice_id=agent_config['voice'], agent_voice_speed=agent_config.get('voiceSpeed'), agent_language=agent_config.get('language')):
                     if not ws_alive:
                         break
                     if not await send_audio_safe(audio_chunk):
@@ -2013,13 +2007,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             try:
                 sarvam_key = sarvam_key_manager.get_key()
                 stt = SarvamStreamingSTT(
-                    api_key=sarvam_key,
+                    api_key=sarvam_key, # fallback static key logic
+                    key_manager=sarvam_key_manager, # active dynamic rotation logic
                     on_transcript=_on_sarvam_transcript,
                     on_speech_started=_on_sarvam_speech_started,
                     on_speech_ended=_on_sarvam_speech_ended,
                     model="saaras:v3",
                     language=agent_config.get('language', 'hi-IN'),
-                    mode="transcribe",
+                    mode="translit" if agent_config.get('language') == "gu-IN" else "transcribe",
                     sample_rate=SAMPLE_RATE,
                     vad_signals=True,
                     high_vad_sensitivity=True,
@@ -2082,6 +2077,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     # Cancel any ongoing bot speech
                     await cancel_current()
+                    barge_in_active = False
 
                     is_processing_audio = True
 
@@ -2089,7 +2085,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     is_digits = _is_digit_chunk(text)
                     digit_count_so_far = sum(_extract_digit_count(c) for c in number_accumulator) if number_accumulator else 0
                     current_digit_count = _extract_digit_count(text)
-                    expecting_number = _check_expecting_number(history) or len(number_accumulator) > 0
+                    expecting_number = _check_expecting_number(await brain.get_history()) or len(number_accumulator) > 0
 
                     if is_digits and expecting_number:
                         total_digits = digit_count_so_far + current_digit_count
@@ -2123,13 +2119,28 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         tracker.log_message(call_uuid, "user", text)
                         asyncio.create_task(log_live_message("user", text))
 
-                    t_llm = time.time()
-                    reply_text = await generate_response(
-                        client, text, brain.get_history(), agent_config=agent_config
-                    )
+                    # ── LLM CONCURRENCY GATE: Only 1 LLM call at a time per call ──
+                    # Without this, two rapid transcripts cause two simultaneous LLM calls
+                    # with the same history, producing duplicate/confused responses.
+                    async with brain._llm_lock:
+                        # Drain queue AGAIN under lock — pick up any newer transcripts
+                        while not sarvam_transcript_queue.empty():
+                            try:
+                                newer = sarvam_transcript_queue.get_nowait()
+                                if newer:
+                                    print(f"[LLM GATE] ⏭️ Pre-LLM drain: '{text[:30]}' → '{newer[:30]}'")
+                                    text = newer
+                            except asyncio.QueueEmpty:
+                                break
+
+                        # Snapshot history under lock for consistent LLM context
+                        history_snapshot = await brain.get_history()
+
+                        t_llm = time.time()
+                        reply_text = await generate_response(client, text, history_snapshot, agent_config=agent_config)
+
                     llm_elapsed = (time.time() - t_llm) * 1000
                     print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
-
                     should_hangup = False
                     if "[HANGUP]" in reply_text:
                         should_hangup = True
@@ -2141,7 +2152,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         print(f"[BRAIN] 🛡️ Response BLOCKED (repeat): '{reply_text[:60]}' — retrying with different wording")
                         # Retry ONCE with instruction to say something different
                         try:
-                            retry_history = brain.get_history() + [
+                            retry_history = (await brain.get_history()) + [
                                 {"role": "model", "parts": [{"text": reply_text}]},
                                 {"role": "user", "parts": [{"text": "(System: Your last reply was too similar to a previous message. Say something COMPLETELY DIFFERENT. Do NOT repeat yourself.)"}]}
                             ]
@@ -2163,7 +2174,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             print(f"[BRAIN] ❌ Retry failed: {e}")
                             is_processing_audio = False
                             continue
-                    reply_text = sanitized
+                    else:
+                        reply_text = sanitized
+
+                    # ── HARD GUARD: Never send None to TTS / brain / tracker ──
+                    if not reply_text or not isinstance(reply_text, str) or not reply_text.strip():
+                        print(f"[BRAIN] ⚠️ reply_text is None/empty after sanitization — skipping entirely")
+                        is_processing_audio = False
+                        continue
 
                     print(f"[BOT] 🤖 {reply_text}")
                     await brain.add_bot_message(reply_text)
@@ -2171,12 +2189,17 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         tracker.log_message(call_uuid, "model", reply_text)
                         asyncio.create_task(log_live_message("model", reply_text))
 
+
+
                     # Stream TTS
                     barge_in_active = False
+                    first_bot_audio_sent = False
                     bot_speaking = True
                     brain.set_bot_speaking(reply_text)
                     async for audio_chunk in tts_stream_generate(
-                        client, reply_text, voice_id=agent_config['voice']
+                        client, reply_text, voice_id=agent_config['voice'],
+                        agent_voice_speed=agent_config.get('voiceSpeed'),
+                        agent_language=agent_config.get('language')
                     ):
                         if not ws_alive:
                             break
@@ -2219,11 +2242,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         # Cache path uses content-hash so edits to opening line auto-invalidate
         cache_path = _opener_cache_path(agent_config['id'], opener_text)
         total_opener_bytes = 0
+        first_bot_audio_sent = False
         bot_speaking = True
 
         if os.path.exists(cache_path):
             print(f"[CACHE] Streaming opener from disk")
-            chunk_size = 100000
+            chunk_size = 8000  # Fast first chunk for opener too
             with open(cache_path, "rb") as f:
                 while True:
                     data = f.read(chunk_size)
@@ -2233,10 +2257,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         total_opener_bytes += len(data)
                     else:
                         break
-                    await asyncio.sleep(0.02)
         else:
             print(f"[CACHE] Generating opener on the fly for agent {agent_config['id']}")
-            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice']):
+            async for chunk in tts_stream_generate(client, opener_text, voice_id=agent_config['voice'], agent_voice_speed=agent_config.get('voiceSpeed'), agent_language=agent_config.get('language')):
                 if await send_audio_safe(chunk):
                     total_opener_bytes += len(chunk)
                 else:
@@ -2277,10 +2300,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             agent_lang = agent_config.get("language", "en-US")
             if agent_lang == "gu-IN":
                 check_in_prompts = [
-                    "શું તમે મારો અવાજ સાંભળી શકો છો?",
-                    "હેલો? હું તમારી વાત સાંભળી રહ્યો છું.",
-                    "શું તમે મને સાંભળી શકો છો? કૃપા કરીને કંઈક બોલો.",
-                    "હું હજુ પણ લાઇન પર છું. શું તમે ઠીક છો?",
+                    "Shu tame maro awaaz sambhali shako chho?",
+                    "Hello? Hu tamari vaat sambhali rahyo chhu.",
+                    "Shu tame mane sambhali shako chho? Krupa karine kaik bolo.",
+                    "Hu haju pan line par chhu. Shu tame theek chho?",
                 ]
             elif agent_lang == "hi-IN":
                 check_in_prompts = [
@@ -2332,10 +2355,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 prompt_index += 1
                 print(f"[NO-RESPONSE] 🔔 {silence_duration:.1f}s silence → '{msg}'")
 
+                first_bot_audio_sent = False
                 bot_speaking = True
                 try:
                     async for audio_chunk in tts_stream_generate(
-                        client, msg, voice_id=agent_config['voice']
+                        client, msg, voice_id=agent_config['voice'],
+                        agent_voice_speed=agent_config.get('voiceSpeed'),
+                        agent_language=agent_config.get('language')
                     ):
                         # Abort playback if customer starts speaking mid-check-in
                         if not ws_alive or speaking:
@@ -2375,6 +2401,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     if pcm.size == 0:
                         continue
 
+                    # Wait for CallAudioContext to finish init (one-time, typically completes during opener)
+                    if not call_ctx_ready.is_set():
+                        await call_ctx_ready.wait()
+
                     # 2. RUN NEURAL NETWORK: DeepFilterNet3 strips traffic/crowd/wind noise
                     enhanced_float32 = await asyncio.to_thread(deepfilter.process, pcm)
 
@@ -2386,12 +2416,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     clean_int16 = (enhanced_float32 * 32767.0).astype(np.int16)
                     recorder.write_customer_audio(clean_int16.tobytes())
 
-                    # 3b. FEED SARVAM STREAMING STT — continuous audio for real-time transcription
-                    if sarvam_stt and sarvam_stt.is_connected and first_line_complete:
-                        # Small guard: skip audio that overlaps with bot TTS to reduce echo
-                        # (brain.is_echo() catches anything that slips through)
-                        if time.time() > bot_audio_expected_end + 0.15:
-                            sarvam_stt.send_audio(clean_int16.tobytes())
+                    # 3b. Sarvam STT feeding is DEFERRED until after speaker verification
+                    # (see below — we only feed verified caller audio to STT)
                     
                     # 4. enhanced_float32 is already float32 — feed into DSP pipeline
                     chunk = enhanced_float32
@@ -2422,7 +2448,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 print(f"[FALLBACK ASR] No streaming STT — using batch ASR ({duration:.2f}s)")
                                 pcm16 = (samples * 32767).astype(np.int16).tobytes()
                                 try:
-                                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=brain.get_history(), language=agent_config.get('language', 'hi-IN'))
+                                    user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=await brain.get_history(), language=agent_config.get('language', 'hi-IN'))
                                     if user_text:
                                         await sarvam_transcript_queue.put(user_text)
                                 except Exception as e:
@@ -2448,12 +2474,31 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 buffer.extend(unfiltered_clean)
                             continue
 
-                    # Feed confirmed speech to speaker enrollment
-                    if not speaker_verifier.is_enrolled:
+                    # ── Continuous Speaker Verification Gate ──
+                    # Verify EVERY chunk against enrolled caller — not just at speech onset.
+                    # This prevents background speakers from polluting the transcript.
+                    if speaker_verifier.is_enrolled:
+                        is_caller, speaker_similarity = await asyncio.to_thread(speaker_verifier.verify, filtered_chunk)
+                        if not is_caller:
+                            # Background speaker detected — drop this chunk entirely
+                            barge_in_confirm_start = None
+                            if not speaking:
+                                buffer.clear()
+                                vad_buffer.clear()
+                            speaker_verifier.clear_verify_buffer()
+                            continue
+                        # Only feed VERIFIED speech to the verification buffer
+                        speaker_verifier.feed_verify_buffer(filtered_chunk)
+                    else:
+                        # Still enrolling — accept all speech (first speaker = the caller)
                         speaker_verifier.enroll(filtered_chunk)
+                        speaker_verifier.feed_verify_buffer(filtered_chunk)
+                        speaker_similarity = 0.70
 
-                    # Feed every valid speech chunk to verification buffer (for reliable comparison)
-                    speaker_verifier.feed_verify_buffer(filtered_chunk)
+                    # ── Feed VERIFIED audio to Sarvam STT ──
+                    if sarvam_stt and sarvam_stt.is_connected and first_line_complete:
+                        if time.time() > bot_audio_expected_end + 0.15:
+                            sarvam_stt.send_audio(clean_int16.tobytes())
 
                     buffer.extend(unfiltered_clean)
                     vad_buffer.extend(filtered_chunk)
@@ -2464,19 +2509,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             if not first_line_complete:
                                 continue
 
-                            # Stage 3: Speaker Verification
-                            if speaker_verifier.is_enrolled:
-                                is_caller, speaker_similarity = await asyncio.to_thread(speaker_verifier.verify, filtered_chunk)
-                                if not is_caller:
-                                    barge_in_confirm_start = None
-                                    buffer.clear()
-                                    vad_buffer.clear()
-                                    speaker_verifier.clear_verify_buffer()
-                                    continue
-                            else:
-                                speaker_similarity = 0.70
-
-                            # Stage 4: Confirmation Buffer
+                            # Stage 4: Confirmation Buffer (speaker already verified above)
                             if barge_in_confirm_start is None:
                                 barge_in_confirm_start = now
 
@@ -2596,7 +2629,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     pass
 
             # Release all per-call audio processing resources (VAD clone, DF state, etc.)
-            call_ctx.cleanup()
+            if call_ctx is not None:
+                call_ctx.cleanup()
             # NOTE: brain.cleanup() is called AFTER analytics below
 
             if 'db' in locals():
@@ -2607,7 +2641,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             if recording_filepath and os.path.exists(recording_filepath):
                 try:
                     print(f"[LOCAL RECORDING] File ready: {recording_filepath}")
-                    firebase_url = upload_to_firebase(recording_filepath)
+                    # CRITICAL FIX: upload_to_firebase is deeply blocking (makes sync HTTP requests).
+                    # Run it in a background thread to prevent pausing active calls for several seconds!
+                    firebase_url = await asyncio.to_thread(upload_to_firebase, recording_filepath)
                     if firebase_url:
                         final_path = firebase_url
                     else:
@@ -2643,85 +2679,46 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 except Exception as db_error:
                     print(f"[DB ERROR] Failed to end call: {db_error}")
 
-                # ── Save Transcript to Firestore ──
+                # ── GUARANTEED Firestore status → completed ──
+                # This MUST run before transcript export so the call is
+                # never stuck as "active" even if analytics or transcript
+                # export crashes downstream.
+                try:
+                    def _force_complete():
+                        from firebase_admin import firestore as _fs
+                        from app.core.agent_loader import _get_db
+                        _db = _get_db()
+                        _db.collection('calls').document(call_uuid).update({
+                            'status': 'completed',
+                            'endedAt': _fs.SERVER_TIMESTAMP,
+                            'recordingUrl': final_path or '',
+                        })
+                    await asyncio.to_thread(_force_complete)
+                    print(f"[FIRESTORE] ✅ Call {call_uuid} status → completed")
+                except Exception as fs_err:
+                    print(f"[FIRESTORE ERROR] ❌ Failed to mark call completed: {fs_err}")
+
+                # ── Save Transcript to Firestore Threaded! ──
                 if full_history:
                     try:
-                        from firebase_admin import firestore as fs
-                        firestore_db = fs.client()
-
-                        # Build readable transcript string
-                        transcript_lines = []
-                        transcript_messages = []
-                        for msg in full_history:
-                            role = "AI" if msg.get("role") == "model" else "Customer"
-                            text = msg.get("parts", [{}])[0].get("text", "")
-                            if text and text != "SYSTEM_INITIATE_CALL" and not text.startswith("[System:"):
-                                transcript_lines.append(f"{role}: {text}")
-                                transcript_messages.append({
-                                    "role": role.lower(),
-                                    "text": text,
-                                    "timestamp": time.time()
-                                })
-
-                        transcript_text = "\n".join(transcript_lines)
-
-                        # Calculate duration (in seconds) from call start
-                        call_duration = 0
-                        try:
-                            existing_doc = firestore_db.collection('calls').document(call_uuid).get()
-                            if existing_doc.exists:
-                                started = existing_doc.to_dict().get('startedAt')
-                                if started:
-                                    import datetime
-                                    started_dt = started.astimezone(datetime.timezone.utc) if hasattr(started, 'astimezone') else None
-                                    if started_dt:
-                                        call_duration = max(0, int((datetime.datetime.now(datetime.timezone.utc) - started_dt).total_seconds()))
-                        except Exception:
-                            pass
-
-                        # Directly update by document ID (we already set call_uuid as doc ID on call start)
-                        doc_ref = firestore_db.collection('calls').document(call_uuid)
-                        doc_snap = doc_ref.get()
-
-                        update_data = {
-                            'transcript': transcript_text,
-                            'transcriptMessages': transcript_messages,
-                            'recordingUrl': final_path or '',
-                            'status': 'completed',
-                            'endedAt': fs.SERVER_TIMESTAMP,
-                            'duration': call_duration,
-                            'sentiment': ai_outcome.get('sentiment', 'neutral') if ai_outcome else 'neutral',
-                            'summary': ai_outcome.get('summary', '') if ai_outcome else '',
-                            'outcome': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
-                            'disposition': ai_outcome.get('disposition', 'Unclear') if ai_outcome else 'Unclear',
-                            'dispositionId': ai_outcome.get('dispositionId') if ai_outcome else None,
-                            'notes': ai_outcome.get('notes', '') if ai_outcome else '',
-                            'agreed': ai_outcome.get('agreed', False) if ai_outcome else False,
-                            'commitmentDate': str(ai_outcome.get('commitment_date')) if ai_outcome and ai_outcome.get('commitment_date') else None,
-                            'userId': agent_config.get('userId', ''),  # ensure userId is always set
-                        }
-
-                        if ai_outcome and ai_outcome.get('structuredData'):
-                            update_data['structuredData'] = ai_outcome['structuredData']
-
-                        if doc_snap.exists:
-                            doc_ref.update(update_data)
-                            print(f"[TRANSCRIPT] ✅ Updated call doc with {len(transcript_messages)} messages (duration: {call_duration}s)")
-                        else:
-                            # Doc missing — create it from scratch
-                            doc_ref.set({
-                                'id': call_uuid,
-                                'phoneNumber': phone_number or '',
-                                'crmId': crm_id or '',
-                                'agentId': agent_config.get('id', ''),
-                                'agentName': agent_config.get('name', ''),
-                                'startedAt': fs.SERVER_TIMESTAMP,
-                                **update_data,
-                            })
-                            print(f"[TRANSCRIPT] ✅ Created new call doc with {len(transcript_messages)} messages")
+                        transcript_text = await export_transcript_threaded(
+                            call_uuid, 
+                            phone_number, 
+                            agent_config, 
+                            full_history, 
+                            final_path, 
+                            ai_outcome
+                        )
+                        
+                        # Trigger background meta loop for sandboxes (which also uses threads internally)
+                        if agent_config.get('isTrainingSandbox', False) and agent_config.get('id'):
+                            sandbox_id = agent_config.get('id')
+                            curr_prompt = agent_config.get('systemPrompt', '')
+                            asyncio.create_task(auto_train_sandbox_agent(sandbox_id, transcript_text, curr_prompt, ai_outcome))
+                            
                     except Exception as transcript_err:
                         import traceback
-                        print(f"[TRANSCRIPT ERROR] Failed to save transcript: {transcript_err}")
+                        print(f"[TRANSCRIPT ERROR] Failed to save transcript threaded: {transcript_err}")
                         traceback.print_exc()
 
 
@@ -2774,9 +2771,12 @@ async def health():
 
 # ───────── DASHBOARD & API INTEGRATION ─────────
 
+# ── Allowed CORS origins (restrict for production) ──
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -38,3 +38,8 @@ MAX_PAGE_SIZE = 200
 FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase_credentials.json")
 FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET", "lakhuteleservices-1f9e0.appspot.com")
 
+# ─── AWS Settings ───
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "callex-recordings")
