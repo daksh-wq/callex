@@ -42,6 +42,9 @@ class CallSchema(BaseModel):
     disposition: Optional[str]
     notes: Optional[str] = None
     transcript: Optional[str] = None
+    summary: Optional[str] = None
+    sentiment: Optional[str] = None
+    structured_data: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -129,7 +132,10 @@ async def get_calls(
             unclear_response=call.outcome.unclear_response if call.outcome else None,
             disposition=call.outcome.disposition if call.outcome else None,
             notes=call.outcome.notes if call.outcome else None,
-            transcript=call.outcome.transcript if call.outcome else None
+            transcript=call.outcome.transcript if call.outcome else None,
+            summary=call.outcome.summary if call.outcome else None,
+            sentiment=call.outcome.sentiment if call.outcome else None,
+            structured_data=call.outcome.structured_data if call.outcome else None,
         ))
     
     return result
@@ -156,7 +162,10 @@ async def get_call(call_id: int, db: Session = Depends(get_db)):
         unclear_response=call.outcome.unclear_response if call.outcome else None,
         disposition=call.outcome.disposition if call.outcome else None,
         notes=call.outcome.notes if call.outcome else None,
-        transcript=call.outcome.transcript if call.outcome else None
+        transcript=call.outcome.transcript if call.outcome else None,
+        summary=call.outcome.summary if call.outcome else None,
+        sentiment=call.outcome.sentiment if call.outcome else None,
+        structured_data=call.outcome.structured_data if call.outcome else None,
     )
 
 

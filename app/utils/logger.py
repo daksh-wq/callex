@@ -104,10 +104,13 @@ class CallTracker:
                         call_id=call.id,
                         customer_agreed=outcome.get("agreed"),
                         commitment_date=outcome.get("commitment_date"),
-                        unclear_response=outcome.get("unclear"),
+                        unclear_response=outcome.get("unclear") or outcome.get("unclear_response"),
                         disposition=outcome.get("disposition"),
                         notes=outcome.get("notes"),
-                        transcript=transcript_text.strip() if transcript_text else None
+                        transcript=transcript_text.strip() if transcript_text else None,
+                        summary=outcome.get("summary"),
+                        sentiment=outcome.get("sentiment"),
+                        structured_data=outcome.get("structuredData"),
                     )
                     db.add(call_outcome)
                 

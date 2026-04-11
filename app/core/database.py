@@ -90,6 +90,9 @@ class CallOutcome(Base):
     # Additional context
     notes = Column(Text)
     transcript = Column(Text)  # Full conversation transcript (User: ... / Bot: ...)
+    summary = Column(Text)  # AI-generated call summary
+    sentiment = Column(String(20))  # positive / negative / neutral
+    structured_data = Column(Text)  # JSON string of highlighted_points + custom fields
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationship
@@ -120,16 +123,23 @@ def _migrate_add_columns():
     
     inspector = inspect(engine)
     
-    # Check if 'transcript' column exists in call_outcomes
+    # Check if new columns exist in call_outcomes
     if 'call_outcomes' in inspector.get_table_names():
         columns = [col['name'] for col in inspector.get_columns('call_outcomes')]
-        if 'transcript' not in columns:
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE call_outcomes ADD COLUMN transcript TEXT"))
-                print("[DATABASE] ✅ Migrated: added 'transcript' column to call_outcomes")
-            except Exception as e:
-                print(f"[DATABASE] Migration note: {e}")
+        new_cols = {
+            'transcript': 'TEXT',
+            'summary': 'TEXT',
+            'sentiment': 'VARCHAR(20)',
+            'structured_data': 'TEXT'
+        }
+        for col_name, col_type in new_cols.items():
+            if col_name not in columns:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE call_outcomes ADD COLUMN {col_name} {col_type}"))
+                    print(f"[DATABASE] ✅ Migrated: added '{col_name}' column to call_outcomes")
+                except Exception as e:
+                    print(f"[DATABASE] Migration note: {e}")
 
 
 def get_db() -> Session:

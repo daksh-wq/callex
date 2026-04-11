@@ -2023,13 +2023,23 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 print("[SST_MODEL_2 VAD] 🎤 Server confirms speech during bot playback")
 
         async def _on_sst_model_2_speech_ended():
-            """Called when SSTModel2 server VAD detects speech end — triggers flush for transcript."""
-            nonlocal sst_model_2_fed_audio
+            """Called when SSTModel2 server VAD detects speech end — triggers immediate flush.
+            
+            KEY OPTIMIZATION: The STT server's VAD detects end-of-speech ~300-500ms faster
+            than our local 0.8s silence timeout. By trusting the server signal and immediately
+            resetting local speaking state + flushing, we cut total latency significantly.
+            """
+            nonlocal sst_model_2_fed_audio, speaking, was_barge_in, speaking_start_time
             if sst_model_2_fed_audio:
-                print("[SST_MODEL_2 VAD] 🔇 Server reports speech ended — sending flush")
+                print("[SST_MODEL_2 VAD] 🔇 Server reports speech ended — immediate flush + VAD reset")
                 if sst_model_2_stt and sst_model_2_stt.is_connected:
                     sst_model_2_stt.send_flush()
                     sst_model_2_fed_audio = False
+                # Reset local VAD state immediately — don't wait for 0.8s silence timeout
+                if speaking:
+                    speaking = False
+                    was_barge_in = False
+                    speaking_start_time = 0.0
 
         async def _connect_sst_model_2():
             """Connect to SSTModel2 streaming STT WebSocket."""
@@ -2854,7 +2864,7 @@ app.add_middleware(
 
 # API routes (legacy dashboard API)
 try:
-    from api_routes import router as api_router
+    from app.api.routes import router as api_router
     app.include_router(api_router)
     print("[DASHBOARD] API routes mounted at /api")
 except Exception as e:
