@@ -783,12 +783,12 @@ def trim_history(history: List[Dict]) -> List[Dict]:
     return history
 
 
-# ───────── ASR (Speech-to-Text) — SSTModel2 AI Saaras v3 ─────────
-# Primary: SSTModel2 Streaming WS (real-time, connected per call)
-# Fallback: SSTModel2 Batch REST API (when WS not connected)
+# ───────── ASR (Speech-To-Text Model-9th APRIL) ─────────
+# Primary: Streaming WS (real-time, connected per call)
+# Fallback: Batch REST API (when WS not connected)
 
 async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt: str = "", language: str = "hi-IN") -> Optional[str]:
-    """Batch ASR using SSTModel2 AI Saaras v3 REST API (~200-500ms)."""
+    """Batch ASR using Speech-To-Text Model-9th APRIL REST API (~200-500ms)."""
     import io
     if not SST_MODEL_2_KEYS:
         print("[SST_MODEL_2 BATCH] ❌ No API keys configured")
@@ -799,7 +799,8 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
         print("[SST_MODEL_2 BATCH] ❌ No healthy keys available")
         return None
     
-    url = "https://api.sarvam.ai/speech-to-text"
+    import base64
+    url = base64.b64decode(b'aHR0cHM6Ly9hcGkuc2FydmFtLmFpL3NwZWVjaC10by10ZXh0').decode('utf-8')
     headers = {"api-subscription-key": sst_model_2_key}
     
     for attempt in range(2):
@@ -855,10 +856,10 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
 
 
 async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None, history: list = None, language: str = "hi-IN") -> Optional[str]:
-    """Transcribe audio using SSTModel2 AI Saaras v3 batch API."""
+    """Transcribe audio using Speech-To-Text Model-9th APRIL batch API."""
     audio_duration_ms = len(pcm16) / (SAMPLE_RATE * 2) * 1000
     start_time = time.time()
-    print(f"[ASR] 🎤 {audio_duration_ms:.0f}ms audio → SSTModel2 Saaras v3")
+    print(f"[ASR] 🎤 {audio_duration_ms:.0f}ms audio → Speech-To-Text Model-9th APRIL")
 
     MIN_ASR_BYTES = int(SAMPLE_RATE * 2 * 0.15)
     if len(pcm16) < MIN_ASR_BYTES:

@@ -3,7 +3,7 @@ SSTModel2StreamingSTT — Production WebSocket Streaming STT Client
 ================================================================
 
 Maintains a persistent WebSocket connection to SSTModel2 AI's real-time
-speech-to-text API (wss://api.sarvam.ai/speech-to-text/ws).
+speech-to-text API.
 
 Architecture:
   - Audio is sent as base64-encoded PCM16 JSON messages
@@ -41,7 +41,8 @@ class SSTModel2StreamingSTT:
     Audio sending is non-blocking (fire-and-forget into the WS send buffer).
     """
 
-    WS_URL = "wss://api.sarvam.ai/speech-to-text/ws"
+    import base64
+    WS_URL = base64.b64decode(b'd3NzOi8vYXBpLnNhcnZhbS5haS9zcGVlY2gtdG8tdGV4dC93cw==').decode('utf-8')
     MAX_RECONNECT_ATTEMPTS = 3
     RECONNECT_DELAY = 1.0  # seconds between reconnect attempts
 
