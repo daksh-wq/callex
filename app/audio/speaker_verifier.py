@@ -57,7 +57,7 @@ class SpeakerVerifier:
         # Rolling verification buffer (accumulate speech for reliable comparison)
         self._verify_buffer: List[float] = []
         self._verify_buffer_duration: float = 0.0
-        self.MIN_VERIFY_DURATION: float = 0.5  # minimum seconds of speech needed for embedding (Resemblyzer min is ~0.5s)
+        self.MIN_VERIFY_DURATION: float = 0.6  # minimum seconds of speech needed for reliable embedding
 
         # Rolling embedding update
         self._verified_utterance_count: int = 0

@@ -275,7 +275,7 @@ SILERO_CONFIDENCE_THRESHOLD = 0.55  # Balanced: catches single words while rejec
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
-SPEAKER_SIMILARITY_THRESHOLD = 0.58  # Rejects other speakers while tolerating phone audio degradation
+SPEAKER_SIMILARITY_THRESHOLD = 0.48  # Low enough to not reject caller's degraded phone audio
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
 BARGE_IN_SILENCE_TIMEOUT = 0.80  # 800ms for barge-in end-of-speech detection
