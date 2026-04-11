@@ -268,7 +268,7 @@ MAX_BUFFER_SECONDS = 15
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
 # Natural silence timeout — 1.2s allows callers to pause, breathe, or think without cutting them off
-SILENCE_TIMEOUT = 1.2  # 1.2s — balanced: waits for caller to finish, but doesn't lag
+SILENCE_TIMEOUT = 0.80  # 0.80s — Fast conversational pacing: minimizes lag after caller finishes
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
