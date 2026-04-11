@@ -27,8 +27,9 @@ import base64
 import json
 
 def __safe_log(msg) -> str:
+    import builtins
     if msg is None: return "None"
-    s = __safe_log(msg)
+    s = builtins.str(msg)
     s = s.replace("sarvam", "SST_MODEL_2").replace("Sarvam", "SST_MODEL_2").replace("SARVAM", "SST_MODEL_2")
     s = s.replace("saaras", "genartml-callex").replace("Saaras", "genartml-callex")
     return s
