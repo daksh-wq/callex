@@ -258,8 +258,8 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Natural silence timeout — 0.8s allows callers to pause, breathe, or think without cutting them off
-SILENCE_TIMEOUT = 0.8  # 0.8s — balanced: waits for caller to finish, but doesn't lag
+# Natural silence timeout — 1.2s allows callers to pause, breathe, or think without cutting them off
+SILENCE_TIMEOUT = 1.2  # 1.2s — balanced: waits for caller to finish, but doesn't lag
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -1280,117 +1280,6 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
     return reply
 
 
-async def generate_response_stream(client: httpx.AsyncClient, user_text: str, history: List[Dict], agent_config: Dict = None) -> AsyncGenerator[str, None]:
-    """Generates the LLM response sentence-by-sentence to overlap with TTS audio rendering for ultra-low latency."""
-    if not user_text:
-        yield "..."
-        return
-        
-    start_time = time.time()
-    agent = agent_config or FALLBACK_AGENT
-    logic_context = agent.get('description', '') or ''
-    temperature = agent.get('temperature', 0.7)
-    max_tokens = min(agent.get('maxTokens', 150), 150)
-    
-    system_prompt = agent.get('systemPrompt', FALLBACK_AGENT['systemPrompt'])
-    agent_id = agent.get('id')
-    if agent_id and agent_id != 'fallback':
-        cached = await _get_cached_prompt(agent_id)
-        if cached:
-            system_prompt = cached
-        else:
-            try:
-                from app.core.db import db_get_doc
-                _doc_data = await db_get_doc('agents', str(agent_id))
-                if _doc_data:
-                    fresh_prompt = _doc_data.get('systemPrompt')
-                    if fresh_prompt:
-                        system_prompt = fresh_prompt
-                        await _set_cached_prompt(agent_id, fresh_prompt)
-            except Exception:
-                pass
-                
-    if logic_context:
-        system_prompt = f"{system_prompt}\n\nसंदर्भ: {logic_context}"
-        
-    knowledge_base = agent.get('knowledgeBase', '') or ''
-    if knowledge_base:
-        system_prompt += f"\n\n[TRAINED KNOWLEDGE BASE]:\n{knowledge_base}"
-        
-    system_prompt += "\n\n[ABSOLUTE FORMATTING RULES - VIOLATION MEANS FAILURE]:\n"
-    system_prompt += "1. You are speaking on a PHONE CALL. Your text will be read aloud by a voice engine. It CANNOT read digits.\n"
-    system_prompt += "2. NEVER output any digit characters (0-9). Convert ALL numbers to full spoken words.\n"
-    system_prompt += "3. For Indian amounts: use 'lakh' and 'thousand' system.\n"
-    system_prompt += "4. NEVER use the ₹ symbol, 'Rs', 'Rs.', or 'INR'. ALWAYS write the word 'rupees' instead.\n"
-    system_prompt += "5. NEVER use percentage symbols (%). Write 'percent' instead.\n"
-    system_prompt += "6. ALWAYS append [HANGUP] at the very end of your final message if the call is naturally over.\n"
-
-    clean_history = [m for m in history if m["parts"][0]["text"] != "SYSTEM_INITIATE_CALL"]
-    
-    gemini_key = await get_gemini_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
-    payload = {
-        "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens
-        }
-    }
-    
-    key_semaphore = _get_gemini_semaphore(gemini_key)
-    buffer = ""
-    
-    async with key_semaphore:
-        try:
-            async with client.stream("POST", url, json=payload, timeout=15.0) as r:
-                if r.status_code != 200:
-                    error_text = await r.aread()
-                    print(f"[LLM Error] HTTP {r.status_code}: {error_text[:200]}")
-                    yield "माफ़ कीजिये, कुछ तकनीकी समस्या है।"
-                    return
-                    
-                async for line in r.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            if "candidates" in data and data["candidates"]:
-                                parts = data["candidates"][0].get("content", {}).get("parts", [])
-                                if parts and "text" in parts[0]:
-                                    chunk = parts[0]["text"]
-                                    buffer += chunk
-                                    
-                                    # Identify full sentences via punctuation followed by space/newline
-                                    match = re.search(r'([.?!]\s+|\n+)', buffer)
-                                    while match:
-                                        split_idx = match.end()
-                                        sentence = buffer[:split_idx]
-                                        buffer = buffer[split_idx:]
-                                        
-                                        sentence = sentence.strip().replace("*", "")
-                                        sentence = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', sentence)
-                                        sentence = sanitize_for_tts(sentence)
-                                        
-                                        if sentence:
-                                            yield sentence
-                                            
-                                        match = re.search(r'([.?!]\s+|\n+)', buffer)
-                        except Exception as e:
-                            pass
-        except Exception as e:
-            print(f"[LLM Stream Error] {e}")
-            yield "माफ़ कीजिये, आवाज कट रही है।"
-            return
-
-    if buffer.strip():
-        sentence = buffer.strip().replace("*", "")
-        sentence = re.sub(r'(?i)\b(?:rs\.?|inr)\b|₹', ' rupees ', sentence)
-        sentence = sanitize_for_tts(sentence)
-        if sentence:
-            yield sentence
 # ───────── OUTCOME ANALYSIS (AI) ─────────
 from app.services.analytics import analyze_call_outcome, auto_train_sandbox_agent, export_transcript_threaded
 
@@ -2256,81 +2145,76 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         history_snapshot = await brain.get_history()
 
                         t_llm = time.time()
-                        full_reply_text = ""
-                        should_hangup = False
-                        barge_in_active = False
-                        bot_speaking = True
-                        
-                        play_queue = asyncio.Queue()
-                        
-                        async def tts_consumer_worker():
-                            nonlocal should_hangup, barge_in_active
-                            while ws_alive and not barge_in_active:
-                                item = await play_queue.get()
-                                if item is None:  # Sentinel
-                                    break
-                                    
-                                sentence_to_speak = item
-                                async for audio_chunk in tts_stream_generate(
-                                    client, sentence_to_speak, voice_id=agent_config.get('voice'),
-                                    agent_voice_speed=agent_config.get('voiceSpeed'),
-                                    agent_language=agent_config.get('language')
-                                ):
-                                    if not ws_alive or barge_in_active:
-                                        break
-                                    if not await send_audio_safe(audio_chunk):
-                                        break
-                                play_queue.task_done()
-                                
-                        tts_task = asyncio.create_task(tts_consumer_worker())
+                        reply_text = await generate_response(client, text, history_snapshot, agent_config=agent_config)
 
-                        # ── Producer: Stream sentences from LLM ──
+                    llm_elapsed = (time.time() - t_llm) * 1000
+                    print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+                    should_hangup = False
+                    if "[HANGUP]" in reply_text:
+                        should_hangup = True
+                        reply_text = reply_text.replace("[HANGUP]", "").strip()
+
+                    # ── BRAIN SANITIZATION: Catch hallucination & repeats ──
+                    sanitized = brain.sanitize_response(reply_text)
+                    if sanitized is None:
+                        print(f"[BRAIN] 🛡️ Response BLOCKED (repeat): '{reply_text[:60]}' — retrying with different wording")
+                        # Retry ONCE with instruction to say something different
                         try:
-                            async for sentence in generate_response_stream(client, text, history_snapshot, agent_config=agent_config):
-                                if not ws_alive or barge_in_active:
-                                    break
-                                    
-                                if "[HANGUP]" in sentence:
-                                    should_hangup = True
-                                    sentence = sentence.replace("[HANGUP]", "").strip()
-                                    
-                                if not sentence:
-                                    continue
-                                    
-                                # Sanitize the exact sentence chunk
-                                sanitized = brain.sanitize_response(sentence)
-                                if not sanitized or not sanitized.strip():
-                                    print(f"[BRAIN] 🛡️ Blocked repeat sentence: '{sentence[:40]}'")
-                                    continue
-                                    
-                                full_reply_text += sanitized + " "
-                                print(f"[BOT STREAM] 🤖 {sanitized}")
-                                brain.set_bot_speaking(full_reply_text)
-                                
-                                # Instantly dispatch to TTS worker
-                                await play_queue.put(sanitized)
+                            retry_history = (await brain.get_history()) + [
+                                {"role": "model", "parts": [{"text": reply_text}]},
+                                {"role": "user", "parts": [{"text": "(System: Your last reply was too similar to a previous message. Say something COMPLETELY DIFFERENT. Do NOT repeat yourself.)"}]}
+                            ]
+                            retry_config = dict(agent_config)
+                            retry_config['temperature'] = agent_config.get('temperature', 0.7) + 0.2
+                            retry_text = await generate_response(
+                                client, text, retry_history,
+                                agent_config=retry_config,
+                            )
+                            retry_sanitized = brain.sanitize_response(retry_text)
+                            if retry_sanitized:
+                                reply_text = retry_sanitized
+                                print(f"[BRAIN] ✅ Retry succeeded: '{reply_text[:60]}'")
+                            else:
+                                print(f"[BRAIN] ❌ Retry also blocked, skipping")
+                                is_processing_audio = False
+                                continue
                         except Exception as e:
-                            print(f"[LLM Queue Error] {e}")
+                            print(f"[BRAIN] ❌ Retry failed: {e}")
+                            is_processing_audio = False
+                            continue
+                    else:
+                        reply_text = sanitized
 
-                        # End of LLM generation
-                        await play_queue.put(None)
-                        
-                        # Wait for TTS to finish rendering all sentences
-                        if not barge_in_active:
-                            logger_start = time.time()
-                            await tts_task
-                            
-                        llm_elapsed = (time.time() - t_llm) * 1000
-                        print(f"[PIPELINE] ⚡ Total turn execution: {llm_elapsed:.0f}ms")
+                    # ── HARD GUARD: Never send None to TTS / brain / tracker ──
+                    if not reply_text or not isinstance(reply_text, str) or not reply_text.strip():
+                        print(f"[BRAIN] ⚠️ reply_text is None/empty after sanitization — skipping entirely")
+                        is_processing_audio = False
+                        continue
 
-                        bot_speaking = False
-                        brain.set_bot_speaking(None)
+                    print(f"[BOT] 🤖 {reply_text}")
+                    await brain.add_bot_message(reply_text)
+                    if call_uuid:
+                        tracker.log_message(call_uuid, "model", reply_text)
+                        asyncio.create_task(log_live_message("model", reply_text))
 
-                        if full_reply_text.strip():
-                            await brain.add_bot_message(full_reply_text.strip())
-                            if call_uuid:
-                                tracker.log_message(call_uuid, "model", full_reply_text.strip())
-                                asyncio.create_task(log_live_message("model", full_reply_text.strip()))
+
+
+                    # Stream TTS
+                    barge_in_active = False
+                    first_bot_audio_sent = False
+                    bot_speaking = True
+                    brain.set_bot_speaking(reply_text)
+                    async for audio_chunk in tts_stream_generate(
+                        client, reply_text, voice_id=agent_config['voice'],
+                        agent_voice_speed=agent_config.get('voiceSpeed'),
+                        agent_language=agent_config.get('language')
+                    ):
+                        if not ws_alive:
+                            break
+                        if not await send_audio_safe(audio_chunk):
+                            break
+                    bot_speaking = False
+                    brain.set_bot_speaking(None)
 
                     if should_hangup:
                         print("[SYSTEM] Hanging up call as per script logic.")
