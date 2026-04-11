@@ -87,6 +87,8 @@ class SarvamStreamingSTT:
             f"model={self._model}",
             f"language-code={self._language}",
             f"mode={self._mode}",
+            f"sample_rate={self._sample_rate}",
+            "input_audio_codec=wav",
         ]
         if self._vad_signals:
             params.append("vad_signals=true")

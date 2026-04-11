@@ -258,8 +258,8 @@ MAX_BUFFER_SECONDS = 15
 
 # VAD Configuration (from config)
 MIN_SPEECH_DURATION = max(0.15, bot_config.vad.min_speech_duration)
-# Natural silence timeout — 1.3s allows callers to pause, breathe, or think without interrupting them
-SILENCE_TIMEOUT = 0.35  # 350ms — aggressive but safe (Sarvam server VAD provides backup)
+# Natural silence timeout — 1.2s allows callers to pause, breathe, or think without cutting them off
+SILENCE_TIMEOUT = 1.2  # 1.2s — balanced: waits for caller to finish, but doesn't lag
 INTERRUPTION_THRESHOLD_DB = bot_config.vad.interruption_threshold_db
 
 # Noise Suppression Configuration (from config)
@@ -271,14 +271,14 @@ ADAPTIVE_LEARNING_FRAMES = 8  # Faster noise floor learning
 
 # Silero VAD Configuration (PRODUCTION)
 USE_SILERO_VAD = True
-SILERO_CONFIDENCE_THRESHOLD = 0.50  # Less aggressive, picks up softer speech
+SILERO_CONFIDENCE_THRESHOLD = 0.65  # Rejects background noise (scores 0.3-0.5) while passing real speech
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
 SPEAKER_SIMILARITY_THRESHOLD = 0.50  # Phone-quality audio needs a lower threshold
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
-BARGE_IN_SILENCE_TIMEOUT = 0.30  # 300ms for ultra-fast barge-in response
+BARGE_IN_SILENCE_TIMEOUT = 0.80  # 800ms for barge-in end-of-speech detection
 
 # Speculative Execution — Rolling ASR fires every N seconds while customer is speaking
 ROLLING_ASR_INTERVAL = 0.8  # More frequent rolling partial ASR requests
