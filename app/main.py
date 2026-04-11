@@ -41,6 +41,7 @@ import sys
 import shutil
 import gc
 import boto3
+from app.core.fast_reply_cache import get_or_create_cache as get_fast_cache
 from botocore.exceptions import NoCredentialsError
 import webrtcvad
 import torch
@@ -1395,7 +1396,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
                     # hears bot ASAP. Subsequent yields = 32KB for efficient streaming.
                     is_first_yield = True
                     buffer = b""
-                    CHUNK_THRESHOLD = 8000    # 0.25s — fast first playback
+                    CHUNK_THRESHOLD = 4000    # 0.125s — ultra-fast first playback for lowest perceived latency
                     
                     async for chunk in response.aiter_bytes():
                         if chunk:
@@ -1603,6 +1604,16 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     _agent_prompt = agent_config.get('systemPrompt')
     if _agent_prompt and agent_config.get('id'):
         await _set_cached_prompt(agent_config['id'], _agent_prompt)
+
+    # ── FAST-PATH: Build FAQ cache for instant replies ──
+    _knowledge_base = agent_config.get('knowledgeBase', '') or ''
+    _agent_lang = agent_config.get('language', 'hi-IN')
+    fast_reply_cache = get_fast_cache(
+        agent_id=str(agent_config.get('id', 'fallback')),
+        system_prompt=_agent_prompt or '',
+        knowledge_base=_knowledge_base,
+        language=_agent_lang
+    )
 
     # ── DEFERRED: CRM phone fetch runs in background (not needed for opener) ──
     async def _deferred_crm_fetch():
@@ -2141,28 +2152,39 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         tracker.log_message(call_uuid, "user", text)
                         asyncio.create_task(log_live_message("user", text))
 
-                    # ── LLM CONCURRENCY GATE: Only 1 LLM call at a time per call ──
-                    # Without this, two rapid transcripts cause two simultaneous LLM calls
-                    # with the same history, producing duplicate/confused responses.
-                    async with brain._llm_lock:
-                        # Drain queue AGAIN under lock — pick up any newer transcripts
-                        while not sst_model_2_transcript_queue.empty():
-                            try:
-                                newer = sst_model_2_transcript_queue.get_nowait()
-                                if newer:
-                                    print(f"[LLM GATE] ⏭️ Pre-LLM drain: '{text[:30]}' → '{newer[:30]}'")
-                                    text = newer
-                            except asyncio.QueueEmpty:
-                                break
+                    # ── FAST-PATH: Check FAQ cache BEFORE hitting LLM ──
+                    t_llm = time.time()
+                    fast_reply = fast_reply_cache.match(text) if fast_reply_cache else None
+                    used_fast_path = False
 
-                        # Snapshot history under lock for consistent LLM context
-                        history_snapshot = await brain.get_history()
+                    if fast_reply:
+                        reply_text = fast_reply
+                        used_fast_path = True
+                        fast_elapsed = (time.time() - t_llm) * 1000
+                        print(f"[FAST-PATH] ⚡ Instant reply in {fast_elapsed:.0f}ms (skipped LLM)")
+                    else:
+                        # ── LLM CONCURRENCY GATE: Only 1 LLM call at a time per call ──
+                        # Without this, two rapid transcripts cause two simultaneous LLM calls
+                        # with the same history, producing duplicate/confused responses.
+                        async with brain._llm_lock:
+                            # Drain queue AGAIN under lock — pick up any newer transcripts
+                            while not sst_model_2_transcript_queue.empty():
+                                try:
+                                    newer = sst_model_2_transcript_queue.get_nowait()
+                                    if newer:
+                                        print(f"[LLM GATE] ⏭️ Pre-LLM drain: '{text[:30]}' → '{newer[:30]}'")
+                                        text = newer
+                                except asyncio.QueueEmpty:
+                                    break
 
-                        t_llm = time.time()
-                        reply_text = await generate_response(client, text, history_snapshot, agent_config=agent_config)
+                            # Snapshot history under lock for consistent LLM context
+                            history_snapshot = await brain.get_history()
+
+                            t_llm = time.time()
+                            reply_text = await generate_response(client, text, history_snapshot, agent_config=agent_config)
 
                     llm_elapsed = (time.time() - t_llm) * 1000
-                    print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms")
+                    print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms{' (FAST-PATH)' if used_fast_path else ''}")
                     should_hangup = False
                     if "[HANGUP]" in reply_text:
                         should_hangup = True
