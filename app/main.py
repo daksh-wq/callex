@@ -51,7 +51,7 @@ from app.audio.speaker_verifier import SpeakerVerifier
 from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
 from app.audio.deepfilter_denoiser import load_deepfilter_model, DeepFilterDenoiser
 from app.audio.call_context import CallAudioContext
-from app.audio.sarvam_streaming import SarvamStreamingSTT
+from app.audio.sst_model_2_streaming import SSTModel2StreamingSTT
 from app.core.conversation_brain import ConversationBrain
 
 # Force unbuffered output for PM2/Systemd logging
@@ -235,22 +235,22 @@ _TTS_MAX_CONCURRENT = int(os.getenv("TTS_MAX_CONCURRENT", "15"))
 _tts_semaphore = asyncio.Semaphore(_TTS_MAX_CONCURRENT)
 print(f"[CONFIG] 🔊 TTS concurrency limit: {_TTS_MAX_CONCURRENT} simultaneous streams")
 
-# Sarvam AI ASR keys from environment (no hardcoded defaults)
-_raw_sarvam_keys = [
-    os.getenv("SARVAM_API_KEY_1", ""),
-    os.getenv("SARVAM_API_KEY_2", ""),
-    os.getenv("SARVAM_API_KEY_3", ""),
-    os.getenv("SARVAM_API_KEY_4", ""),
-    os.getenv("SARVAM_API_KEY_5", ""),
+# SSTModel2 AI ASR keys from environment (no hardcoded defaults)
+_raw_sst_model_2_keys = [
+    os.getenv("SST_MODEL_2_API_KEY_1", ""),
+    os.getenv("SST_MODEL_2_API_KEY_2", ""),
+    os.getenv("SST_MODEL_2_API_KEY_3", ""),
+    os.getenv("SST_MODEL_2_API_KEY_4", ""),
+    os.getenv("SST_MODEL_2_API_KEY_5", ""),
 ]
-SARVAM_KEYS = [k.strip() for k in _raw_sarvam_keys if k and k.strip()]
-sarvam_key_manager = CallexVoiceKeyManager(SARVAM_KEYS)
+SST_MODEL_2_KEYS = [k.strip() for k in _raw_sst_model_2_keys if k and k.strip()]
+sst_model_2_key_manager = CallexVoiceKeyManager(SST_MODEL_2_KEYS)
 
-async def get_sarvam_key() -> str:
-    """Gets a healthy, non-rate-limited Sarvam API key."""
-    return sarvam_key_manager.get_key()
+async def get_sst_model_2_key() -> str:
+    """Gets a healthy, non-rate-limited SSTModel2 API key."""
+    return sst_model_2_key_manager.get_key()
 
-print(f"[CONFIG] ⚡ Sarvam AI ASR Pool initialized with {len(SARVAM_KEYS)} keys")
+print(f"[CONFIG] ⚡ SSTModel2 AI ASR Pool initialized with {len(SST_MODEL_2_KEYS)} keys")
 
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16kHz (High Quality)
@@ -783,24 +783,24 @@ def trim_history(history: List[Dict]) -> List[Dict]:
     return history
 
 
-# ───────── ASR (Speech-to-Text) — Sarvam AI Saaras v3 ─────────
-# Primary: Sarvam Streaming WS (real-time, connected per call)
-# Fallback: Sarvam Batch REST API (when WS not connected)
+# ───────── ASR (Speech-to-Text) — SSTModel2 AI Saaras v3 ─────────
+# Primary: SSTModel2 Streaming WS (real-time, connected per call)
+# Fallback: SSTModel2 Batch REST API (when WS not connected)
 
-async def _sarvam_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt: str = "", language: str = "hi-IN") -> Optional[str]:
-    """Batch ASR using Sarvam AI Saaras v3 REST API (~200-500ms)."""
+async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, prompt: str = "", language: str = "hi-IN") -> Optional[str]:
+    """Batch ASR using SSTModel2 AI Saaras v3 REST API (~200-500ms)."""
     import io
-    if not SARVAM_KEYS:
-        print("[SARVAM BATCH] ❌ No API keys configured")
+    if not SST_MODEL_2_KEYS:
+        print("[SST_MODEL_2 BATCH] ❌ No API keys configured")
         return None
     
-    sarvam_key = sarvam_key_manager.get_key()
-    if not sarvam_key:
-        print("[SARVAM BATCH] ❌ No healthy keys available")
+    sst_model_2_key = sst_model_2_key_manager.get_key()
+    if not sst_model_2_key:
+        print("[SST_MODEL_2 BATCH] ❌ No healthy keys available")
         return None
     
     url = "https://api.sarvam.ai/speech-to-text"
-    headers = {"api-subscription-key": sarvam_key}
+    headers = {"api-subscription-key": sst_model_2_key}
     
     for attempt in range(2):
         try:
@@ -816,49 +816,49 @@ async def _sarvam_batch_transcribe(client: httpx.AsyncClient, wav_bytes: bytes, 
             r = await client.post(url, files=files, data=data, headers=headers, timeout=4.0)
             
             if r.status_code == 429:
-                sarvam_key_manager.report_failure(sarvam_key, 429)
-                sarvam_key = sarvam_key_manager.get_key()
-                if not sarvam_key:
+                sst_model_2_key_manager.report_failure(sst_model_2_key, 429)
+                sst_model_2_key = sst_model_2_key_manager.get_key()
+                if not sst_model_2_key:
                     return None
-                headers = {"api-subscription-key": sarvam_key}
+                headers = {"api-subscription-key": sst_model_2_key}
                 continue
             
             if r.status_code != 200:
-                print(f"[SARVAM BATCH] HTTP {r.status_code}: {r.text[:200]}")
-                sarvam_key_manager.report_failure(sarvam_key, r.status_code)
+                print(f"[SST_MODEL_2 BATCH] HTTP {r.status_code}: {r.text[:200]}")
+                sst_model_2_key_manager.report_failure(sst_model_2_key, r.status_code)
                 if attempt == 0:
-                    sarvam_key = sarvam_key_manager.get_key()
-                    if sarvam_key:
-                        headers = {"api-subscription-key": sarvam_key}
+                    sst_model_2_key = sst_model_2_key_manager.get_key()
+                    if sst_model_2_key:
+                        headers = {"api-subscription-key": sst_model_2_key}
                         continue
                 return None
             
             result = r.json()
             transcript = result.get("transcript", "").strip()
             if transcript:
-                print(f"[SARVAM BATCH] ✅ '{transcript[:80]}'")
+                print(f"[SST_MODEL_2 BATCH] ✅ '{transcript[:80]}'")
                 return transcript
             return None
             
         except asyncio.TimeoutError:
-            print(f"[SARVAM BATCH] ⏱️ Timeout ({attempt + 1}/2)")
+            print(f"[SST_MODEL_2 BATCH] ⏱️ Timeout ({attempt + 1}/2)")
             if attempt == 0:
-                sarvam_key = sarvam_key_manager.get_key()
-                if sarvam_key:
-                    headers = {"api-subscription-key": sarvam_key}
+                sst_model_2_key = sst_model_2_key_manager.get_key()
+                if sst_model_2_key:
+                    headers = {"api-subscription-key": sst_model_2_key}
                     continue
             return None
         except Exception as e:
-            print(f"[SARVAM BATCH Error] {e}")
+            print(f"[SST_MODEL_2 BATCH Error] {e}")
             return None
     return None
 
 
 async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket, semantic_filter: SemanticFilter = None, history: list = None, language: str = "hi-IN") -> Optional[str]:
-    """Transcribe audio using Sarvam AI Saaras v3 batch API."""
+    """Transcribe audio using SSTModel2 AI Saaras v3 batch API."""
     audio_duration_ms = len(pcm16) / (SAMPLE_RATE * 2) * 1000
     start_time = time.time()
-    print(f"[ASR] 🎤 {audio_duration_ms:.0f}ms audio → Sarvam Saaras v3")
+    print(f"[ASR] 🎤 {audio_duration_ms:.0f}ms audio → SSTModel2 Saaras v3")
 
     MIN_ASR_BYTES = int(SAMPLE_RATE * 2 * 0.15)
     if len(pcm16) < MIN_ASR_BYTES:
@@ -874,7 +874,7 @@ async def asr_transcribe(client: httpx.AsyncClient, pcm16: bytes, ws: WebSocket,
             if parts and "text" in parts[0]:
                 prompt_context = parts[0]["text"] + " " + prompt_context
 
-    text = await _sarvam_batch_transcribe(client, wav_bytes, prompt=prompt_context.strip(), language=language)
+    text = await _sst_model_2_batch_transcribe(client, wav_bytes, prompt=prompt_context.strip(), language=language)
 
     if not text:
         return None
@@ -1685,8 +1685,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     barge_in_confirm_start = None  # Timestamp when continuous caller speech started
     was_barge_in = False  # Track if current speech started as a barge-in
     barge_in_active = False  # Instantly blocks all bot audio when True
-    sarvam_fed_audio = False  # Track if audio was sent to Sarvam since last flush
-    sarvam_last_audio_time = 0.0  # When audio was last sent to Sarvam
+    sst_model_2_fed_audio = False  # Track if audio was sent to SSTModel2 since last flush
+    sst_model_2_last_audio_time = 0.0  # When audio was last sent to SSTModel2
     speaking_start_time = 0.0  # When speaking started (for max duration limit)
     MAX_SPEAKING_DURATION = 15.0  # Force end-of-speech after 15s
 
@@ -1816,10 +1816,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     client = get_shared_client()
     if client:
 
-        # ── Sarvam Streaming STT State ────────────────────────────────────────────
-        # Transcripts arrive via Sarvam WebSocket → pushed to queue → processed by background task
-        sarvam_transcript_queue = asyncio.Queue()
-        sarvam_stt: Optional[SarvamStreamingSTT] = None
+        # ── SSTModel2 Streaming STT State ────────────────────────────────────────────
+        # Transcripts arrive via SSTModel2 WebSocket → pushed to queue → processed by background task
+        sst_model_2_transcript_queue = asyncio.Queue()
+        sst_model_2_stt: Optional[SSTModel2StreamingSTT] = None
         transcript_processor_task: Optional[asyncio.Task] = None
         is_processing_audio: bool = False
 
@@ -1981,45 +1981,45 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             except asyncio.CancelledError:
                 pass
 
-        # ── Sarvam Streaming STT Callbacks ───────────────────────────────────────
+        # ── SSTModel2 Streaming STT Callbacks ───────────────────────────────────────
 
-        async def _on_sarvam_transcript(text: str):
-            """Called by Sarvam WS when a final transcript arrives."""
-            await sarvam_transcript_queue.put(text)
+        async def _on_sst_model_2_transcript(text: str):
+            """Called by SSTModel2 WS when a final transcript arrives."""
+            await sst_model_2_transcript_queue.put(text)
 
-        async def _on_sarvam_speech_started():
-            """Called when Sarvam server VAD detects speech — reinforces local barge-in."""
+        async def _on_sst_model_2_speech_started():
+            """Called when SSTModel2 server VAD detects speech — reinforces local barge-in."""
             nonlocal speaking, was_barge_in, last_voice, bot_audio_expected_end, barge_in_active
             if not first_line_complete:
                 return
             last_voice = time.time()
             # Only use server VAD as reinforcement — local VAD handles the actual barge-in gate
             if bot_speaking and not speaking:
-                print("[SARVAM VAD] 🎤 Server confirms speech during bot playback")
+                print("[SST_MODEL_2 VAD] 🎤 Server confirms speech during bot playback")
 
-        async def _on_sarvam_speech_ended():
-            """Called when Sarvam server VAD detects speech end — triggers flush for transcript."""
-            nonlocal sarvam_fed_audio
-            if sarvam_fed_audio:
-                print("[SARVAM VAD] 🔇 Server reports speech ended — sending flush")
-                if sarvam_stt and sarvam_stt.is_connected:
-                    sarvam_stt.send_flush()
-                    sarvam_fed_audio = False
+        async def _on_sst_model_2_speech_ended():
+            """Called when SSTModel2 server VAD detects speech end — triggers flush for transcript."""
+            nonlocal sst_model_2_fed_audio
+            if sst_model_2_fed_audio:
+                print("[SST_MODEL_2 VAD] 🔇 Server reports speech ended — sending flush")
+                if sst_model_2_stt and sst_model_2_stt.is_connected:
+                    sst_model_2_stt.send_flush()
+                    sst_model_2_fed_audio = False
 
-        async def _connect_sarvam():
-            """Connect to Sarvam streaming STT WebSocket."""
-            nonlocal sarvam_stt
-            if not SARVAM_KEYS:
-                print("[SARVAM WS] ⚠️ No Sarvam API keys configured, streaming STT disabled (batch ASR fallback active)")
+        async def _connect_sst_model_2():
+            """Connect to SSTModel2 streaming STT WebSocket."""
+            nonlocal sst_model_2_stt
+            if not SST_MODEL_2_KEYS:
+                print("[SST_MODEL_2 WS] ⚠️ No SSTModel2 API keys configured, streaming STT disabled (batch ASR fallback active)")
                 return
             try:
-                sarvam_key = sarvam_key_manager.get_key()
-                stt = SarvamStreamingSTT(
-                    api_key=sarvam_key, # fallback static key logic
-                    key_manager=sarvam_key_manager, # active dynamic rotation logic
-                    on_transcript=_on_sarvam_transcript,
-                    on_speech_started=_on_sarvam_speech_started,
-                    on_speech_ended=_on_sarvam_speech_ended,
+                sst_model_2_key = sst_model_2_key_manager.get_key()
+                stt = SSTModel2StreamingSTT(
+                    api_key=sst_model_2_key, # fallback static key logic
+                    key_manager=sst_model_2_key_manager, # active dynamic rotation logic
+                    on_transcript=_on_sst_model_2_transcript,
+                    on_speech_started=_on_sst_model_2_speech_started,
+                    on_speech_ended=_on_sst_model_2_speech_ended,
                     model="saaras:v3",
                     language=agent_config.get('language', 'hi-IN'),
                     mode="translit" if agent_config.get('language') == "gu-IN" else "transcribe",
@@ -2028,20 +2028,20 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     high_vad_sensitivity=True,
                 )
                 await stt.connect()
-                sarvam_stt = stt
-                print("[SARVAM WS] ✅ Streaming STT ready")
+                sst_model_2_stt = stt
+                print("[SST_MODEL_2 WS] ✅ Streaming STT ready")
             except Exception as e:
-                print(f"[SARVAM WS] ❌ Failed to connect: {e} (batch ASR fallback active)")
+                print(f"[SST_MODEL_2 WS] ❌ Failed to connect: {e} (batch ASR fallback active)")
                 import traceback
                 traceback.print_exc()
 
-        asyncio.create_task(_connect_sarvam())
+        asyncio.create_task(_connect_sst_model_2())
 
-        async def _process_sarvam_transcripts():
-            """Background task: picks transcripts from the Sarvam queue → LLM → TTS.
+        async def _process_sst_model_2_transcripts():
+            """Background task: picks transcripts from the SSTModel2 queue → LLM → TTS.
 
             This replaces the old process_audio function. Instead of waiting for
-            silence to batch-ASR audio, transcripts arrive in real-time from Sarvam
+            silence to batch-ASR audio, transcripts arrive in real-time from SSTModel2
             WebSocket and are processed immediately.
             """
             nonlocal ws_alive, bot_speaking, barge_in_active, is_processing_audio
@@ -2050,17 +2050,17 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             while ws_alive:
                 try:
                     text = await asyncio.wait_for(
-                        sarvam_transcript_queue.get(), timeout=1.0
+                        sst_model_2_transcript_queue.get(), timeout=1.0
                     )
                     if not text or not ws_alive:
                         continue
 
                     # Drain queue — only process the LATEST transcript
-                    while not sarvam_transcript_queue.empty():
+                    while not sst_model_2_transcript_queue.empty():
                         try:
-                            newer = sarvam_transcript_queue.get_nowait()
+                            newer = sst_model_2_transcript_queue.get_nowait()
                             if newer:
-                                print(f"[SARVAM] ⏭️ Skipping older: '{text[:40]}' → using newer")
+                                print(f"[SST_MODEL_2] ⏭️ Skipping older: '{text[:40]}' → using newer")
                                 text = newer
                         except asyncio.QueueEmpty:
                             break
@@ -2068,7 +2068,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     # Semantic filter
                     if semantic_filter and not semantic_filter.is_meaningful(text):
                         reason = semantic_filter.get_rejection_reason(text)
-                        print(f"[SARVAM] Semantic filter rejected: '{text}' — {reason}")
+                        print(f"[SST_MODEL_2] Semantic filter rejected: '{text}' — {reason}")
                         continue
 
                     # ── ECHO DETECTION: Skip if bot heard its own TTS output ──
@@ -2132,9 +2132,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     # with the same history, producing duplicate/confused responses.
                     async with brain._llm_lock:
                         # Drain queue AGAIN under lock — pick up any newer transcripts
-                        while not sarvam_transcript_queue.empty():
+                        while not sst_model_2_transcript_queue.empty():
                             try:
-                                newer = sarvam_transcript_queue.get_nowait()
+                                newer = sst_model_2_transcript_queue.get_nowait()
                                 if newer:
                                     print(f"[LLM GATE] ⏭️ Pre-LLM drain: '{text[:30]}' → '{newer[:30]}'")
                                     text = newer
@@ -2230,15 +2230,15 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    print(f"[SARVAM PROCESSOR] Error: {e}")
+                    print(f"[SST_MODEL_2 PROCESSOR] Error: {e}")
                     import traceback
                     traceback.print_exc()
                 finally:
                     is_processing_audio = False
 
-        # ALWAYS start transcript processor — it reads from sarvam_transcript_queue
-        # which is fed by EITHER Sarvam WS callbacks OR batch ASR fallback
-        transcript_processor_task = asyncio.create_task(_process_sarvam_transcripts())
+        # ALWAYS start transcript processor — it reads from sst_model_2_transcript_queue
+        # which is fed by EITHER SSTModel2 WS callbacks OR batch ASR fallback
+        transcript_processor_task = asyncio.create_task(_process_sst_model_2_transcripts())
 
         # Send opener
         opener_text = agent_config['openingLine']
@@ -2424,7 +2424,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     clean_int16 = (enhanced_float32 * 32767.0).astype(np.int16)
                     recorder.write_customer_audio(clean_int16.tobytes())
 
-                    # 3b. Sarvam STT feeding is DEFERRED until after speaker verification
+                    # 3b. SSTModel2 STT feeding is DEFERRED until after speaker verification
                     # (see below — we only feed verified caller audio to STT)
                     
                     # 4. enhanced_float32 is already float32 — feed into DSP pipeline
@@ -2449,14 +2449,14 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         print(f"[VAD] ⏰ Max speaking duration ({MAX_SPEAKING_DURATION}s) reached — forcing end-of-speech")
                         silence_detected = True
 
-                    # ── Secondary: audio was fed to Sarvam but speaking never formally started ──
+                    # ── Secondary: audio was fed to SSTModel2 but speaking never formally started ──
                     # (handles short quiet words like "haan", "nahi" that don't pass barge-in threshold)
-                    if not speaking and sarvam_fed_audio and sarvam_last_audio_time > 0 and (now - sarvam_last_audio_time) > 1.5:
-                        print(f"[VAD] 🔇 Sarvam audio timeout — flushing unsent speech")
-                        if sarvam_stt and sarvam_stt.is_connected:
-                            sarvam_stt.send_flush()
-                        sarvam_fed_audio = False
-                        sarvam_last_audio_time = 0.0
+                    if not speaking and sst_model_2_fed_audio and sst_model_2_last_audio_time > 0 and (now - sst_model_2_last_audio_time) > 1.5:
+                        print(f"[VAD] 🔇 SSTModel2 audio timeout — flushing unsent speech")
+                        if sst_model_2_stt and sst_model_2_stt.is_connected:
+                            sst_model_2_stt.send_flush()
+                        sst_model_2_fed_audio = False
+                        sst_model_2_last_audio_time = 0.0
 
                     if silence_detected:
                         speaking = False
@@ -2464,12 +2464,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         speaking_start_time = 0.0
                         speaker_verifier.clear_verify_buffer()
 
-                        if sarvam_stt and sarvam_stt.is_connected:
-                            sarvam_stt.send_flush()
-                            sarvam_fed_audio = False
+                        if sst_model_2_stt and sst_model_2_stt.is_connected:
+                            sst_model_2_stt.send_flush()
+                            sst_model_2_fed_audio = False
 
-                        # ── BATCH ASR FALLBACK: If Sarvam WS is not connected, use batch ASR ──
-                        if not (sarvam_stt and sarvam_stt.is_connected):
+                        # ── BATCH ASR FALLBACK: If SSTModel2 WS is not connected, use batch ASR ──
+                        if not (sst_model_2_stt and sst_model_2_stt.is_connected):
                             duration = len(buffer) / SAMPLE_RATE
                             if duration >= MIN_SPEECH_DURATION:
                                 samples = np.array(buffer, dtype=np.float32)
@@ -2478,7 +2478,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                                 try:
                                     user_text = await asr_transcribe(client, pcm16, ws, semantic_filter=semantic_filter, history=await brain.get_history(), language=agent_config.get('language', 'hi-IN'))
                                     if user_text:
-                                        await sarvam_transcript_queue.put(user_text)
+                                        await sst_model_2_transcript_queue.put(user_text)
                                 except Exception as e:
                                     print(f"[FALLBACK ASR] Error: {e}")
                             else:
@@ -2522,12 +2522,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         speaker_verifier.feed_verify_buffer(filtered_chunk)
                         speaker_similarity = 0.70
 
-                    # ── Feed VERIFIED audio to Sarvam STT ──
-                    if sarvam_stt and sarvam_stt.is_connected and first_line_complete:
+                    # ── Feed VERIFIED audio to SSTModel2 STT ──
+                    if sst_model_2_stt and sst_model_2_stt.is_connected and first_line_complete:
                         if time.time() > bot_audio_expected_end + 0.15:
-                            sarvam_stt.send_audio(clean_int16.tobytes())
-                            sarvam_fed_audio = True
-                            sarvam_last_audio_time = now
+                            sst_model_2_stt.send_audio(clean_int16.tobytes())
+                            sst_model_2_fed_audio = True
+                            sst_model_2_last_audio_time = now
 
                     buffer.extend(unfiltered_clean)
                     vad_buffer.extend(filtered_chunk)
@@ -2625,7 +2625,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             print("[WS] BARGE received! Transferring call...")
                             await cancel_current()
                             await brain.add_system_note("[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]")
-                            await sarvam_transcript_queue.put("[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]")
+                            await sst_model_2_transcript_queue.put("[System: A human supervisor has taken over the call. Say a quick goodbye and hang up.]")
                     except Exception as e:
                         print(f"[WS JSON Error]: {e}")
 
@@ -2649,10 +2649,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 print(f"[NUMBER ACCUMULATOR] Unflushed digits: '{combined}'")
                 number_accumulator = []
 
-            # ── Disconnect Sarvam Streaming STT ──
-            if sarvam_stt:
+            # ── Disconnect SSTModel2 Streaming STT ──
+            if sst_model_2_stt:
                 try:
-                    await sarvam_stt.disconnect()
+                    await sst_model_2_stt.disconnect()
                 except Exception:
                     pass
             if transcript_processor_task and not transcript_processor_task.done():

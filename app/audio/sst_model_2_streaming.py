@@ -1,8 +1,8 @@
 """
-SarvamStreamingSTT — Production WebSocket Streaming STT Client
+SSTModel2StreamingSTT — Production WebSocket Streaming STT Client
 ================================================================
 
-Maintains a persistent WebSocket connection to Sarvam AI's real-time
+Maintains a persistent WebSocket connection to SSTModel2 AI's real-time
 speech-to-text API (wss://api.sarvam.ai/speech-to-text/ws).
 
 Architecture:
@@ -11,7 +11,7 @@ Architecture:
   - Callbacks fire on the asyncio event loop for zero-blocking integration
 
 Usage:
-    stt = SarvamStreamingSTT(
+    stt = SSTModel2StreamingSTT(
         api_key="...",
         on_transcript=my_handler,      # async def (text: str)
         on_speech_started=my_handler,  # async def ()
@@ -33,9 +33,9 @@ import websockets
 import websockets.exceptions
 
 
-class SarvamStreamingSTT:
+class SSTModel2StreamingSTT:
     """
-    Production WebSocket client for Sarvam AI Streaming STT.
+    Production WebSocket client for SSTModel2 AI Streaming STT.
     
     Thread-safe: all public methods are safe to call from the asyncio event loop.
     Audio sending is non-blocking (fire-and-forget into the WS send buffer).
@@ -82,7 +82,7 @@ class SarvamStreamingSTT:
         return self._is_connected and self._ws is not None
 
     async def connect(self):
-        """Establish the WebSocket connection to Sarvam streaming API with Key Rotation."""
+        """Establish the WebSocket connection to SSTModel2 streaming API with Key Rotation."""
         params = [
             f"model={self._model}",
             f"language-code={self._language}",
@@ -127,29 +127,29 @@ class SarvamStreamingSTT:
 
                 # Start background receiver
                 self._receive_task = asyncio.create_task(self._receive_loop())
-                print(f"[SARVAM WS] ✅ Connected to streaming STT ({self._model}, {self._language}) using key #{attempt + 1}")
+                print(f"[SST_MODEL_2 WS] ✅ Connected to streaming STT ({self._model}, {self._language}) using key #{attempt + 1}")
                 return
 
             except websockets.exceptions.InvalidStatus as e:
                 last_error = e
                 status_code = e.response.status_code
-                print(f"[SARVAM WS] ⚠️ Key #{attempt + 1} HTTP {status_code} ({key[:8]}...)")
+                print(f"[SST_MODEL_2 WS] ⚠️ Key #{attempt + 1} HTTP {status_code} ({key[:8]}...)")
                 if self._key_manager:
                     self._key_manager.report_failure(key, status_code)
                     if attempt < len(keys_to_try) - 1:
-                        print(f"[SARVAM WS] 🔄 Retrying connection with next available API key...")
+                        print(f"[SST_MODEL_2 WS] 🔄 Retrying connection with next available API key...")
             except Exception as e:
                 last_error = e
-                print(f"[SARVAM WS] ⚠️ Connection failed on key #{attempt+1}: {e}")
+                print(f"[SST_MODEL_2 WS] ⚠️ Connection failed on key #{attempt+1}: {e}")
                 if attempt < len(keys_to_try) - 1:
-                    print(f"[SARVAM WS] 🔄 Retrying connection with next available API key...")
+                    print(f"[SST_MODEL_2 WS] 🔄 Retrying connection with next available API key...")
 
         self._is_connected = False
-        print(f"[SARVAM WS] ❌ ALL connection attempts to Sarvam streaming dropped/failed! Fallback ASR required. Last Error: {last_error}")
+        print(f"[SST_MODEL_2 WS] ❌ ALL connection attempts to SSTModel2 streaming dropped/failed! Fallback ASR required. Last Error: {last_error}")
         raise last_error
 
     async def _receive_loop(self):
-        """Background task: reads messages from Sarvam WS and dispatches callbacks."""
+        """Background task: reads messages from SSTModel2 WS and dispatches callbacks."""
         try:
             async for raw_msg in self._ws:
                 try:
@@ -172,23 +172,23 @@ class SarvamStreamingSTT:
                             metrics = data.get("metrics", {})
                             latency = metrics.get("processing_latency", 0)
                             audio_dur = metrics.get("audio_duration", 0)
-                            print(f"[SARVAM WS] 📝 Transcript: '{transcript[:80]}' (latency={latency:.2f}s, audio={audio_dur:.2f}s)")
+                            print(f"[SST_MODEL_2 WS] 📝 Transcript: '{transcript[:80]}' (latency={latency:.2f}s, audio={audio_dur:.2f}s)")
                             await self._on_transcript(transcript)
 
                     elif msg_type == "error":
                         error_data = msg.get("data", {})
                         error_msg = error_data.get("message", str(msg))
-                        print(f"[SARVAM WS] ⚠️ Server error: {error_msg}")
+                        print(f"[SST_MODEL_2 WS] ⚠️ Server error: {error_msg}")
 
                     # Silently ignore unknown message types (heartbeats, etc.)
 
                 except json.JSONDecodeError:
-                    print(f"[SARVAM WS] ⚠️ Non-JSON message: {str(raw_msg)[:100]}")
+                    print(f"[SST_MODEL_2 WS] ⚠️ Non-JSON message: {str(raw_msg)[:100]}")
                 except Exception as e:
-                    print(f"[SARVAM WS] ⚠️ Message handler error: {e}")
+                    print(f"[SST_MODEL_2 WS] ⚠️ Message handler error: {e}")
 
         except websockets.exceptions.ConnectionClosed as e:
-            print(f"[SARVAM WS] 🔌 Connection closed: {e}")
+            print(f"[SST_MODEL_2 WS] 🔌 Connection closed: {e}")
             self._is_connected = False
             # Attempt reconnect
             await self._try_reconnect()
@@ -198,31 +198,31 @@ class SarvamStreamingSTT:
             raise
 
         except Exception as e:
-            print(f"[SARVAM WS] ❌ Receive loop error: {e}")
+            print(f"[SST_MODEL_2 WS] ❌ Receive loop error: {e}")
             self._is_connected = False
             await self._try_reconnect()
 
     async def _try_reconnect(self):
         """Attempt to reconnect after unexpected disconnect."""
         if self._reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
-            print(f"[SARVAM WS] ❌ Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. Giving up.")
+            print(f"[SST_MODEL_2 WS] ❌ Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. Giving up.")
             return
 
         self._reconnect_count += 1
-        print(f"[SARVAM WS] 🔄 Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}...")
+        print(f"[SST_MODEL_2 WS] 🔄 Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}...")
         await asyncio.sleep(self.RECONNECT_DELAY)
 
         try:
             await self.connect()
-            print(f"[SARVAM WS] ✅ Reconnected successfully")
+            print(f"[SST_MODEL_2 WS] ✅ Reconnected successfully")
         except Exception as e:
-            print(f"[SARVAM WS] ❌ Reconnect failed: {e}")
+            print(f"[SST_MODEL_2 WS] ❌ Reconnect failed: {e}")
 
     def send_audio(self, pcm16_bytes: bytes):
         """
-        Send PCM16 audio to Sarvam streaming STT as binary WAV frames.
+        Send PCM16 audio to SSTModel2 streaming STT as binary WAV frames.
         
-        Sarvam's current WebSocket API expects raw binary WebSocket frames
+        SSTModel2's current WebSocket API expects raw binary WebSocket frames
         containing WAV-formatted audio data. We wrap raw PCM16 in a minimal
         WAV header and send it as a binary frame for maximum efficiency.
         
@@ -260,20 +260,20 @@ class SarvamStreamingSTT:
             )
             wav_bytes = wav_header + pcm16_bytes
 
-            # Send as binary WebSocket frame (Sarvam expects raw binary audio)
+            # Send as binary WebSocket frame (SSTModel2 expects raw binary audio)
             asyncio.create_task(self._safe_send_binary(wav_bytes))
         except Exception as e:
-            print(f"[SARVAM WS] ⚠️ send_audio error: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ send_audio error: {e}")
 
     def send_flush(self):
-        """Send flush signal to finalize transcript (Sarvam API format)."""
+        """Send flush signal to finalize transcript (SSTModel2 API format)."""
         if not self._is_connected or self._ws is None:
             return
         try:
             message = json.dumps({"type": "flush"})
             asyncio.create_task(self._safe_send(message))
         except Exception as e:
-            print(f"[SARVAM WS] ⚠️ send_flush error: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ send_flush error: {e}")
 
     async def _safe_send(self, message: str):
         """Send a text message with error handling (no crash on closed socket)."""
@@ -283,7 +283,7 @@ class SarvamStreamingSTT:
         except websockets.exceptions.ConnectionClosed:
             self._is_connected = False
         except Exception as e:
-            print(f"[SARVAM WS] ⚠️ Send failed: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ Send failed: {e}")
             self._is_connected = False
 
     async def _safe_send_binary(self, data: bytes):
@@ -294,11 +294,11 @@ class SarvamStreamingSTT:
         except websockets.exceptions.ConnectionClosed:
             self._is_connected = False
         except Exception as e:
-            print(f"[SARVAM WS] ⚠️ Binary send failed: {e}")
+            print(f"[SST_MODEL_2 WS] ⚠️ Binary send failed: {e}")
             self._is_connected = False
 
     async def disconnect(self):
-        """Cleanly disconnect from Sarvam streaming API."""
+        """Cleanly disconnect from SSTModel2 streaming API."""
         self._is_connected = False
 
         if self._receive_task:
@@ -317,4 +317,4 @@ class SarvamStreamingSTT:
             self._ws = None
 
         duration = time.time() - self._connect_time if self._connect_time else 0
-        print(f"[SARVAM WS] 🔌 Disconnected (session duration: {duration:.0f}s)")
+        print(f"[SST_MODEL_2 WS] 🔌 Disconnected (session duration: {duration:.0f}s)")

@@ -8,7 +8,7 @@ state that CANNOT leak between calls.
 
 Solves:
   1. Opening line repetition — detects & blocks bot from repeating its opener
-  2. Echo-loop hallucination — detects when Sarvam transcribes the bot's own
+  2. Echo-loop hallucination — detects when SSTModel2 transcribes the bot's own
      TTS output and filters it out before it reaches the LLM
   3. Cross-call history leakage — all state is per-instance (per-call)
   4. Concurrent mutation — asyncio.Lock protects all history writes
@@ -21,7 +21,7 @@ Usage:
     await brain.add_bot_message(opener_text)
     brain.mark_opening_spoken()
     
-    # Customer transcript arrives from Sarvam WS:
+    # Customer transcript arrives from SSTModel2 WS:
     if brain.is_echo(transcript):
         continue  # Skip — this is the bot's own voice
     await brain.add_user_message(transcript)
@@ -157,12 +157,12 @@ class ConversationBrain:
 
     def is_echo(self, transcript: str) -> bool:
         """
-        Check if a Sarvam transcript is an echo of something the bot recently said.
+        Check if a SSTModel2 transcript is an echo of something the bot recently said.
         
         This catches the scenario where:
           1. Bot speaks via TTS
           2. FreeSWITCH routes the audio back into the input stream
-          3. Sarvam transcribes it
+          3. SSTModel2 transcribes it
           4. Without this check, the LLM would respond to its own output → loop
         """
         if not transcript:
