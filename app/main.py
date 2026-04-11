@@ -275,7 +275,7 @@ SILERO_CONFIDENCE_THRESHOLD = 0.50  # Less aggressive, picks up softer speech
 CONTINUOUS_VAD_CHECK = True
 SEMANTIC_MIN_LENGTH = 3
 
-SPEAKER_SIMILARITY_THRESHOLD = 0.65  
+SPEAKER_SIMILARITY_THRESHOLD = 0.50  # Phone-quality audio needs a lower threshold
 SPEAKER_ENROLLMENT_SECONDS = 3.0
 BARGE_IN_CONFIRM_MS = 100  # Faster barge-in confirmation
 BARGE_IN_SILENCE_TIMEOUT = 0.30  # 300ms for ultra-fast barge-in response

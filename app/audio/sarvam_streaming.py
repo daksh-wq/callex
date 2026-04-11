@@ -218,14 +218,11 @@ class SarvamStreamingSTT:
 
     def send_audio(self, pcm16_bytes: bytes):
         """
-        Send PCM16 audio to Sarvam streaming STT as base64-encoded JSON.
+        Send PCM16 audio to Sarvam streaming STT as binary WAV frames.
         
-        Sarvam's WebSocket API expects JSON messages with the audio payload:
-            {"audio": "<base64-wav>", "encoding": "audio/wav", "sample_rate": 16000}
-        
-        We wrap raw PCM16 in a minimal WAV header, base64-encode the result,
-        and send it as a JSON text frame — matching the format used by the
-        official Sarvam SDK (sarvamai.transcribe()).
+        Sarvam's current WebSocket API expects raw binary WebSocket frames
+        containing WAV-formatted audio data. We wrap raw PCM16 in a minimal
+        WAV header and send it as a binary frame for maximum efficiency.
         
         Non-blocking: schedules the send on the event loop.
         Safe to call from the audio processing hot path.
@@ -261,17 +258,8 @@ class SarvamStreamingSTT:
             )
             wav_bytes = wav_header + pcm16_bytes
 
-            # Encode to base64 and send as JSON (Sarvam API requirement)
-            # Sarvam expects "audio" to be an AudioContent dict, not a raw string
-            audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
-            message = json.dumps({
-                "audio": {
-                    "data": audio_b64,
-                    "encoding": "audio/wav",
-                    "sample_rate": self._sample_rate,
-                },
-            })
-            asyncio.create_task(self._safe_send(message))
+            # Send as binary WebSocket frame (Sarvam expects raw binary audio)
+            asyncio.create_task(self._safe_send_binary(wav_bytes))
         except Exception as e:
             print(f"[SARVAM WS] ⚠️ send_audio error: {e}")
 
