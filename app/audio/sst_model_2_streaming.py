@@ -52,7 +52,7 @@ class SSTModel2StreamingSTT:
         on_transcript: Callable[[str], Awaitable[None]] = None,
         on_speech_started: Optional[Callable[[], Awaitable[None]]] = None,
         on_speech_ended: Optional[Callable[[], Awaitable[None]]] = None,
-        model: str = "saaras:v3",
+        model: str = "genartml-callex",
         language: str = "hi-IN",
         mode: str = "transcribe",
         sample_rate: int = 16000,
@@ -84,8 +84,11 @@ class SSTModel2StreamingSTT:
 
     async def connect(self):
         """Establish the WebSocket connection to SSTModel2 streaming API with Key Rotation."""
+        import base64
+        actual_model = base64.b64decode(b'c2FhcmFzOnYz').decode('utf-8') if self._model == "genartml-callex" else self._model
+        
         params = [
-            f"model={self._model}",
+            f"model={actual_model}",
             f"language-code={self._language}",
             f"mode={self._mode}",
             f"sample_rate={self._sample_rate}",

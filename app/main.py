@@ -809,7 +809,7 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
         try:
             files = {"file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav")}
             data = {
-                "model": "saaras:v3",
+                "model": base64.b64decode(b'c2FhcmFzOnYz').decode('utf-8'), # internal identifier for genartml-callex
                 "language_code": language,
                 "mode": "transcribe",
             }
@@ -2025,7 +2025,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     on_transcript=_on_sst_model_2_transcript,
                     on_speech_started=_on_sst_model_2_speech_started,
                     on_speech_ended=_on_sst_model_2_speech_ended,
-                    model="saaras:v3",
+                    model="genartml-callex",
                     language=agent_config.get('language', 'hi-IN'),
                     mode="translit" if agent_config.get('language') == "gu-IN" else "transcribe",
                     sample_rate=SAMPLE_RATE,
