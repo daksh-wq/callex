@@ -262,11 +262,14 @@ class SarvamStreamingSTT:
             wav_bytes = wav_header + pcm16_bytes
 
             # Encode to base64 and send as JSON (Sarvam API requirement)
+            # Sarvam expects "audio" to be an AudioContent dict, not a raw string
             audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
             message = json.dumps({
-                "audio": audio_b64,
-                "encoding": "audio/wav",
-                "sample_rate": self._sample_rate,
+                "audio": {
+                    "data": audio_b64,
+                    "encoding": "audio/wav",
+                    "sample_rate": self._sample_rate,
+                },
             })
             asyncio.create_task(self._safe_send(message))
         except Exception as e:
