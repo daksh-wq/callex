@@ -615,7 +615,7 @@ app = FastAPI(lifespan=lifespan)
 # ───────── TELEMETRY & DASHBOARD ─────────
 GLOBAL_LATENCY_TRACKER = deque(maxlen=20)
 
-@app.get("/dashboard")
+@app.get("/telemetry")
 async def serve_dashboard():
     dashboard_path = os.path.join(PROJECT_ROOT, "dashboard.html")
     if not os.path.exists(dashboard_path):
