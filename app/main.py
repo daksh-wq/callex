@@ -613,7 +613,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ───────── TELEMETRY & DASHBOARD ─────────
-GLOBAL_LATENCY_TRACKER = deque(maxlen=20)
+GLOBAL_LATENCY_TRACKER = deque(maxlen=50)
+GLOBAL_TTS_LATENCY_TRACKER = deque(maxlen=50)
+GLOBAL_ERROR_COUNTER = {"drops": 0, "errors": 0}
+SERVER_START_TIME = time.time()
 
 @app.get("/telemetry")
 async def serve_dashboard():
@@ -624,37 +627,123 @@ async def serve_dashboard():
         return HTMLResponse(f.read())
 
 @app.get("/api/telemetry/live")
-async def get_telemetry():
+def get_telemetry():
     from app.utils.logger import tracker
-    
-    # Calculate Latency
-    avg_lat = 0
-    if len(GLOBAL_LATENCY_TRACKER) > 0:
-        avg_lat = sum(GLOBAL_LATENCY_TRACKER) / len(GLOBAL_LATENCY_TRACKER)
-        
     import psutil
-    cpu_load = psutil.cpu_percent(interval=None)
+    from datetime import datetime, timedelta
+    from sqlalchemy import func, and_
 
-    # Simplified fast analytics count (using tracker or raw DB)
+    # ── Latency ──
+    avg_llm = round(sum(GLOBAL_LATENCY_TRACKER) / len(GLOBAL_LATENCY_TRACKER), 1) if GLOBAL_LATENCY_TRACKER else 0
+    avg_tts = round(sum(GLOBAL_TTS_LATENCY_TRACKER) / len(GLOBAL_TTS_LATENCY_TRACKER), 1) if GLOBAL_TTS_LATENCY_TRACKER else 0
+
+    # ── System ──
+    proc = psutil.Process(os.getpid())
+    mem_info = proc.memory_info()
+    uptime_secs = time.time() - SERVER_START_TIME
+
+    # ── Active Call Details ──
+    now = time.time()
+    active_list = []
+    with tracker._lock:
+        for uuid, data in tracker.active_calls.items():
+            started = data.get("start_time")
+            elapsed = 0
+            if started:
+                elapsed = (datetime.utcnow() + timedelta(hours=5, minutes=30) - started).total_seconds()
+            active_list.append({
+                "uuid": uuid[:12] + "...",
+                "phone": data.get("phone_number", "Unknown"),
+                "duration_s": round(elapsed),
+                "messages": len(data.get("conversation", []))
+            })
+
+    # ── Database Analytics (thread-safe, runs in threadpool via def) ──
+    db = None
+    total_calls = 0
+    total_agreed = 0
+    total_declined = 0
+    total_unclear = 0
+    avg_duration = 0
+    today_calls = 0
+    yesterday_calls = 0
+    sentiment_pos = 0
+    sentiment_neg = 0
+    sentiment_neu = 0
+    dispositions = {}
     try:
         db = get_db_session()
-        total_calls = getattr(db.query(Call).count(), 'count', lambda: db.query(Call).count())()
+        total_calls = db.query(Call).count()
         total_agreed = db.query(CallOutcome).filter(CallOutcome.customer_agreed == True).count()
-        conversion = 0
-        if total_calls > 0:
-            conversion = round((total_agreed / total_calls) * 100, 1)
-        db.close()
-    except:
-        total_calls, total_agreed, conversion = 0, 0, 0
+        total_declined = db.query(CallOutcome).filter(CallOutcome.customer_agreed == False).count()
+        total_unclear = db.query(CallOutcome).filter(CallOutcome.unclear_response == True).count()
+
+        avg_dur_row = db.query(func.avg(Call.duration_seconds)).filter(Call.duration_seconds != None).scalar()
+        avg_duration = round(float(avg_dur_row), 1) if avg_dur_row else 0
+
+        # Today vs Yesterday
+        ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        today_start = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+        today_calls = db.query(Call).filter(Call.start_time >= today_start).count()
+        yesterday_calls = db.query(Call).filter(and_(Call.start_time >= yesterday_start, Call.start_time < today_start)).count()
+
+        # Sentiment breakdown
+        sentiment_pos = db.query(CallOutcome).filter(CallOutcome.sentiment == "positive").count()
+        sentiment_neg = db.query(CallOutcome).filter(CallOutcome.sentiment == "negative").count()
+        sentiment_neu = db.query(CallOutcome).filter(CallOutcome.sentiment == "neutral").count()
+
+        # Top dispositions
+        disp_rows = db.query(CallOutcome.disposition, func.count(CallOutcome.id)).filter(
+            CallOutcome.disposition != None
+        ).group_by(CallOutcome.disposition).order_by(func.count(CallOutcome.id).desc()).limit(5).all()
+        dispositions = {row[0]: row[1] for row in disp_rows}
+
+    except Exception as e:
+        print(f"[TELEMETRY] DB query error: {e}")
+    finally:
+        if db:
+            db.close()
+
+    conversion = round((total_agreed / total_calls) * 100, 1) if total_calls > 0 else 0
+
+    # ── Active Agents from Firestore ──
+    agents_list = []
+    try:
+        from firebase_admin import firestore as fs
+        firestore_db = fs.client()
+        for doc in firestore_db.collection('agents').stream():
+            d = doc.to_dict()
+            agents_list.append({
+                "id": doc.id[:10],
+                "name": d.get("name", "Unnamed"),
+                "nlp": d.get("enableNLP", False),
+                "speed": d.get("voiceSpeed", 1.0),
+            })
+    except Exception:
+        pass
 
     return {
-        "active_calls": len(tracker.active_calls),
-        "average_latency_ms": avg_lat,
-        "cpu_load": cpu_load,
+        "active_calls": len(active_list),
+        "active_call_details": active_list,
+        "average_latency_ms": avg_llm,
+        "average_tts_latency_ms": avg_tts,
+        "cpu_load": psutil.cpu_percent(interval=None),
+        "memory_mb": round(mem_info.rss / 1024 / 1024, 1),
+        "uptime_seconds": round(uptime_secs),
+        "errors": GLOBAL_ERROR_COUNTER,
+        "agents": agents_list,
         "analytics": {
             "total_calls": total_calls,
             "total_agreed": total_agreed,
-            "agreement_percentage": conversion
+            "total_declined": total_declined,
+            "total_unclear": total_unclear,
+            "agreement_percentage": conversion,
+            "avg_duration_s": avg_duration,
+            "today_calls": today_calls,
+            "yesterday_calls": yesterday_calls,
+            "sentiment": {"positive": sentiment_pos, "negative": sentiment_neg, "neutral": sentiment_neu},
+            "top_dispositions": dispositions,
         }
     }
 
@@ -2325,6 +2414,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     first_bot_audio_sent = False
                     bot_speaking = True
                     brain.set_bot_speaking(reply_text)
+                    t_tts = time.time()
                     async for audio_chunk in tts_stream_generate(
                         client, reply_text, voice_id=agent_config['voice'],
                         agent_voice_speed=agent_config.get('voiceSpeed'),
@@ -2335,6 +2425,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             break
                         if not await send_audio_safe(audio_chunk):
                             break
+                    tts_elapsed = (time.time() - t_tts) * 1000
+                    GLOBAL_TTS_LATENCY_TRACKER.append(tts_elapsed)
                     bot_speaking = False
                     brain.set_bot_speaking(None)
 
