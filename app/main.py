@@ -1627,8 +1627,11 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     )
 
     # ── NLP TONE ANALYZER: Real-time customer emotion detection ──
-    tone_analyzer = ToneAnalyzer()
-    print(f"[NLP] 🎭 Tone Analyzer initialized for call")
+    # Check if NLP is enabled for this specific agent (via dashboard)
+    enable_nlp = agent_config.get('enableNLP', False) or agent_config.get('enable_nlp', False)
+    tone_analyzer = ToneAnalyzer() if enable_nlp else None
+    if enable_nlp:
+        print(f"[NLP] 🎭 Tone Analyzer initialized for call (Agent {agent_config.get('id')})")
 
     # ── DEFERRED: CRM phone fetch runs in background (not needed for opener) ──
     async def _deferred_crm_fetch():
@@ -2172,7 +2175,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         await _flush_number_accumulator()
 
                     # ── NLP TONE ANALYSIS: Detect customer emotion in real-time ──
-                    tone_analyzer.analyze(text)
+                    if tone_analyzer:
+                        tone_analyzer.analyze(text)
 
                     # ── Normal transcript processing: History → LLM → TTS ──
                     await brain.add_user_message(text)
@@ -2209,7 +2213,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             history_snapshot = await brain.get_history()
 
                             t_llm = time.time()
-                            tone_instructions = tone_analyzer.get_tone_instruction()
+                            tone_instructions = tone_analyzer.get_tone_instruction() if tone_analyzer else ""
                             reply_text = await generate_response(
                                 client, text, history_snapshot, 
                                 agent_config=agent_config,
@@ -2238,7 +2242,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             retry_text = await generate_response(
                                 client, text, retry_history,
                                 agent_config=retry_config,
-                                tone_context=tone_analyzer.get_tone_instruction()
+                                tone_context=tone_analyzer.get_tone_instruction() if tone_analyzer else ""
                             )
                             retry_sanitized = brain.sanitize_response(retry_text)
                             if retry_sanitized:
@@ -2278,7 +2282,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                         client, reply_text, voice_id=agent_config['voice'],
                         agent_voice_speed=agent_config.get('voiceSpeed'),
                         agent_language=agent_config.get('language'),
-                        tts_hints=tone_analyzer.get_tts_hints()
+                        tts_hints=tone_analyzer.get_tts_hints() if tone_analyzer else None
                     ):
                         if not ws_alive:
                             break
