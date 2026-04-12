@@ -100,10 +100,20 @@ class CallTracker:
                         role = "User" if msg["role"] == "user" else "Bot"
                         transcript_text += f"{role}: {msg['text']}\n"
                     
+                    # Parse commitment_date from string to datetime.date to prevent SQLite TypeError
+                    parsed_commitment_date = outcome.get("commitment_date")
+                    if parsed_commitment_date and isinstance(parsed_commitment_date, str):
+                        try:
+                            from datetime import datetime
+                            # Only parse the first 10 chars (YYYY-MM-DD)
+                            parsed_commitment_date = datetime.strptime(parsed_commitment_date[:10], "%Y-%m-%d").date()
+                        except ValueError:
+                            parsed_commitment_date = None
+
                     call_outcome = CallOutcome(
                         call_id=call.id,
                         customer_agreed=outcome.get("agreed"),
-                        commitment_date=outcome.get("commitment_date"),
+                        commitment_date=parsed_commitment_date,
                         unclear_response=outcome.get("unclear") or outcome.get("unclear_response"),
                         disposition=outcome.get("disposition"),
                         notes=outcome.get("notes"),
