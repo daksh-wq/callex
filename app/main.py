@@ -612,6 +612,52 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# ───────── TELEMETRY & DASHBOARD ─────────
+GLOBAL_LATENCY_TRACKER = deque(maxlen=20)
+
+@app.get("/dashboard")
+async def serve_dashboard():
+    dashboard_path = os.path.join(PROJECT_ROOT, "dashboard.html")
+    if not os.path.exists(dashboard_path):
+        return HTMLResponse("Dashboard HTML not found", status_code=404)
+    with open(dashboard_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+@app.get("/api/telemetry/live")
+async def get_telemetry():
+    from app.utils.logger import tracker
+    
+    # Calculate Latency
+    avg_lat = 0
+    if len(GLOBAL_LATENCY_TRACKER) > 0:
+        avg_lat = sum(GLOBAL_LATENCY_TRACKER) / len(GLOBAL_LATENCY_TRACKER)
+        
+    import psutil
+    cpu_load = psutil.cpu_percent(interval=None)
+
+    # Simplified fast analytics count (using tracker or raw DB)
+    try:
+        db = get_db_session()
+        total_calls = getattr(db.query(Call).count(), 'count', lambda: db.query(Call).count())()
+        total_agreed = db.query(CallOutcome).filter(CallOutcome.customer_agreed == True).count()
+        conversion = 0
+        if total_calls > 0:
+            conversion = round((total_agreed / total_calls) * 100, 1)
+        db.close()
+    except:
+        total_calls, total_agreed, conversion = 0, 0, 0
+
+    return {
+        "active_calls": len(tracker.active_calls),
+        "average_latency_ms": avg_lat,
+        "cpu_load": cpu_load,
+        "analytics": {
+            "total_calls": total_calls,
+            "total_agreed": total_agreed,
+            "agreement_percentage": conversion
+        }
+    }
+
 # ───────── SCRIPT DEFINITIONS (LEGACY FALLBACK) ─────────
 # These are no longer the primary source of truth.
 # Agent configs are now loaded dynamically from the database via agent_loader.
@@ -2221,6 +2267,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             )
 
                     llm_elapsed = (time.time() - t_llm) * 1000
+                    GLOBAL_LATENCY_TRACKER.append(llm_elapsed)
                     print(f"[LLM] ⚡ Response in {llm_elapsed:.0f}ms{' (FAST-PATH)' if used_fast_path else ''}")
                     should_hangup = False
                     if "[HANGUP]" in reply_text:

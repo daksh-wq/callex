@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Callex Telemetry Command Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #09090b;
+            --surface: rgba(24, 24, 27, 0.4);
+            --border: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc;
+            --text-sec: #94a3b8;
+            --accent: #38bdf8;
+            --danger: #ef4444;
+            --success: #10b981;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            min-height: 100vh;
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(56, 189, 248, 0.06), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(16, 185, 129, 0.06), transparent 25%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 4rem 2rem;
+        }
+
+        header {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .title-block h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #fff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .title-block p { color: var(--text-sec); font-size: 0.9rem; margin-top: 0.2rem; }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: var(--surface);
+            padding: 0.5rem 1rem;
+            border-radius: 100px;
+            border: 1px solid var(--border);
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .pulse {
+            width: 8px; height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse-anim 1.5s infinite alternate;
+        }
+
+        @keyframes pulse-anim {
+            from { box-shadow: 0 0 4px var(--success), 0 0 0 0 rgba(16, 185, 129, 0.4); }
+            to { box-shadow: 0 0 12px var(--success), 0 0 0 6px rgba(16, 185, 129, 0); }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            transition: transform 0.2s ease;
+        }
+
+        .card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.15); }
+
+        .card h3 { color: var(--text-sec); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+        
+        .metric { font-size: 3.5rem; font-weight: 800; line-height: 1; }
+        
+        .metric-sub { font-size: 0.9rem; color: var(--text-sec); margin-top: 0.5rem; }
+
+        .latency-good { color: var(--success); }
+        .latency-warn { color: #f59e0b; }
+        .latency-danger { color: var(--danger); text-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
+
+        .progress-bar-bg {
+            width: 100%; height: 6px; background: rgba(255,255,255,0.1);
+            border-radius: 10px; margin-top: 1rem; overflow: hidden;
+        }
+        
+        .progress-bar-fill {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 10px; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Large Span Graph block placeholder */
+        .chart-card { grid-column: 1 / -1; min-height: 200px; }
+        .console-list { margin-top: 1rem; list-style: none; display: flex; flex-direction: column; gap: 0.5rem;}
+        .console-item { font-family: monospace; font-size: 0.8rem; color: #a1a1aa; background: rgba(0,0,0,0.5); padding: 0.5rem; border-radius: 6px; }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="title-block">
+            <h1>Callex Telemetry</h1>
+            <p>Real-Time Engine Production Metrics</p>
+        </div>
+        <div class="status-badge" id="conn-status">
+            <div class="pulse"></div> Live Connection
+        </div>
+    </header>
+
+    <div class="grid">
+        <!-- Live Operations -->
+        <div class="card">
+            <h3>Active WebSockets</h3>
+            <div class="metric" id="active-calls">0</div>
+            <div class="metric-sub">Live customer streams right now</div>
+        </div>
+
+        <!-- Latency Tracker -->
+        <div class="card">
+            <h3>Average TTFB Latency</h3>
+            <div class="metric latency-good" id="avg-latency">0<span style="font-size: 1.5rem; color: var(--text-sec);">ms</span></div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="latency-bar" style="width: 0%; background: var(--success);"></div>
+            </div>
+            <div class="metric-sub">Time to First Word (Local Generator)</div>
+        </div>
+
+        <!-- System Load -->
+        <div class="card">
+            <h3>CPU Load Est.</h3>
+            <div class="metric" id="cpu-load" style="color: var(--accent);">--<span style="font-size: 1.5rem; color: var(--text-sec);">%</span></div>
+            <div class="metric-sub">Host Server Concurrency Burn</div>
+        </div>
+
+        <!-- Database Health / Conversions -->
+        <div class="card chart-card">
+            <h3>Analytics Database Overview</h3>
+            <div style="display: flex; gap: 4rem; margin-top: 1rem;">
+                <div>
+                    <p style="color: var(--text-sec); font-size: 0.85rem;">Total Processed Calls</p>
+                    <p style="font-size: 2rem; font-weight: 800;" id="total-calls">0</p>
+                </div>
+                <div>
+                    <p style="color: var(--text-sec); font-size: 0.85rem;">Total Goal Agreements</p>
+                    <p style="font-size: 2rem; font-weight: 800; color: var(--success);" id="total-agreed">0</p>
+                </div>
+                <div>
+                    <p style="color: var(--text-sec); font-size: 0.85rem;">Conversion Rate</p>
+                    <p style="font-size: 2rem; font-weight: 800;" id="conversion-rate">0%</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchTelemetry() {
+            try {
+                const response = await fetch('/api/telemetry/live');
+                if (!response.ok) throw new Error("Network offline");
+                
+                const data = await response.json();
+                
+                // Update Badge
+                document.getElementById('conn-status').innerHTML = '<div class="pulse"></div> Live Connection';
+                
+                // Update Calls
+                document.getElementById('active-calls').innerText = data.active_calls;
+                
+                // Update Latency
+                const lat = data.average_latency_ms;
+                const latEl = document.getElementById('avg-latency');
+                const latBar = document.getElementById('latency-bar');
+                
+                latEl.innerHTML = `${Math.round(lat)}<span style="font-size: 1.5rem; color: var(--text-sec);">ms</span>`;
+                
+                // Colors based on latency targets
+                latEl.className = 'metric';
+                latBar.style.width = Math.min((lat / 2000) * 100, 100) + '%';
+
+                if (lat < 800) {
+                    latEl.classList.add('latency-good');
+                    latBar.style.background = 'var(--success)';
+                } else if (lat < 1500) {
+                    latEl.classList.add('latency-warn');
+                    latBar.style.background = '#f59e0b';
+                } else {
+                    latEl.classList.add('latency-danger');
+                    latBar.style.background = 'var(--danger)';
+                    document.getElementById('conn-status').innerHTML = '<div class="pulse" style="background:var(--danger); box-shadow:0 0 10px var(--danger)"></div> High Latency';
+                }
+
+                // Update CPU/Analytics (if mounted heavily via DB Summary hook inside the backend)
+                document.getElementById('cpu-load').innerHTML = `${data.cpu_load}<span style="font-size: 1.5rem; color: var(--text-sec);">%</span>`;
+
+                if (data.analytics) {
+                    document.getElementById('total-calls').innerText = data.analytics.total_calls;
+                    document.getElementById('total-agreed').innerText = data.analytics.total_agreed;
+                    document.getElementById('conversion-rate').innerText = data.analytics.agreement_percentage + '%';
+                }
+
+            } catch (error) {
+                console.error("Telemetry lost:", error);
+                document.getElementById('conn-status').innerHTML = '<div class="pulse" style="background: var(--text-sec); animation: none; box-shadow: none;"></div> Connecting...';
+            }
+        }
+
+        // Loop deeply every 1.5 seconds.
+        setInterval(fetchTelemetry, 1500);
+        fetchTelemetry();
+    </script>
+</body>
+</html>
