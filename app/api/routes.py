@@ -76,7 +76,7 @@ router = APIRouter(prefix=config.API_PREFIX)
 
 
 @router.get("/calls", response_model=List[CallSchema])
-async def get_calls(
+def get_calls(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, le=config.MAX_PAGE_SIZE),
     start_date: Optional[datetime] = None,
@@ -142,7 +142,7 @@ async def get_calls(
 
 
 @router.get("/calls/{call_id}")
-async def get_call(call_id: int, db: Session = Depends(get_db)):
+def get_call(call_id: int, db: Session = Depends(get_db)):
     """Get specific call details"""
     call = db.query(Call).filter(Call.id == call_id).first()
     if not call:
@@ -170,7 +170,7 @@ async def get_call(call_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/calls/{call_id}/recording")
-async def get_recording(call_id: int, db: Session = Depends(get_db)):
+def get_recording(call_id: int, db: Session = Depends(get_db)):
     """Stream or download call recording"""
     call = db.query(Call).filter(Call.id == call_id).first()
     if not call or not call.recording:
@@ -229,7 +229,7 @@ async def get_recording(call_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/analytics/summary", response_model=AnalyticsSummary)
-async def get_analytics_summary(
+def get_analytics_summary(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     db: Session = Depends(get_db)
@@ -530,7 +530,7 @@ async def bulk_delete_calls(data: dict, db: Session = Depends(get_db)):
 
 
 @router.patch("/calls/{call_id}/notes")
-async def update_call_notes(call_id: int, data: dict, db: Session = Depends(get_db)):
+def update_call_notes(call_id: int, data: dict, db: Session = Depends(get_db)):
     """Update notes for a call"""
     call = db.query(Call).filter(Call.id == call_id).first()
     if not call:
@@ -547,7 +547,7 @@ async def update_call_notes(call_id: int, data: dict, db: Session = Depends(get_
 
 
 @router.patch("/calls/{call_id}/disposition")
-async def update_call_disposition(call_id: int, data: dict, db: Session = Depends(get_db)):
+def update_call_disposition(call_id: int, data: dict, db: Session = Depends(get_db)):
     """Update disposition/outcome for a call"""
     call = db.query(Call).filter(Call.id == call_id).first()
     if not call:

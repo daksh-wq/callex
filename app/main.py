@@ -2688,7 +2688,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                             disp = data.get("final_disposition")
                             print(f"[WS] FINAL_DISPOSITION received: {disp}")
                             if call_uuid:
-                                update_call_outcome(db, call_uuid, disp)
+                                await asyncio.to_thread(update_call_outcome, db, call_uuid, disp)
                                 await ws.send_json({"type": "DISPOSITION_SAVED", "status": "success"})
                         elif msg_type == "whisper":
                             whisper_msg = data.get("message", "")
@@ -2781,9 +2781,9 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 print(f"[DB] Ending call record for {call_uuid}")
                 try:
                     try:
-                        tracker.end_call(call_uuid, status="completed", recording_filename=final_path, outcome_override=ai_outcome)
+                        await asyncio.to_thread(tracker.end_call, call_uuid, "completed", final_path, ai_outcome)
                     except TypeError:
-                        tracker.end_call(call_uuid, status="completed")
+                        await asyncio.to_thread(tracker.end_call, call_uuid, status="completed")
                     print(f"[DB] ✅ Call record closed")
                 except Exception as db_error:
                     print(f"[DB ERROR] Failed to end call: {db_error}")
