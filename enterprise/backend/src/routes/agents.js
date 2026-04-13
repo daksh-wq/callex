@@ -64,6 +64,7 @@ const parseNum = (val, def) => {
 
 // POST /api/agents
 router.post('/', upload.single('file'), async (req, res) => {
+  try {
     const { name, description, systemPrompt, openingLine, voice, language, sttEngine, llmModel,
         fillerPhrases, prosodyRate, prosodyPitch, ipaLexicon, tools, topK, similarityThresh,
         fallbackMessage, profanityFilter, topicRestriction, backgroundAmbience, speakingStyle,
@@ -75,6 +76,8 @@ router.post('/', upload.single('file'), async (req, res) => {
         postCallSms, autoFollowUp, followUpDefaultDays, followUpDefaultTime, analysisSchema, dispositions,
         voiceSpeed
     } = req.body;
+
+    if (!name) return res.status(400).json({ error: "Agent 'name' is required." });
 
     const data = {
         userId: req.userId,
@@ -253,6 +256,10 @@ router.post('/', upload.single('file'), async (req, res) => {
     if (createdDispositions.length > 0) agent.createdDispositions = createdDispositions;
 
     res.json(agent);
+  } catch (err) {
+    console.error('[AGENT CREATION ERROR]', err);
+    res.status(500).json({ error: err.message || 'Failed to create agent' });
+  }
 });
 
 // PATCH /api/agents/:id

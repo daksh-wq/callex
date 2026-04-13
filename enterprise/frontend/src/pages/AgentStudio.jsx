@@ -316,7 +316,7 @@ function UserAgentStudio() {
     const [pushingProd, setPushingProd] = useState(false);
     const { showToast } = useStore();
 
-    const fetchAgents = () => api.agents().then(setAgents);
+    const fetchAgents = () => api.agents().then(res => setAgents(Array.isArray(res) ? res : (res?.agents || [])));
     const fetchVersions = (id) => api.agentPromptVersions(id).then(setPromptVersions);
 
     useEffect(() => { fetchAgents(); }, []);
@@ -336,19 +336,28 @@ function UserAgentStudio() {
     function tryParse(val, def) { try { return JSON.parse(val); } catch { return def; } }
 
     async function saveAgent() {
-        const payload = { ...form, fillerPhrases: form.fillerPhrases, ipaLexicon: form.ipaLexicon, tools: form.tools, analysisSchema: JSON.stringify(form.analysisSchema || []) };
-        if (newAgent) {
-            const a = await api.createAgent(payload);
-            showToast('Agent created', 'success'); fetchAgents(); selectAgent(a);
-        } else {
-            const a = await api.updateAgent(selected.id, payload);
-            showToast('Agent saved', 'success'); fetchAgents(); setSelected(a);
+        try {
+            const payload = { ...form, fillerPhrases: form.fillerPhrases, ipaLexicon: form.ipaLexicon, tools: form.tools, analysisSchema: JSON.stringify(form.analysisSchema || []) };
+            if (newAgent) {
+                const a = await api.createAgent(payload);
+                showToast('Agent created', 'success'); fetchAgents(); selectAgent(a);
+            } else {
+                const a = await api.updateAgent(selected.id, payload);
+                showToast('Agent saved', 'success'); fetchAgents(); setSelected(a);
+            }
+        } catch (e) {
+            showToast(e.message || 'Failed to save agent', 'error');
         }
     }
 
     async function deleteAgent(id) {
         if (!window.confirm("Delete this agent?")) return;
-        showToast('Agent deleted', 'info'); setSelected(null); setForm({}); fetchAgents();
+        try {
+            await api.deleteAgent(id);
+            showToast('Agent deleted', 'info'); setSelected(null); setForm({}); fetchAgents();
+        } catch (e) {
+            showToast(e.message || 'Failed to delete agent', 'error');
+        }
     }
 
     async function pushToProd(id) {
