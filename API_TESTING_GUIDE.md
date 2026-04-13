@@ -1,8 +1,8 @@
 # Callex API Integration & Testing Guide (v3.2)
 
 > **Server IP Details**
-> **Host IP:** `62.171.170.48`
-> **Base URL:** `http://62.171.170.48:4500/api/v1`
+> **Host IP:** `103.150.187.88`
+> **Base URL:** `http://103.150.187.88:4500/api/v1`
 
 This document has been updated following the latest migration to the new production server. It contains the exact URLs, authentication rules, and copy-paste cURL tests your developer needs to verify the new system is perfectly functional.
 
@@ -35,7 +35,7 @@ Your developer can run these direct terminal commands to visually verify the ser
 Verifies that the database is connected and endpoints are publicly accessible.
 
 ```bash
-curl -X GET "http://62.171.170.48:4500/api/v1/agents" \
+curl -X GET "http://103.150.187.88:4500/api/v1/agents" \
      -H "x-api-key: <ACTUAL_API_KEY>"
 ```
 
@@ -43,7 +43,7 @@ curl -X GET "http://62.171.170.48:4500/api/v1/agents" \
 Verifies that the `try/catch` and validation logic is functioning properly in the core pipeline, and that the Shadow Sandbox engine spins up the training agent automatically in the background.
 
 ```bash
-curl -X POST "http://62.171.170.48:4500/api/v1/agents" \
+curl -X POST "http://103.150.187.88:4500/api/v1/agents" \
      -H "Content-Type: application/json" \
      -H "x-api-key: <ACTUAL_API_KEY>" \
      -d '{
@@ -59,7 +59,7 @@ To verify the authentication fix we just applied allows updating the system prom
 *(Note: Replace `YOUR_AGENT_ID` with the ID returned by Test B)*
 
 ```bash
-curl -X PUT "http://62.171.170.48:4500/api/v1/agents/YOUR_AGENT_ID" \
+curl -X PUT "http://103.150.187.88:4500/api/v1/agents/YOUR_AGENT_ID" \
      -H "Content-Type: application/json" \
      -H "x-api-key: <ACTUAL_API_KEY>" \
      -d '{
@@ -74,7 +74,7 @@ curl -X PUT "http://62.171.170.48:4500/api/v1/agents/YOUR_AGENT_ID" \
 
 When connecting the real-time AI dialers into the application pipeline, developers should ensure their WebSocket URIs point to the actively port-forwarded audio bridge.
 
-**New Server WS Node:** `ws://62.171.170.48:8085/v1/ws/call/:id`
+**New Server WS Node:** `ws://103.150.187.88:8085/v1/ws/call/:id`
 
 > [!IMPORTANT]
 > The backend automatically caches System Prompts into local RAM to handle simultaneous calls gracefully. Ensure you inform the developer that modifications to agent behavior via the REST API may take up to **30 seconds** to universally sync across massive inbound call structures. 
