@@ -561,6 +561,12 @@ function UserAgentStudio() {
                                                                 <option value="qDuRKMlYmrm8trt5QyBn">Taksh (Powerful & Commanding)</option>
                                                                 <option value="LQ2auZHpAQ9h4azztqMT">Parveen (Confident Male)</option>
                                                                 <option value="s6cZdgI3j07hf4frz4Q8">Arvi (Desi Conversational)</option>
+                                                                <optgroup label="US English Voices">
+                                                                    <option value="21m00Tcm4TlvDq8ikWAM">Rachel (US Professional Female)</option>
+                                                                    <option value="EXAVITQu4vr4xnSDxMaL">Bella (US Friendly Female)</option>
+                                                                    <option value="CYw3kZ02Hs0563khs1Fj">Dave (US Conversational Male)</option>
+                                                                    <option value="ErXwobaYiN019PkySvjV">Antoni (US Well-Rounded Male)</option>
+                                                                </optgroup>
                                                                 {form.clonedVoiceId && <option value={form.clonedVoiceId}>Custom Cloned Voice ({form.clonedVoiceId})</option>}
                                                             </select>
                                                             <button type="button" className={`btn-secondary py-2 px-3 flex items-center gap-2 ${form.previewLoading ? 'opacity-50 cursor-not-allowed' : ''}`} disabled={form.previewLoading} title="Play 5s Hindi Preview" onClick={async () => {
