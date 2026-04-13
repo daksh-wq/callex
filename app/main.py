@@ -956,9 +956,12 @@ async def _sst_model_2_batch_transcribe(client: httpx.AsyncClient, wav_bytes: by
     for attempt in range(2):
         try:
             files = {"file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav")}
+            # Map English dialects to Sarvam's expected format
+            sarvam_lang = "en-IN" if language.startswith("en") else language
+            
             data = {
                 "model": base64.b64decode(b'c2FhcmFzOnYz').decode('utf-8'), # internal identifier for genartml-callex
-                "language_code": language,
+                "language_code": sarvam_lang,
                 "mode": "transcribe",
             }
             if prompt:
@@ -2213,7 +2216,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     on_speech_started=_on_sst_model_2_speech_started,
                     on_speech_ended=_on_sst_model_2_speech_ended,
                     model="genartml-callex",
-                    language=agent_config.get('language', 'hi-IN'),
+                    language="en-IN" if agent_config.get('language', 'hi-IN').startswith('en') else agent_config.get('language', 'hi-IN'),
                     mode="translit" if agent_config.get('language') == "gu-IN" else "transcribe",
                     sample_rate=SAMPLE_RATE,
                     vad_signals=True,
