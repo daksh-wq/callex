@@ -25,12 +25,25 @@ export function requireAuth(req, res, next) {
 }
 
 export async function requireApiKey(req, res, next) {
+    let token = '';
     const authHeader = req.headers.authorization;
-    if (!authHeader || !/^bearer /i.test(authHeader)) {
+
+    if (authHeader) {
+        if (/^bearer /i.test(authHeader)) {
+            token = authHeader.split(' ')[1];
+        } else {
+            // Support raw API key in Authorization header without 'Bearer ' prefix
+            token = authHeader.trim();
+        }
+    } else if (req.headers['x-api-key']) {
+        token = req.headers['x-api-key'];
+    } else if (req.headers['api-key']) {
+        token = req.headers['api-key'];
+    }
+
+    if (!token) {
         return res.status(401).json({ error: 'Missing or invalid Authorization header.' });
     }
-    const token = authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Empty bearer token' });
 
     try {
         // Try API key lookup first
