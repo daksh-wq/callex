@@ -68,7 +68,7 @@ router.post('/', upload.single('file'), async (req, res) => {
     const { name, description, systemPrompt, openingLine, voice, language, sttEngine, llmModel,
         fillerPhrases, prosodyRate, prosodyPitch, ipaLexicon, tools, topK, similarityThresh,
         fallbackMessage, profanityFilter, topicRestriction, backgroundAmbience, speakingStyle,
-        bargeInMode, patienceMs, maxDuration, temperature, maxTokens, strictToolCalling,
+        bargeInMode, patienceMs, maxDuration, temperature, maxTokens, strictToolCalling, backgroundNoiseVolume,
         ringTimeout, voicemailLogic, webhookUrl, autoSummary, autoSentiment, recordCall, processDtmf,
         amdPrecision, voicemailDropAudio, sentimentRouting, competitorAlerts, supervisorWhisper,
         piiRedaction, geoCallerId, multiAgentHandoff, objectionHandling, emotionalMirroring,
@@ -99,6 +99,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         patienceMs: parseNum(patienceMs, 800),
         maxDuration: parseNum(maxDuration, 30),
         temperature: parseNum(temperature, 0.7),
+        backgroundNoiseVolume: parseNum(backgroundNoiseVolume, 0.20),
         maxTokens: parseNum(maxTokens, 250),
         strictToolCalling: parseBool(strictToolCalling, true),
         ringTimeout: parseNum(ringTimeout, 30),
@@ -283,7 +284,7 @@ router.patch('/:id', upload.single('file'), async (req, res) => {
     }
 
     // Numbers
-    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays', 'voiceSpeed'];
+    const numFields = ['prosodyRate', 'prosodyPitch', 'topK', 'similarityThresh', 'patienceMs', 'maxDuration', 'temperature', 'maxTokens', 'ringTimeout', 'costCapTokens', 'followUpDefaultDays', 'voiceSpeed', 'backgroundNoiseVolume'];
     for (const f of numFields) {
         if (updates[f] !== undefined) updates[f] = parseNum(updates[f], updates[f]);
     }

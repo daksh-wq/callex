@@ -190,6 +190,7 @@ def _doc_to_dict(doc) -> Dict[str, Any]:
         'prosodyRate': 1.0,
         'prosodyPitch': 1.0,
         'voiceSpeed': 1.0,
+        'backgroundNoiseVolume': 0.20,
         'name': 'Agent',
     }
 

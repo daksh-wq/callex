@@ -1807,8 +1807,12 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             chunk = BG_NOISE_PCM[bg_noise_pos:end_pos]
             bg_noise_pos = end_pos
         
-        # Apply volume reduction (9% volume — subtle call center ambiance)
-        return (chunk * 0.20).astype(np.int16)
+        # Apply configured volume (0.0 means completely stopped)
+        vol = float(agent_config.get('backgroundNoiseVolume', 0.20))
+        if vol <= 0.0:
+            return np.zeros(samples, dtype=np.int16)
+            
+        return (chunk * vol).astype(np.int16)
     
     # ── DEFERRED: FireStore Live Call Creation (runs in background thread) ──
     async def _deferred_firestore_create():
