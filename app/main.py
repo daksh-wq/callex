@@ -54,7 +54,7 @@ torch.set_num_threads(1)
 
 # ─── Updated imports for new modular structure ───
 from app.utils.logger import tracker          # Database logging
-from app.core.database import get_db_session, update_call_outcome
+from app.core.database import get_db_session, update_call_outcome, Call, CallOutcome
 from app.audio.classifier import SoundEventClassifier
 from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
