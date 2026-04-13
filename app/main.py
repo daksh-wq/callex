@@ -2947,13 +2947,13 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                     print(f"[FIRESTORE ERROR] ❌ Failed to mark call completed: {fs_err}")
 
                 # ── Save Transcript to Firestore Threaded! ──
-                if full_history:
+                if call_full_history:
                     try:
                         transcript_text = await export_transcript_threaded(
                             call_uuid, 
                             phone_number, 
                             agent_config, 
-                            full_history, 
+                            call_full_history, 
                             final_path, 
                             ai_outcome
                         )
