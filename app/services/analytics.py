@@ -12,6 +12,12 @@ from firebase_admin import firestore as fs
 
 async def get_gemini_key() -> str:
     """Helper internal async key fetcher."""
+    try:
+        from app.main import get_gemini_key as main_key_fetcher
+        return await main_key_fetcher()
+    except ImportError:
+        pass
+    
     import os
     return os.environ.get("GENARTML_SERVER_KEY") or os.environ.get("GEMINI_API_KEY", "")
 
