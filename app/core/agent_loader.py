@@ -44,7 +44,15 @@ def _get_firestore_client():
                     cred_path = p
                     break
 
-        cred = credentials.Certificate(cred_path)
+        # Automatic Formatting Fix for Copy-Paste JSON errors
+        with open(cred_path, "r", encoding="utf-8") as f:
+            cred_data = json.load(f)
+        
+        if "private_key" in cred_data:
+            # Fix string literal newline characters (\\n) created during copy-paste
+            cred_data["private_key"] = cred_data["private_key"].replace("\\n", "\n")
+            
+        cred = credentials.Certificate(cred_data)
         firebase_admin.initialize_app(cred)
 
     return firestore.client()
