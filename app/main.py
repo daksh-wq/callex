@@ -1213,7 +1213,7 @@ def _anti_hallucination_filter(reply: str, last_bot_reply: str) -> str:
 
 import typing
 async def generate_response_stream(client: getattr(httpx, 'AsyncClient', None), gemini_key: str, user_text: str, history: list, system_prompt: str, temperature: float, max_tokens: int) -> getattr(typing, 'AsyncGenerator', None):
-    url = f__import__("base64").b64decode("aHR0cHM6Ly9nZW5lcmF0aXZlbGFuZ3VhZ2UuZ29vZ2xlYXBpcy5jb20=").decode() + "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
+    url = __import__("base64").b64decode("aHR0cHM6Ly9nZW5lcmF0aXZlbGFuZ3VhZ2UuZ29vZ2xlYXBpcy5jb20=").decode() + f"/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
     payload = {
         "contents": [*history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -1269,9 +1269,9 @@ async def tts_stream_input_generate(text_iterator, voice_id: str, voice_key_mana
         resolved_voice_id = CALLEX_VOICE_MAP[resolved_voice_id.lower()]
 
     api_key = voice_key_manager.get_key()
-    ws_url = f__import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + "/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_ultra"
+    ws_url = __import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + f"/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_ultra"
     if agent_language == "gu-IN":
-        ws_url = f__import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + "/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_v3"
+        ws_url = __import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + f"/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_v3"
         
     headers = {"xi-api-key": api_key}
     
@@ -1515,7 +1515,7 @@ async def generate_response(client: httpx.AsyncClient, user_text: str, history: 
 
     # ── Gemini Per-Key Semaphore (prevents 429 at 100+ concurrent calls) ──
     gemini_key = await get_gemini_key()
-    url = f__import__("base64").b64decode("aHR0cHM6Ly9nZW5lcmF0aXZlbGFuZ3VhZ2UuZ29vZ2xlYXBpcy5jb20=").decode() + "/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+    url = __import__("base64").b64decode("aHR0cHM6Ly9nZW5lcmF0aXZlbGFuZ3VhZ2UuZ29vZ2xlYXBpcy5jb20=").decode() + f"/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
     payload = {
         "contents": [*clean_history, {"role": "user", "parts": [{"text": user_text}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -1619,7 +1619,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
         
     start_time = time.time()
     
-    url = f__import__("base64").b64decode("aHR0cHM6Ly9hcGkuZWxldmVubGFicy5pbw==").decode() + "/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
+    url = __import__("base64").b64decode("aHR0cHM6Ly9hcGkuZWxldmVubGFicy5pbw==").decode() + f"/v1/text-to-speech/{resolved_voice_id}/stream?output_format=pcm_16000"
     # Select TTS model: Gujarati needs callex_sonic_v3 (only model with Gujarati support)
     # Hindi/English use callex_sonic_ultra for ultra-low latency (~75ms)
     if agent_language == "gu-IN":
