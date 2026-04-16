@@ -128,7 +128,7 @@ class FasterWhisperSTT:
             self._process_task = asyncio.create_task(self._process_loop())
 
             elapsed = time.time() - t0
-            print(f"[WHISPER STT] ✅ Model loaded in {elapsed:.1f}s ({self._device}, {self._compute_type})")
+            print(f"[Callex-SST Loaded] ✅ Local GPU Faster-Whisper STT is ONLINE! (Loaded in {elapsed:.1f}s)")
 
         except ImportError as e:
             print(f"[WHISPER STT] ❌ faster-whisper not installed: {e}")
