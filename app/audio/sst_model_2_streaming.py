@@ -30,7 +30,7 @@ def __safe_log(msg) -> str:
     import builtins
     if msg is None: return "None"
     s = builtins.str(msg)
-    s = s.replace("sarvam", "SST_MODEL_2").replace("Sarvam", "SST_MODEL_2").replace("SARVAM", "SST_MODEL_2")
+    s = s.replace("callex_sst_core", "SST_MODEL_2").replace("CallexSST", "SST_MODEL_2").replace("SARVAM", "SST_MODEL_2")
     s = s.replace("saaras", "genartml-callex").replace("Saaras", "genartml-callex")
     return s
 
@@ -58,7 +58,7 @@ class SSTModel2StreamingSTT:
     def __init__(
         self,
         api_key: str = None,
-        on_transcript: Callable[[str], Awaitable[None]] = None,
+        on_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_speech_started: Optional[Callable[[], Awaitable[None]]] = None,
         on_speech_ended: Optional[Callable[[], Awaitable[None]]] = None,
         model: str = "genartml-callex",
@@ -181,12 +181,17 @@ class SSTModel2StreamingSTT:
                         # Transcript result
                         data = msg.get("data", {})
                         transcript = data.get("transcript", "").strip()
+                        is_final = data.get("is_final", True)
                         if transcript:
                             metrics = data.get("metrics", {})
                             latency = metrics.get("processing_latency", 0)
                             audio_dur = metrics.get("audio_duration", 0)
-                            print(f"[SST_MODEL_2 WS] 📝 Transcript: '{transcript[:80]}' (latency={latency:.2f}s, audio={audio_dur:.2f}s)")
-                            await self._on_transcript(transcript)
+                            if is_final:
+                                print(f"[SST_MODEL_2 WS] 📝 FINAL Transcript: '{transcript[:80]}' (latency={latency:.2f}s, audio={audio_dur:.2f}s)")
+                            else:
+                                print(f"[SST_MODEL_2 WS] 🔄 INTERIM: '{transcript[:80]}'")
+                            
+                            await self._on_transcript(transcript, is_final=is_final)
 
                     elif msg_type == "error":
                         error_data = msg.get("data", {})
