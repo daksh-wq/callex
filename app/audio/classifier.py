@@ -14,6 +14,12 @@ Reference: https://tfhub.dev/google/yamnet/1
 """
 
 import tensorflow as tf
+try:
+    # Disable GPU for TensorFlow so it doesn't steal all VRAM from Faster-Whisper!
+    # YAMNet is tiny and runs in <5ms on CPU.
+    tf.config.set_visible_devices([], 'GPU')
+except Exception:
+    pass
 import tensorflow_hub as hub
 import numpy as np
 import csv
