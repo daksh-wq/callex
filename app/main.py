@@ -1269,9 +1269,11 @@ async def tts_stream_input_generate(text_iterator, voice_id: str, voice_key_mana
         resolved_voice_id = CALLEX_VOICE_MAP[resolved_voice_id.lower()]
 
     api_key = voice_key_manager.get_key()
-    ws_url = __import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + f"/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_ultra"
-    if agent_language == "gu-IN":
-        ws_url = __import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode() + f"/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id=callex_sonic_v3"
+    _ws_base = __import__("base64").b64decode("d3NzOi8vYXBpLmVsZXZlbmxhYnMuaW8=").decode()
+    _model_flash = __import__("base64").b64decode(b"ZWxldmVuX2ZsYXNoX3YyXzU=").decode()
+    _model_v3 = __import__("base64").b64decode(b"ZWxldmVuX3Yz").decode()
+    _tts_model = _model_v3 if agent_language == "gu-IN" else _model_flash
+    ws_url = f"{_ws_base}/v1/text-to-speech/{resolved_voice_id}/stream-input?model_id={_tts_model}"
         
     headers = {"xi-api-key": api_key}
     
@@ -1633,7 +1635,7 @@ async def tts_stream_generate(client: httpx.AsyncClient, text: str, voice_id: st
 
     payload = {
         "text": text,
-        "model_id": tts_model,
+        "model_id": { "callex_sonic_ultra": __import__("base64").b64decode(b"ZWxldmVuX2ZsYXNoX3YyXzU=").decode(), "callex_sonic_v3": __import__("base64").b64decode(b"ZWxldmVuX3Yz").decode() }.get(tts_model, __import__("base64").b64decode(b"ZWxldmVuX2ZsYXNoX3YyXzU=").decode()),
         "voice_settings": {
             "stability": current_stability,
             "similarity_boost": VOICE_SIMILARITY_BOOST,
