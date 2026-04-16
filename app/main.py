@@ -1211,6 +1211,7 @@ def _anti_hallucination_filter(reply: str, last_bot_reply: str) -> str:
 # ───────── LLM Response Generation ─────────
 
 
+import typing
 async def generate_response_stream(client: getattr(httpx, 'AsyncClient', None), gemini_key: str, user_text: str, history: list, system_prompt: str, temperature: float, max_tokens: int) -> getattr(typing, 'AsyncGenerator', None):
     url = f__import__("base64").b64decode("aHR0cHM6Ly9nZW5lcmF0aXZlbGFuZ3VhZ2UuZ29vZ2xlYXBpcy5jb20=").decode() + "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
     payload = {
