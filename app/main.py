@@ -60,7 +60,7 @@ from app.audio.classifier import SoundEventClassifier
 from app.audio.vad_silero import SileroVADFilter
 from app.audio.semantic import SemanticFilter
 from app.audio.speaker_verifier import SpeakerVerifier
-from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT
+from app.core.agent_loader import load_agent, get_default_agent, get_active_prompt, FALLBACK_AGENT, prewarm_all_agents
 from app.audio.deepfilter_denoiser import load_deepfilter_model, DeepFilterDenoiser
 from app.audio.call_context import CallAudioContext
 from app.audio.sst_model_2_streaming import SSTModel2StreamingSTT
@@ -632,6 +632,35 @@ async def lifespan(app: FastAPI):
     total_time = time.time() - startup_start
     print(f"[STARTUP] All models ready ({total_time:.1f}s)")
     print("=" * 60 + "\n")
+
+    # ── PRE-WARM: Load ALL agents + opener caches at startup ──
+    # This eliminates the 2-4 second cold-start delay on first calls.
+    # Agents are cached in memory; opener audio is cached on disk.
+    async def _prewarm_agents_and_openers():
+        try:
+            prewarm_start = time.time()
+            agents = await asyncio.to_thread(prewarm_all_agents)
+            cached_count = 0
+            for agent_id, agent_config in agents:
+                opener = agent_config.get('openingLine', '')
+                voice = agent_config.get('voice', '')
+                if opener:
+                    try:
+                        await ensure_opener_cache(
+                            agent_id=agent_id,
+                            opener_text=opener,
+                            voice_id=voice
+                        )
+                        cached_count += 1
+                    except Exception as e:
+                        print(f"[PREWARM] ⚠️ Opener cache failed for agent {agent_id}: {e}")
+            elapsed = time.time() - prewarm_start
+            print(f"[PREWARM] ✅ {len(agents)} agents loaded, {cached_count} opener caches ready ({elapsed:.1f}s)")
+        except Exception as e:
+            print(f"[PREWARM] ⚠️ Agent pre-warm failed (non-fatal): {e}")
+    # Run pre-warming as a background task so it doesn't block server readiness
+    asyncio.create_task(_prewarm_agents_and_openers())
+
     print("[SYSTEM] All systems ready.")
 
     yield
@@ -1829,6 +1858,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             return
 
     await ws.accept()
+    _t_call_start = time.time()  # LATENCY INSTRUMENTATION
     print("\n" + "=" * 50)
     print("[CALL] 📞 NEW CALL STARTED")
     print(f"[CALL HEADERS] {dict(ws.headers)}")
@@ -1882,6 +1912,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         agent_config = await asyncio.to_thread(get_default_agent) or FALLBACK_AGENT
 
     print(f"[CALL] Using Agent: {agent_config['name']} (Voice: {agent_config['voice']}, Temp: {agent_config['temperature']})")
+    print(f"[LATENCY] Agent loaded in {(time.time()-_t_call_start)*1000:.0f}ms")
     print(f"[CALL] 🔍 systemPrompt loaded from Firestore (first 300 chars):")
     print(f"[CALL] >>> {str(agent_config.get('systemPrompt', ''))[:300]}")
     print(f"[CALL] 🔍 openingLine: {str(agent_config.get('openingLine', ''))[:200]}")
@@ -1987,7 +2018,26 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             print(f"[DB ERROR] ❌ Failed to create Firebase live call: {__safe_log(e)}")
     asyncio.create_task(_deferred_firestore_create())
 
-    db = get_db_session()
+    # ── DEFERRED RESOURCES: Initialized AFTER opener to cut call-start latency ──
+    # These are NOT needed until audio processing starts (after opener plays).
+    db = None
+    recorder = None
+    noise_filter = None
+    _deferred_resources_ready = asyncio.Event()
+
+    async def _init_deferred_resources():
+        nonlocal db, recorder, noise_filter
+        try:
+            db = get_db_session()
+            recorder = LocalRecorder(call_uuid)
+            noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
+            _deferred_resources_ready.set()
+            print(f"[LATENCY] Deferred resources ready at {(time.time()-_t_call_start)*1000:.0f}ms")
+        except Exception as e:
+            print(f"[ERROR] Deferred resource init failed: {__safe_log(e)}")
+            # Set event anyway so audio loop doesn't hang forever
+            _deferred_resources_ready.set()
+    asyncio.create_task(_init_deferred_resources())
 
     buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
     vad_buffer = deque(maxlen=SAMPLE_RATE * MAX_BUFFER_SECONDS)
@@ -2014,9 +2064,6 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
     sst_model_2_last_audio_time = 0.0  # When audio was last sent to SSTModel2
     speaking_start_time = 0.0  # When speaking started (for max duration limit)
     MAX_SPEAKING_DURATION = 15.0  # Force end-of-speech after 15s
-
-    recorder = LocalRecorder(call_uuid)
-    noise_filter = NoiseFilter(sample_rate=SAMPLE_RATE)
 
     # ── Production-Grade Per-Call Audio Isolation (DEFERRED) ──
     # CallAudioContext init is CPU-heavy (deep-copies Silero VAD model).
@@ -2144,7 +2191,8 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
             bot_audio_expected_end += chunk_duration
 
             if bot_speaking:
-                recorder.write_bot_audio(audio_chunk)
+                if recorder:
+                    recorder.write_bot_audio(audio_chunk)
 
             # LATENCY FIX: Skip BG noise mixing on FIRST audio chunk
             # so it reaches FreeSWITCH ~20ms faster (numpy ops are expensive)
@@ -2660,6 +2708,7 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
         # which is fed by EITHER SSTModel2 WS callbacks OR batch ASR fallback
         transcript_processor_task = asyncio.create_task(_process_sst_model_2_transcripts())
 
+        print(f"[LATENCY] Ready to send opener at {(time.time()-_t_call_start)*1000:.0f}ms")
         # Send opener
         opener_text = agent_config['openingLine']
         print(f"[{agent_config['name']}]: {opener_text}")
@@ -2868,13 +2917,19 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
 
                     # 3. Save CLEAN audio to the recording
                     clean_int16 = (enhanced_float32 * 32767.0).astype(np.int16)
-                    recorder.write_customer_audio(clean_int16.tobytes())
+                    if recorder:
+                        recorder.write_customer_audio(clean_int16.tobytes())
 
                     # 3b. SSTModel2 STT feeding is DEFERRED until after speaker verification
                     # (see below — we only feed verified caller audio to STT)
                     
                     # 4. enhanced_float32 is already float32 — feed into DSP pipeline
                     chunk = enhanced_float32
+                    # Wait for deferred resources (one-time, typically completes during opener)
+                    if not _deferred_resources_ready.is_set():
+                        await _deferred_resources_ready.wait()
+                    if noise_filter is None:
+                        continue
                     unfiltered_clean, filtered_chunk, is_valid_speech = await asyncio.to_thread(noise_filter.process, chunk)
                     
                     if len(filtered_chunk) == 0:
@@ -3131,10 +3186,10 @@ async def _handle_call(ws: WebSocket, route_agent_id: str = None):
                 call_ctx.cleanup()
             # NOTE: brain.cleanup() is called AFTER analytics below
 
-            if 'db' in locals():
+            if db is not None:
                 db.close()
 
-            recording_filepath = recorder.close()
+            recording_filepath = recorder.close() if recorder else None
             final_path = None
             if recording_filepath and os.path.exists(recording_filepath):
                 try:

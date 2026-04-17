@@ -44,15 +44,7 @@ def _get_firestore_client():
                     cred_path = p
                     break
 
-        # Automatic Formatting Fix for Copy-Paste JSON errors
-        with open(cred_path, "r", encoding="utf-8") as f:
-            cred_data = json.load(f)
-        
-        if "private_key" in cred_data:
-            # Fix string literal newline characters (\\n) created during copy-paste
-            cred_data["private_key"] = cred_data["private_key"].replace("\\n", "\n")
-            
-        cred = credentials.Certificate(cred_data)
+        cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
 
     return firestore.client()
@@ -138,6 +130,34 @@ def get_linked_dispositions(agent_id: str) -> list:
         return dispositions
     except Exception as e:
         print(f"[AgentLoader] ❌ Error loading dispositions for '{agent_id}': {e}")
+        return []
+
+
+def prewarm_all_agents() -> list:
+    """Pre-load ALL agents from Firestore into the in-memory cache.
+    
+    Called at server startup to eliminate the 500ms-2s Firestore latency
+    on the first call to any agent. Returns list of (agent_id, agent_config) tuples.
+    """
+    global _agent_cache
+    try:
+        db = _get_db()
+        now = time.time()
+        agents = []
+        for doc in db.collection('agents').stream():
+            agent = _doc_to_dict(doc)
+            agent_id_str = str(doc.id)
+            _agent_cache[agent_id_str] = {
+                'timestamp': now,
+                'data': agent
+            }
+            agents.append((agent_id_str, agent))
+        print(f"[AgentLoader] ✅ Pre-warmed {len(agents)} agents into memory cache")
+        return agents
+    except Exception as e:
+        print(f"[AgentLoader] ⚠️ Pre-warm failed: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
